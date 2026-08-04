@@ -1,0 +1,630 @@
+// ==UserScript==
+// @name         Discord Media Archiver - Photos and Videos
+// @namespace    https://github.com/madebycli/Picture-Downloader
+// @version      5.6.0
+// @description  Archive Discord photos, GIFs, videos, and rendered external GIF previews into numbered ZIP parts.
+// @homepageURL  https://github.com/madebycli/Picture-Downloader
+// @supportURL   https://github.com/madebycli/Picture-Downloader/issues
+// @match        https://discord.com/channels/*
+// @match        https://ptb.discord.com/channels/*
+// @match        https://canary.discord.com/channels/*
+// @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
+// @grant        GM_xmlhttpRequest
+// @connect      cdn.discordapp.com
+// @connect      media.discordapp.net
+// @connect      images-ext-1.discordapp.net
+// @connect      images-ext-2.discordapp.net
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    const VERSION = '5.6.0';
+    const SCAN_DELAY_MS = 650;
+    const REAL_TOP_CONFIRM_MS = 20_000;
+    const REAL_BOTTOM_CONFIRM_MS = 20_000;
+    const FINAL_NEWEST_SETTLE_MS = 7_000;
+    const RESTORE_POSITION_MAX_STEPS = 700;
+    const TOP_PROBE_INTERVAL_MS = 1000;
+    const NEWEST_STABLE_ROUNDS_REQUIRED = 3;
+    const DISCORD_EPOCH_MS = 1420070400000;
+    const DOWNLOAD_CONCURRENCY = 8;
+    const REQUEST_RETRIES = 4;
+    const ZIP_BATCH_MAX_ITEMS = 200;
+    const ZIP_MAX_BYTES = 350 * 1024 * 1024;
+    const WORK_BATCH_ESTIMATED_MAX_BYTES = 420 * 1024 * 1024;
+    const ESTIMATED_PHOTO_BYTES = 1.5 * 1024 * 1024;
+    const ESTIMATED_VIDEO_BYTES = 60 * 1024 * 1024;
+    const ESTIMATED_EXTERNAL_GIF_BYTES = 8 * 1024 * 1024;
+
+    const IMAGE_EXTENSIONS = new Set([
+        '.jpg', '.jpeg', '.png', '.gif', '.webp',
+        '.bmp', '.tif', '.tiff', '.avif', '.heic'
+    ]);
+
+    const VIDEO_EXTENSIONS = new Set([
+        // Common browser/Discord video containers
+        '.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi',
+
+        // Additional uploaded video containers
+        '.mpeg', '.mpg', '.mpe', '.mpv',
+        '.ogv', '.ogg',
+        '.3gp', '.3g2',
+        '.flv', '.f4v',
+        '.wmv', '.asf',
+        '.ts', '.mts', '.m2ts',
+        '.vob', '.divx',
+        '.rm', '.rmvb'
+    ]);
+
+    const MEDIA_EXTENSIONS = new Set([
+        ...IMAGE_EXTENSIONS,
+        ...VIDEO_EXTENSIONS
+    ]);
+
+    const STATUS = Object.freeze({
+        COLLECTED: 'collected',
+        FETCHING: 'fetching',
+        PACKED: 'packed',
+        ERROR: 'error'
+    });
+
+    /** @type {Map<string, {
+     * key: string,
+     * url: string,
+     * previewUrl: string,
+     * filename: string,
+     * mediaType: 'photo'|'video'|'external-gif',
+     * sourceKind: 'discord-attachment'|'external-gif-preview',
+     * sourcePageUrl: string|null,
+     * messageId: string|null,
+     * timestamp: string|null,
+     * firstSeen: number,
+     * status: string,
+     * error: string,
+     * size: number
+     * }>} */
+    const images = new Map(); // Stores attachments and external GIF previews.
+
+    const activeRequests = new Set();
+
+    let firstSeenCounter = 0;
+    let running = false;
+    let scanning = false;
+    let packing = false;
+    let stopRequested = false;
+    let renderTimer = null;
+    let lastZipBlobUrl = null;
+    let lastZipFilename = null;
+    let lastScanBoundaryReason = '';
+
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    function sanitizeFilename(value) {
+        return (value || 'bild')
+            .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+            .replace(/\s+/g, ' ')
+            .replace(/[. ]+$/g, '')
+            .slice(0, 180) || 'bild';
+    }
+
+    function extensionFromPath(pathname) {
+        const filename = pathname.split('/').pop() || '';
+        const dot = filename.lastIndexOf('.');
+        return dot >= 0 ? filename.slice(dot).toLowerCase() : '';
+    }
+
+    // Only direct Discord attachment hosts are accepted. External embeds
+    // and links such as YouTube, Vimeo, Twitch, TikTok, or normal websites
+    // are intentionally ignored.
+    function isDiscordAttachmentUrl(rawUrl, sourceElement = null) {
+        if (!rawUrl) return false;
+
+        try {
+            const url = new URL(rawUrl, location.href);
+            const validHost =
+                url.hostname === 'cdn.discordapp.com' ||
+                url.hostname === 'media.discordapp.net';
+
+            if (!validHost || !url.pathname.includes('/attachments/')) {
+                return false;
+            }
+
+            const extension = extensionFromPath(url.pathname);
+            if (MEDIA_EXTENSIONS.has(extension)) return true;
+
+            // Accept uncommon Discord-hosted video attachments when Discord
+            // itself renders them in a video player.
+            const tagName = sourceElement?.tagName?.toUpperCase?.() || '';
+            return (
+                tagName === 'VIDEO' ||
+                tagName === 'SOURCE' ||
+                Boolean(sourceElement?.closest?.('video'))
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    function mediaTypeFromUrl(rawUrl, sourceElement = null) {
+        try {
+            const extension = extensionFromPath(
+                new URL(rawUrl, location.href).pathname
+            );
+
+            if (VIDEO_EXTENSIONS.has(extension)) return 'video';
+            if (IMAGE_EXTENSIONS.has(extension)) return 'photo';
+
+            const tagName = sourceElement?.tagName?.toUpperCase?.() || '';
+            if (
+                tagName === 'VIDEO' ||
+                tagName === 'SOURCE' ||
+                sourceElement?.closest?.('video')
+            ) {
+                return 'video';
+            }
+
+            return 'photo';
+        } catch {
+            return 'photo';
+        }
+    }
+
+    function isDiscordExternalProxyUrl(rawUrl) {
+        if (!rawUrl) return false;
+
+        try {
+            const url = new URL(rawUrl, location.href);
+            const validHost =
+                url.hostname === 'images-ext-1.discordapp.net' ||
+                url.hostname === 'images-ext-2.discordapp.net';
+
+            if (!validHost || !url.pathname.startsWith('/external/')) {
+                return false;
+            }
+
+            return MEDIA_EXTENSIONS.has(
+                extensionFromPath(url.pathname)
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    function hasGifAriaLabel(element) {
+        let current = element;
+
+        for (
+            let depth = 0;
+            current && depth < 8;
+            depth++, current = current.parentElement
+        ) {
+            const label = current.getAttribute?.('aria-label') || '';
+            if (/\bgif\b/i.test(label)) return true;
+        }
+
+        return false;
+    }
+
+    function isKnownGifPageUrl(rawUrl) {
+        if (!rawUrl) return false;
+
+        try {
+            const url = new URL(rawUrl, location.href);
+            const host = url.hostname.toLowerCase();
+            const path = url.pathname.toLowerCase();
+
+            return (
+                (host === 'klipy.com' || host.endsWith('.klipy.com')) &&
+                path.startsWith('/gifs/')
+            ) || (
+                (host === 'tenor.com' || host.endsWith('.tenor.com')) &&
+                (path.includes('/view/') || path.includes('/search/'))
+            ) || (
+                (host === 'giphy.com' || host.endsWith('.giphy.com')) &&
+                path.includes('/gifs/')
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    function findGifEmbedWrapper(element) {
+        let current = element;
+
+        for (
+            let depth = 0;
+            current && depth < 10;
+            depth++, current = current.parentElement
+        ) {
+            if (
+                current.querySelector?.('[aria-label="GIF"]') ||
+                current.querySelector?.('video[aria-label*="GIF" i]') ||
+                current.querySelector?.('a[data-role="img"][data-safe-src]')
+            ) {
+                return current;
+            }
+        }
+
+        return findMessageContainer(element);
+    }
+
+    function findExternalGifPageUrl(element) {
+        const wrapper = findGifEmbedWrapper(element);
+
+        const candidates = [
+            element?.matches?.('a[href]') ? element.href : null,
+            element?.closest?.('a[href]')?.href,
+            wrapper?.querySelector?.('a[data-role="img"][href]')?.href,
+            wrapper?.querySelector?.('a[href*="klipy.com/gifs/"]')?.href,
+            wrapper?.querySelector?.('a[href*="tenor.com/"]')?.href,
+            wrapper?.querySelector?.('a[href*="giphy.com/gifs/"]')?.href
+        ].filter(Boolean);
+
+        return (
+            candidates.find(isKnownGifPageUrl) ||
+            candidates.find(value => {
+                try {
+                    const url = new URL(value, location.href);
+                    return ![
+                        'discord.com',
+                        'cdn.discordapp.com',
+                        'media.discordapp.net',
+                        'images-ext-1.discordapp.net',
+                        'images-ext-2.discordapp.net'
+                    ].includes(url.hostname);
+                } catch {
+                    return false;
+                }
+            }) ||
+            null
+        );
+    }
+
+    function isExternalGifEmbedContext(element) {
+        if (!element) return false;
+        if (hasGifAriaLabel(element)) return true;
+
+        const wrapper = findGifEmbedWrapper(element);
+
+        if (
+            wrapper?.querySelector?.('[aria-label="GIF"]') ||
+            wrapper?.querySelector?.('video[aria-label*="GIF" i]')
+        ) {
+            return true;
+        }
+
+        return isKnownGifPageUrl(
+            findExternalGifPageUrl(element)
+        );
+    }
+
+    function externalGifProxyCandidates(element) {
+        const wrapper = findGifEmbedWrapper(element);
+        const gifVideo =
+            wrapper?.querySelector?.('video[aria-label*="GIF" i]') ||
+            wrapper?.querySelector?.('[aria-label="GIF"] video');
+        const gifSource =
+            wrapper?.querySelector?.('[aria-label="GIF"] source[src]');
+
+        const candidates = [
+            element?.getAttribute?.('data-safe-src'),
+            element?.dataset?.safeSrc,
+            element?.currentSrc,
+            element?.src,
+            element?.getAttribute?.('src'),
+            wrapper?.querySelector?.(
+                'a[data-role="img"][data-safe-src]'
+            )?.getAttribute('data-safe-src'),
+            gifVideo?.currentSrc,
+            gifVideo?.src,
+            gifSource?.src
+        ].filter(Boolean);
+
+        return [...new Set(candidates)]
+            .filter(isDiscordExternalProxyUrl);
+    }
+
+    function toOriginalUrl(rawUrl) {
+        const url = new URL(rawUrl, location.href);
+
+        // media.discordapp.net often serves a scaled preview.
+        // The same attachment path on cdn.discordapp.com is the original file.
+        if (url.hostname === 'media.discordapp.net') {
+            url.hostname = 'cdn.discordapp.com';
+        }
+
+        // Temporary signature parameters ex/is/hm are preserved.
+        // Only preview, size, and conversion parameters are removed.
+        for (const parameter of [
+            'width', 'height', 'size', 'quality', 'format',
+            'animated', 'passthrough'
+        ]) {
+            url.searchParams.delete(parameter);
+        }
+
+        // Discord occasionally appends an empty parameter: "&="
+        for (const [key] of [...url.searchParams.entries()]) {
+            if (!key) url.searchParams.delete(key);
+        }
+
+        return url.href;
+    }
+
+    function urlQualityScore(rawUrl) {
+        try {
+            const url = new URL(rawUrl, location.href);
+            let score = 0;
+            if (url.hostname === 'cdn.discordapp.com') score += 100;
+            if (!url.searchParams.has('width')) score += 20;
+            if (!url.searchParams.has('height')) score += 20;
+            if (!url.searchParams.has('format')) score += 10;
+            return score;
+        } catch {
+            return 0;
+        }
+    }
+
+    function canonicalKey(rawUrl) {
+        const url = new URL(rawUrl, location.href);
+        const normalizedHost =
+            url.hostname === 'images-ext-1.discordapp.net' ||
+            url.hostname === 'images-ext-2.discordapp.net'
+                ? 'images-ext.discordapp.net'
+                : url.hostname.toLowerCase();
+
+        return `${normalizedHost}${url.pathname}`.toLowerCase();
+    }
+
+    function filenameFromUrl(rawUrl) {
+        try {
+            const url = new URL(rawUrl, location.href);
+            return sanitizeFilename(
+                decodeURIComponent(url.pathname.split('/').pop() || 'bild.jpg')
+            );
+        } catch {
+            return 'bild.jpg';
+        }
+    }
+
+    function findMessageContainer(element) {
+        return element.closest?.(
+            'li[id*="chat-messages"], div[id*="chat-messages"], ' +
+            '[data-list-item-id*="chat-messages"], article'
+        ) || null;
+    }
+
+    function findMessageId(element) {
+        let current = findMessageContainer(element) || element;
+
+        for (let depth = 0; current && depth < 14; depth++, current = current.parentElement) {
+            const values = [
+                current.id,
+                current.getAttribute?.('data-list-item-id'),
+                current.getAttribute?.('aria-labelledby')
+            ].filter(Boolean);
+
+            for (const value of values) {
+                const matches = String(value).match(/\d{16,22}/g);
+                if (matches?.length) {
+                    return matches[matches.length - 1];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    function timestampFromSnowflake(messageId) {
+        if (!messageId) return null;
+
+        try {
+            const milliseconds =
+                Number((BigInt(messageId) >> 22n) + BigInt(DISCORD_EPOCH_MS));
+
+            if (!Number.isFinite(milliseconds)) return null;
+            return new Date(milliseconds).toISOString();
+        } catch {
+            return null;
+        }
+    }
+
+    function findTimestamp(element) {
+        const container = findMessageContainer(element);
+        const messageId = findMessageId(element);
+
+        if (messageId) {
+            const exactTime = document.getElementById(
+                `message-timestamp-${messageId}`
+            );
+
+            if (
+                exactTime?.matches?.('time[datetime]') &&
+                (!container || container.contains(exactTime))
+            ) {
+                return exactTime.getAttribute('datetime');
+            }
+        }
+
+        const time = container?.querySelector?.(
+            'time[id^="message-timestamp-"][datetime], time[datetime]'
+        );
+
+        return (
+            time?.getAttribute('datetime') ||
+            timestampFromSnowflake(messageId)
+        );
+    }
+
+    function addOrUpdateImage(rawUrl, sourceElement) {
+        if (!isDiscordAttachmentUrl(rawUrl, sourceElement)) return false;
+
+        const originalUrl = toOriginalUrl(rawUrl);
+        const key = canonicalKey(originalUrl);
+        const existing = images.get(key);
+
+        if (existing) {
+            if (urlQualityScore(originalUrl) > urlQualityScore(existing.url)) {
+                existing.url = originalUrl;
+            }
+
+            // A freshly loaded URL usually has the newest signature.
+            if (new URL(originalUrl).searchParams.has('ex')) {
+                existing.url = originalUrl;
+            }
+
+            if (!existing.messageId) existing.messageId = findMessageId(sourceElement);
+            if (!existing.timestamp) existing.timestamp = findTimestamp(sourceElement);
+            return false;
+        }
+
+        images.set(key, {
+            key,
+            url: originalUrl,
+            previewUrl: rawUrl,
+            filename: filenameFromUrl(originalUrl),
+            mediaType: mediaTypeFromUrl(originalUrl, sourceElement),
+            sourceKind: 'discord-attachment',
+            sourcePageUrl: null,
+            messageId: findMessageId(sourceElement),
+            timestamp: findTimestamp(sourceElement),
+            firstSeen: firstSeenCounter++,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0
+        });
+
+        scheduleRender();
+        return true;
+    }
+
+    function addOrUpdateExternalGif(
+        rawUrl,
+        sourceElement,
+        sourcePageUrl = null
+    ) {
+        if (
+            !isDiscordExternalProxyUrl(rawUrl) ||
+            !isExternalGifEmbedContext(sourceElement)
+        ) {
+            return false;
+        }
+
+        const mediaUrl = new URL(rawUrl, location.href).href;
+        const key = `external-gif:${canonicalKey(mediaUrl)}`;
+        const existing = images.get(key);
+
+        if (existing) {
+            existing.url = mediaUrl;
+            existing.previewUrl = mediaUrl;
+
+            if (!existing.sourcePageUrl && sourcePageUrl) {
+                existing.sourcePageUrl = sourcePageUrl;
+            }
+
+            if (!existing.messageId) {
+                existing.messageId = findMessageId(sourceElement);
+            }
+
+            if (!existing.timestamp) {
+                existing.timestamp = findTimestamp(sourceElement);
+            }
+
+            return false;
+        }
+
+        let filename = filenameFromUrl(mediaUrl);
+
+        if (!MEDIA_EXTENSIONS.has(extensionFromPath(`/${filename}`))) {
+            filename = 'external-gif-preview.mp4';
+        }
+
+        images.set(key, {
+            key,
+            url: mediaUrl,
+            previewUrl: mediaUrl,
+            filename,
+            mediaType: 'external-gif',
+            sourceKind: 'external-gif-preview',
+            sourcePageUrl:
+                sourcePageUrl ||
+                findExternalGifPageUrl(sourceElement),
+            messageId: findMessageId(sourceElement),
+            timestamp: findTimestamp(sourceElement),
+            firstSeen: firstSeenCounter++,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0
+        });
+
+        scheduleRender();
+        return true;
+    }
+
+    function scanExternalGifPreviews() {
+        let added = 0;
+
+        const elements = document.querySelectorAll([
+            'a[data-role="img"][data-safe-src]',
+            'a[href*="klipy.com/gifs/"]',
+            'a[href*="tenor.com/"]',
+            'a[href*="giphy.com/gifs/"]',
+            'video[aria-label*="GIF" i]',
+            '[aria-label="GIF"] video',
+            '[aria-label="GIF"] source[src]'
+        ].join(','));
+
+        for (const element of elements) {
+            if (!isExternalGifEmbedContext(element)) continue;
+
+            const sourcePageUrl =
+                findExternalGifPageUrl(element);
+
+            for (
+                const mediaUrl of
+                externalGifProxyCandidates(element)
+            ) {
+                if (
+                    addOrUpdateExternalGif(
+                        mediaUrl,
+                        element,
+                        sourcePageUrl
+                    )
+                ) {
+                    added++;
+                    break;
+                }
+            }
+        }
+
+        return added;
+    }
+
+    function scanVisiblePage() {
+        let added = 0;
+
+        const selectors = [
+            'a[href*="/attachments/"]',
+            'img[src*="/attachments/"]',
+            'video[src*="/attachments/"]',
+            'source[src*="/attachments/"]'
+        ].join(',');
+
+        document.querySelectorAll(selectors).forEach(element => {
+            const candidates = [
+                element.href,
+                element.currentSrc,
+                element.src,
+                element.getAttribute?.('href'),
+                element.getAttribute?.('src')
+            ].filter(Boolean);
+
+            for (const candidate of candidates) {
+                if (addOrUpdateImage(candidate, element)) {
+                    added++;
+                    break;
+                }
+            }
+        });
+
