@@ -1,0 +1,15 @@
+{
+  "name": "discord-media-archiver-userscript",
+  "version": "5.6.0",
+  "private": true,
+  "description": "Validation tooling for the Discord Media Archiver Tampermonkey userscript.",
+  "scripts": {
+    "build": "node scripts/assemble-userscript.mjs",
+    "check:syntax": "node --check discord-media-archiver.user.js",
+    "check:invariants": "node scripts/check-userscript.mjs",
+    "test": "npm run build && npm run check:syntax && npm run check:invariants"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
