@@ -2,10 +2,19 @@
 
 ## 7.2.0 — 2026-08-05
 
+### Highlights
+
+- Firefox Discord scanning now verifies and selects a genuinely writable message timeline instead of silently targeting a non-moving container.
+- Direction wording is chronological: **older messages** and **newer messages** replace ambiguous up/down/start/end labels.
+- Date ranges are now true scan intervals: Media Archiver seeks rapidly without collecting, starts the established overlap-safe scanner near the selected boundary, and collects only inside the requested dates.
+- The compact panel is split into **Scan**, **Media**, **Archive**, and **Activity** tabs.
+- VirusTotal remains experimental and disabled. Its settings are hidden inside a closed **VirusTotal · BETA** disclosure in the Archive tab until explicitly expanded.
+
 ### Fixed
 
 - Discord scanning no longer advances only a fraction of a viewport per pass. It jumps to the currently loaded virtual edge and waits for Discord to load the next chunk.
 - Each Discord jump verifies the previous edge message ID and performs a bounded recovery overlap scan when virtualization hides that anchor.
+- A no-progress watchdog reports stable Discord/date-seek diagnostics instead of pretending a scan is moving.
 - Large Review Libraries no longer compress hundreds of selected cards into unusable horizontal lines.
 - The Library now has fixed card/list heights, a stable vertical scrollbar, and batched DOM rendering for 1,000+ candidates.
 - Plain card/checkmark clicks now toggle select/deselect without clearing every other selected item.
@@ -14,10 +23,13 @@
 
 ### Added
 
+- Automatic date-interval planning based on machine-readable visible timestamps.
+- A seek phase that pauses collection until the nearest selected date boundary is reached.
+- Browser regression coverage for August → May seeking, May-only collection, and April boundary completion.
 - Reddit DOM-only expansion for visible **View/Load/Show more comments or replies**, **More replies**, and **Continue this thread** controls.
 - Expansion safety filters, an eight-control pass limit, an eight-second per-element cooldown, and post-click rendered-list settling.
 - Scanner navigation regression tests for Discord edge jumps, overlap recovery, canonical deduplication, and Reddit expansion ordering.
-- Chromium/Firefox Playwright coverage for a synthetic 1,100-item Library, scroll batching, repeated click toggles, and compact Developer filters.
+- Chromium/Firefox Playwright coverage for a synthetic 1,100-item Library, scroll batching, repeated click toggles, compact Developer filters, compact tabs, and collapsed VirusTotal Beta controls.
 
 ### Performance
 
@@ -27,6 +39,8 @@
 
 ### Safety
 
+- VirusTotal is reset to **Off** once when upgrading to 7.2 and remains opt-in.
+- VirusTotal controls are not displayed until its Beta disclosure is expanded.
 - Reddit expansion remains restricted to rendered comment-loading controls and rejects login, signup, awards, sharing, reporting, saving, following, joining, and voting controls.
 - No Reddit/Discord private APIs, tokens, cookies, or Authorization headers are used.
 - Review mode still makes no original media request before **Archive selected**.
@@ -86,7 +100,7 @@
 
 ### Preserved
 
-- Discord channels/threads, photos/native GIFs, broad video containers, rendered external GIF previews, date ranges, all scan directions, delayed virtual-boundary confirmation, manual stop, completion-position choices, ZIP splitting, optional `fflate`, and the built-in ZIP fallback.
+- Discord channels/threads, photos/native GIFs, broad video containers, rendered external GIF previews, local-date filtering, current-position chronology modes, delayed virtual-boundary confirmation, manual stop, completion-position choices, ZIP splitting, optional `fflate`, and the built-in ZIP fallback.
 
 ### Security
 
