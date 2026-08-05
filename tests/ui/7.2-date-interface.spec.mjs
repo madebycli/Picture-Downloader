@@ -118,6 +118,24 @@ test('compact panel exposes four tabs and hides chronology in date mode', async 
     await expect(page.locator('[data-ma-panel="setup"]')).toBeHidden();
 });
 
+test('VirusTotal Beta is off and collapsed until explicitly expanded', async ({ page }) => {
+    await openFixture(page);
+
+    await page.locator('[data-ma-tab="archive"]').click();
+    const virusTotal = page.locator('#ma-virustotal-settings');
+    await expect(virusTotal).toBeVisible();
+    await expect(virusTotal.locator('summary')).toContainText('VirusTotal');
+    await expect(virusTotal.locator('summary')).toContainText('BETA');
+    await expect(virusTotal).not.toHaveAttribute('open', '');
+    await expect(page.locator('#ma-vt-mode')).toBeHidden();
+
+    await virusTotal.locator('summary').click();
+    await expect(virusTotal).toHaveAttribute('open', '');
+    await expect(page.locator('#ma-vt-mode')).toBeVisible();
+    await expect(page.locator('#ma-vt-mode')).toHaveValue('off');
+    await expect(page.locator('#ma-vt-summary-status')).toHaveText('Off');
+});
+
 test('date interval seeks without collecting and archives only the requested month', async ({ page }) => {
     test.setTimeout(45_000);
     await openFixture(page);
