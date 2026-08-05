@@ -35,6 +35,7 @@
     "src/core/60-library-elements.user.js.part",
     "src/core/61-ui-style.user.js.part",
     "src/core/61-library-style.user.js.part",
+    "src/core/61-library-performance-hotfix.user.js.part",
     "src/core/62-ui-bindings.user.js.part",
     "src/core/63-library-bindings.user.js.part",
     "src/core/64-capability-bindings.user.js.part",
