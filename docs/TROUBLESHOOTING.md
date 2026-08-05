@@ -1,37 +1,65 @@
 # Troubleshooting
 
-## The panel does not appear
+## The interface does not appear
 
-The current page must match an entry in `src/adapters/manifest.json`, and the corresponding runtime adapter must accept the location. Open a supported content page rather than a settings, login, or landing page.
+The current URL must match an installed adapter and pass its runtime page check. Open a Discord channel/thread, a supported deterministic Pinterest surface, or a Reddit post-detail comment thread. Unsupported pages intentionally inject nothing.
 
-## Nothing is collected
+For extensions, click the toolbar action on a supported page. If nothing opens, reload the page after installing/updating the extension so its content script is present.
 
-Open the Media tab while scanning. Confirm the active page has rendered media, at least one media category is enabled, and the adapter still recognizes the site's current DOM and URLs.
+## Review mode opened but no files downloaded
 
-## Date-filtered entries are missing
+This is expected until **Archive selected** is pressed. Closing the Library, pressing Escape, clicking the backdrop, or choosing **Close without downloading** never starts original requests.
 
-Dates use local browser calendar days. Entries without a resolvable adapter timestamp are excluded while the filter is enabled. Check Activity for date-boundary messages.
+Confirm that at least one card is both eligible and selected. Filtered, non-canonical, or manually deselected items cannot enter the archive.
 
-## The scan ends too early
+## Selection changed after filtering or sorting
 
-Virtual timelines can pause at apparent boundaries. Media Archiver waits before confirming them, but a site update can require adapter timing or selector changes. Include the active adapter and Activity messages in a bug report.
+Explicit selection is keyed and should persist. Filters only change the current view. **Select all visible** and Ctrl/Cmd+A affect the current eligible view; **Select all eligible** affects the complete eligible collection. Shift ranges follow the current visible sort/filter order.
 
-## The final position is not exact
+## A stopped scan opened a partial Library
 
-Choose the desired completion position in Setup. Virtualized pages may unload the original anchor or move after render; the scanner applies repeated correction and can fall back to an approximate scroll ratio.
+In Review mode, a manual stop intentionally opens the Library for the canonical items found so far. No original files were requested during scanning. Closing it preserves the partial collection until reset.
+
+## Counters appear stale
+
+During active foreground scanning, download, or ZIP work, primary counters should refresh every 750 ms and remain at most one second behind. Returning from a hidden tab triggers an immediate exact refresh. If visible values remain stale longer, download the sanitized Developer report and include the stable code/event timeline in an issue.
+
+## Pinterest date controls are missing
+
+Pinterest date filtering is disabled intentionally because reliable rendered source timestamps are not consistently available on the initial supported surfaces. Media discovery still uses the existing scan modes and rendered-grid boundaries.
+
+## Pinterest items repeat while scrolling
+
+Masonry layouts can render the same Pin multiple times. Media Archiver merges repeated Pin/media canonical keys and shows a duplicate-merged count. If distinct files are incorrectly merged, include a sanitized DOM fragment and rendered host/path pattern—not a private signed URL.
+
+## Reddit does not activate
+
+Open a post-detail URL under `/r/<subreddit>/comments/<post>/...`. Home, Popular, subreddit/search feeds, recommendations, and For You pages are intentionally unsupported.
+
+## Reddit exports omit a comment
+
+Only comments currently rendered and manually selected are exported. Collapsed or unloaded replies are not enumerated through APIs. Expand them yourself in the normal page UI, then scan again. Media Archiver does not automatically click reply-expansion controls.
 
 ## ZIP creation is slow
 
-When `fflate` is unavailable, the built-in ZIP writer is used. It is intentionally dependency-free and yields during large checksums, but can be slower. Keep the page open until completion.
+When `fflate` is unavailable, the dependency-free ZIP32 STORE writer is used. It yields during large checksums but is slower. Keep the page open. The fallback remains required for Firefox/Tampermonkey and restrictive extension environments.
 
 ## ZIP downloads are blocked
 
-Allow multiple downloads for the active site in the browser. Check the browser download panel and popup-blocking indicator.
+Allow downloads or multiple downloads for the page/extension. Completed ZIP parts remain valid after a stop. Check Developer logs for `ZIP_DOWNLOAD_BLOCKED` or `RUNTIME_SAVE_FAILED`.
 
 ## A media URL is rejected
 
-The active adapter blocks hosts not declared in its allowlist. This is intentional. A legitimate new host requires a reviewed adapter manifest and runtime allowlist change.
+The active adapter or extension background allowlist rejected an undeclared host. This is a security boundary. A legitimate new rendered media host requires an adapter-manifest change, runtime allowlist update generated from it, tests, and review.
 
-## Discord-specific notes
+## Copy fails
 
-The Discord adapter can collect rendered external GIF previews only when Discord creates a proxy media element. A plain external link without a rendered preview has no proxy file to save. Discord web updates can also require selector maintenance inside `src/adapters/discord/`.
+The report remains visible and selectable. Copy it manually. The event uses `RUNTIME_CLIPBOARD_FAILED`; downloaded Markdown uses the same sanitized event source.
+
+## Naming validation fails
+
+Open **Customize**, correct unsupported tokens or invalid template syntax, or reset to **Numbered — newest to oldest**. Final names are planned before any selected original is requested. Preview names and ZIP names use the same immutable plan.
+
+## Extension installation
+
+Chromium development packages must be extracted and loaded unpacked. Firefox temporary packages are loaded through `about:debugging`; permanent Firefox installation requires signing. Rebuild after adapter permission changes and reload the extension/page.
