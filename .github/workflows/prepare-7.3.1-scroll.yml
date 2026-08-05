@@ -1,0 +1,39 @@
+name: Prepare 7.3.1 panel scroll fix
+
+on:
+  push:
+    branches:
+      - fix/7.3.1-panel-scroll
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/7.3.1-panel-scroll
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply 7.3.1 scroll patch
+        run: node scripts/prepare-7.3.1-scroll.mjs
+      - name: Install tooling
+        run: npm install
+      - name: Run complete validation
+        run: npm test
+      - name: Install Chromium and Firefox
+        run: npx playwright install --with-deps chromium firefox
+      - name: Run browser regression matrix
+        run: npm run test:ui
+      - name: Commit verified 7.3.1 fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md package.json package-lock.json media-archiver.user.js src/core/00-bootstrap.user.js.part src/core/61-ui-style.user.js.part src/core/64-interface-layout.user.js.part tests/baseline.test.mjs tests/ui/7.3.1-panel-scroll.spec.mjs
+          git commit -m "fix: restore compact panel scrolling in 7.3.1"
+          git push origin HEAD:fix/7.3.1-panel-scroll
