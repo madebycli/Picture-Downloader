@@ -17,8 +17,12 @@
     "test:baseline": "node --test tests/baseline.test.mjs",
     "test:unit": "node --test tests/contracts.test.mjs tests/shared-services.test.mjs tests/runtime-bridge.test.mjs tests/library-workflow.test.mjs tests/pinterest-adapter.test.mjs tests/reddit-comments.test.mjs",
     "test:fixtures": "node --test tests/baseline.test.mjs tests/pinterest-adapter.test.mjs tests/reddit-comments.test.mjs",
+    "test:ui": "playwright test",
     "test:builds": "npm run build:extension:chromium && npm run build:extension:firefox && npm run check:extension:chromium && npm run check:extension:firefox && npm run check:reproducible",
     "test": "npm run build:userscript && npm run check:syntax && npm run check:invariants && npm run check:unsupported && npm run test:baseline && npm run test:unit && npm run test:builds"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0"
   },
   "engines": {
     "node": ">=20"
