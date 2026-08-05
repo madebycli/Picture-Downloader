@@ -64,6 +64,9 @@ for (const adapter of adapterManifest.adapters || []) {
         requireText(`// @connect      ${host}`, `@connect ${host}`);
     }
 }
+for (const host of buildManifest.runtimeConnect || []) {
+    requireText(`// @connect      ${host}`, `runtime @connect ${host}`);
+}
 
 for (const marker of [
     'registerSiteAdapter',
@@ -75,11 +78,16 @@ for (const marker of [
     'MediaArchiverRuntimeContract',
     'MediaArchiverSelection',
     'MediaArchiverNaming',
+    'MediaArchiverVirusTotal',
     'planArchiveNames',
     'createDiagnosticsStore',
     'createLiveMetrics',
     'reviewArchiveConfirmed',
     'archiveSelectedFromLibrary',
+    'prepareVirusTotalArchiveOptions',
+    'scanArchiveEntryWithVirusTotal',
+    'VIRUSTOTAL_UPLOAD_CONSENT_REQUIRED',
+    'VIRUSTOTAL_FILE_BLOCKED',
     'buildFallbackStoredZip',
     'getDateRangeConfig',
     'autoScrollToOldest',
@@ -105,6 +113,7 @@ forbid(/Authorization\s*:\s*[`'"](?:Bot\s+)?/i, 'Authorization header constructi
 forbid(/discord\.com\/api\//i, 'direct Discord API access');
 forbid(/\/api\/v\d+\/channels\//i, 'Discord channel API access');
 forbid(/(?:pinterest|reddit)\.com\/api\//i, 'private site API access');
+forbid(/kind:\s*['"]comment['"][\s\S]{0,120}adapterId:\s*['"]reddit-comments['"]/i, 'Reddit comment text ArchiveItem');
 
 for (const [pattern, description] of [
     [/discord(?:app)?\.com|discordapp\.net/i, 'Discord host in shared/core modules'],
@@ -126,6 +135,7 @@ forbid(/\bbrowser\s*\./, 'Firefox API in shared modules', sharedSource);
 for (const runtimeMarker of [
     'GM_xmlhttpRequest',
     'fetchBinary',
+    'requestExternal',
     'abortRequest',
     'abortAllRequests',
     'saveBlob',
@@ -145,6 +155,11 @@ const reviewGuardIndex = source.indexOf('reviewMode && !reviewArchiveConfirmed')
 const requestIndex = source.indexOf('requestArrayBuffer(entry.url)');
 if (reviewGuardIndex < 0 || requestIndex < 0 || reviewGuardIndex > requestIndex) {
     failures.push('Review confirmation guard must precede every original-file request path.');
+}
+const vtDownloadIndex = source.indexOf('requestArrayBufferWithoutVirusTotal');
+const vtScanIndex = source.indexOf('scanArchiveEntryWithVirusTotal');
+if (vtDownloadIndex < 0 || vtScanIndex < 0 || vtDownloadIndex > vtScanIndex) {
+    failures.push('VirusTotal scanning must occur after the confirmed original-file download.');
 }
 
 if (failures.length) {

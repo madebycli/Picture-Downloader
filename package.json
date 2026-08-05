@@ -1,6 +1,6 @@
 {
   "name": "media-archiver",
-  "version": "7.0.0",
+  "version": "7.1.0",
   "private": true,
   "description": "Build and validation tooling for the shared Media Archiver userscript and browser extensions.",
   "scripts": {
@@ -15,7 +15,7 @@
     "check:extension:firefox": "node scripts/check-extension.mjs firefox",
     "check:reproducible": "node scripts/check-reproducible-builds.mjs",
     "test:baseline": "node --test tests/baseline.test.mjs",
-    "test:unit": "node --test tests/contracts.test.mjs tests/shared-services.test.mjs tests/runtime-bridge.test.mjs tests/library-workflow.test.mjs tests/pinterest-adapter.test.mjs tests/reddit-comments.test.mjs",
+    "test:unit": "node --test tests/contracts.test.mjs tests/shared-services.test.mjs tests/runtime-bridge.test.mjs tests/library-workflow.test.mjs tests/pinterest-adapter.test.mjs tests/reddit-comments.test.mjs tests/virustotal.test.mjs",
     "test:fixtures": "node --test tests/baseline.test.mjs tests/pinterest-adapter.test.mjs tests/reddit-comments.test.mjs",
     "test:ui": "playwright test",
     "test:builds": "npm run build:extension:chromium && npm run build:extension:firefox && npm run check:extension:chromium && npm run check:extension:firefox && npm run check:reproducible",

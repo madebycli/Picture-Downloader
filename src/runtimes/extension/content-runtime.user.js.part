@@ -54,6 +54,30 @@
                 extensionRequestIds.delete(requestId);
             }
         },
+        async requestExternal(url, options = {}) {
+            const requestId = options.requestId || `external-${++extensionRequestSequence}`;
+            extensionRequestIds.add(requestId);
+            try {
+                const response = await extensionSendMessage({
+                    type: 'media-archiver:external-request',
+                    requestId,
+                    url,
+                    method: options.method || 'GET',
+                    headers: options.headers || {},
+                    body: options.body,
+                    multipartFile: options.multipartFile,
+                    timeoutMs: options.timeoutMs || 120_000
+                });
+                if (!response) {
+                    const error = new Error('Extension external request returned no response.');
+                    error.code = 'RUNTIME_EXTERNAL_REQUEST_FAILED';
+                    throw error;
+                }
+                return response;
+            } finally {
+                extensionRequestIds.delete(requestId);
+            }
+        },
         async abortRequest(requestId) {
             extensionRequestIds.delete(requestId);
             const response = await extensionSendMessage({

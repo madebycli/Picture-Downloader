@@ -1,6 +1,7 @@
     (() => {
         const REQUIRED_METHODS = Object.freeze([
             'fetchBinary',
+            'requestExternal',
             'abortRequest',
             'abortAllRequests',
             'saveBlob',

@@ -1,0 +1,107 @@
+    let activeVirusTotalArchiveOptions = Object.freeze({ mode: 'off' });
+    const requestArrayBufferWithoutVirusTotal = requestArrayBuffer;
+    const createAndDownloadZipPartsWithoutVirusTotal = createAndDownloadZipParts;
+
+    requestArrayBuffer = async function requestArrayBufferWithVirusTotal(url, attempt = 1) {
+        const buffer = await requestArrayBufferWithoutVirusTotal(url, attempt);
+        if (activeVirusTotalArchiveOptions.mode === 'off') return buffer;
+
+        const entry = [...mediaEntries.values()].find(candidate =>
+            candidate.kind === 'media' &&
+            candidate.url === url &&
+            candidate.status === STATUS.FETCHING
+        ) || [...mediaEntries.values()].find(candidate =>
+            candidate.kind === 'media' && candidate.url === url
+        );
+        if (!entry) return buffer;
+
+        try {
+            await scanArchiveEntryWithVirusTotal(
+                entry,
+                new Uint8Array(buffer),
+                activeVirusTotalArchiveOptions
+            );
+        } catch (error) {
+            if (
+                error?.code !== 'VIRUSTOTAL_FILE_BLOCKED' &&
+                activeVirusTotalArchiveOptions.unknownPolicy === 'allow'
+            ) {
+                const result = Object.freeze({
+                    provider: 'virustotal',
+                    verdict: 'error',
+                    known: false,
+                    uploaded: false,
+                    stats: null,
+                    reportUrl: null,
+                    checkedAt: new Date().toISOString(),
+                    code: error?.code || 'VIRUSTOTAL_REQUEST_FAILED'
+                });
+                entry.payload = { ...entry.payload, virusTotal: result };
+                diagnostics.warn(
+                    result.code,
+                    'VirusTotal could not complete the check; the configured unknown policy allows the file.',
+                    { filename: entry.filename, continued: true },
+                    { category: 'virustotal', adapterId: entry.adapterId }
+                );
+                addLog(
+                    `VirusTotal check unavailable for ${entry.filename || entry.key}; unknown/error policy allows it. Code: ${result.code}`,
+                    'warn'
+                );
+                return buffer;
+            }
+            throw error;
+        }
+        return buffer;
+    };
+
+    createAndDownloadZipParts = async function createAndDownloadZipPartsWithVirusTotal() {
+        const reviewNeedsConfirmation =
+            getAfterScanMode() === 'review' && !reviewArchiveConfirmed;
+        if (reviewNeedsConfirmation) {
+            return createAndDownloadZipPartsWithoutVirusTotal();
+        }
+
+        let options;
+        try {
+            options = await prepareVirusTotalArchiveOptions();
+        } catch (error) {
+            reviewArchiveConfirmed = false;
+            setPhase('VIRUSTOTAL SETUP REQUIRED');
+            addLog(
+                `${error.message} Code: ${error.code || 'VIRUSTOTAL_SETTINGS_FAILED'}`,
+                'error'
+            );
+            diagnostics.error(
+                error.code || 'VIRUSTOTAL_SETTINGS_FAILED',
+                'VirusTotal prevented the archive from starting.',
+                error,
+                { originalRequestsStarted: 0 },
+                { category: 'virustotal' }
+            );
+            updateButtons();
+            return;
+        }
+
+        activeVirusTotalArchiveOptions = options;
+        if (options.mode !== 'off') {
+            addLog(
+                options.mode === 'hash-only'
+                    ? 'VirusTotal hash-only checks are enabled. Original files will be hashed after confirmation and before ZIP creation.'
+                    : 'VirusTotal upload-unknown checks are enabled with session consent. Unknown files may be uploaded before ZIP creation.',
+                'warn'
+            );
+        }
+        try {
+            return await createAndDownloadZipPartsWithoutVirusTotal();
+        } finally {
+            activeVirusTotalArchiveOptions = Object.freeze({ mode: 'off' });
+        }
+    };
+
+    zipButton.addEventListener('click', event => {
+        if (virusTotalModeSelect.value === 'off') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        createAndDownloadZipParts();
+    }, true);
+

@@ -45,6 +45,7 @@ test('runtime contract requires the complete cross-target surface', async () => 
     const contract = context.MediaArchiverRuntimeContract;
     assert.deepEqual([...contract.REQUIRED_METHODS], [
         'fetchBinary',
+        'requestExternal',
         'abortRequest',
         'abortAllRequests',
         'saveBlob',
@@ -65,8 +66,11 @@ test('runtime contract requires the complete cross-target surface', async () => 
         }])
     );
     const facade = contract.createRuntimeFacade(implementation);
-    assert.equal(facade.copyText('fixture'), 'copyText');
-    assert.deepEqual(calls, [['copyText', ['fixture']]]);
+    assert.equal(facade.requestExternal('https://www.virustotal.com/api/v3/files'), 'requestExternal');
+    assert.deepEqual(calls, [[
+        'requestExternal',
+        ['https://www.virustotal.com/api/v3/files']
+    ]]);
 });
 
 test('ArchiveItem separates comment records from binary media', async () => {

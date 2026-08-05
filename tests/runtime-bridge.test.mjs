@@ -15,7 +15,8 @@ test('Tampermonkey globals are isolated to the userscript runtime bridge', async
         'src/shared/workflow-state.user.js.part',
         'src/shared/selection-store.user.js.part',
         'src/shared/naming-service.user.js.part',
-        'src/shared/diagnostics-metrics.user.js.part'
+        'src/shared/diagnostics-metrics.user.js.part',
+        'src/shared/virustotal-service.user.js.part'
     ].map(read))).join('\n');
 
     assert.match(runtime, /GM_xmlhttpRequest/);
@@ -30,6 +31,7 @@ test('userscript runtime implements every required contract operation', async ()
     const runtime = await read('src/core/09-userscript-runtime.user.js.part');
     for (const method of [
         'fetchBinary',
+        'requestExternal',
         'abortRequest',
         'abortAllRequests',
         'saveBlob',
@@ -42,6 +44,9 @@ test('userscript runtime implements every required contract operation', async ()
     ]) {
         assert.match(runtime, new RegExp(`\\b${method}\\s*\\(`));
     }
+    assert.match(runtime, /isAllowedVirusTotalUrl/);
+    assert.match(runtime, /FormData/);
+    assert.match(runtime, /new Blob/);
 });
 
 test('download retry orchestration uses runtime transport and stable diagnostics', async () => {
@@ -50,4 +55,12 @@ test('download retry orchestration uses runtime transport and stable diagnostics
     assert.match(download, /NETWORK_HOST_REJECTED|NETWORK_RETRY_EXHAUSTED/);
     assert.match(download, /diagnostics\.error/);
     assert.match(download, /REQUEST_RETRIES/);
+});
+
+test('VirusTotal gate runs after binary fetch and before ZIP records are accepted', async () => {
+    const gate = await read('src/core/66-virustotal-archive-gate.user.js.part');
+    assert.match(gate, /requestArrayBufferWithoutVirusTotal/);
+    assert.match(gate, /scanArchiveEntryWithVirusTotal/);
+    assert.match(gate, /VIRUSTOTAL_FILE_BLOCKED/);
+    assert.match(gate, /originalRequestsStarted:\s*0/);
 });

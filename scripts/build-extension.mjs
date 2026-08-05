@@ -38,13 +38,14 @@ if (/\bGM_(?:xmlhttpRequest|getValue|setValue)\b/.test(contentScript)) {
 
 const matchPatterns = [...new Set(adapters.flatMap(adapter => adapter.matches || []))];
 const downloadHosts = [...new Set(adapters.flatMap(adapter => adapter.connect || []))].sort();
-const hostPermissions = downloadHosts.map(host => `https://${host}/*`);
+const externalHosts = [...new Set(buildManifest.runtimeConnect || [])].sort();
+const permissionHosts = [...new Set([...downloadHosts, ...externalHosts])].sort();
+const hostPermissions = permissionHosts.map(host => `https://${host}/*`);
 const backgroundTemplate = await readText('src/runtimes/extension/background.js.template');
-const backgroundScript = backgroundTemplate.replace(
-    '__ALLOWED_DOWNLOAD_HOSTS__',
-    JSON.stringify(downloadHosts)
-);
-if (backgroundScript.includes('__ALLOWED_DOWNLOAD_HOSTS__')) {
+const backgroundScript = backgroundTemplate
+    .replace('__ALLOWED_DOWNLOAD_HOSTS__', JSON.stringify(downloadHosts))
+    .replace('__ALLOWED_EXTERNAL_HOSTS__', JSON.stringify(externalHosts));
+if (backgroundScript.includes('__ALLOWED_')) {
     throw new Error('Extension background allowlist placeholder was not replaced.');
 }
 
@@ -169,6 +170,7 @@ const packagePath = resolve(
 await writeFile(packagePath, storedZip(Object.entries(files)));
 console.log(
     `Built ${target} extension with ${adapters.length} adapter(s), ` +
-    `${matchPatterns.length} page match(es), and ${downloadHosts.length} download host permission(s).`
+    `${matchPatterns.length} page match(es), ${downloadHosts.length} media host permission(s), ` +
+    `and ${externalHosts.length} optional service host permission(s).`
 );
 console.log(`Package: ${packagePath}`);
