@@ -1,5 +1,17 @@
 # Changelog
 
+## 7.3.1 — 2026-08-05
+
+### Fixed
+
+- Restored vertical scrolling inside the compact Scan, Media, Archive, and Activity tab region.
+- The tab body now receives the remaining panel height while status, navigation, and action controls stay visible.
+- Nested collected-media scrolling remains usable on short browser windows.
+
+### Tests
+
+- Added Chromium and Firefox coverage at a 466 × 824 viewport with long tab content and a multi-row media list.
+
 ## 7.3.0 — 2026-08-05
 
 ### Fixed

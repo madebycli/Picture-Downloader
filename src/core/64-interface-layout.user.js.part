@@ -116,7 +116,14 @@
     const compactStyle = document.createElement('style');
     compactStyle.textContent = `
         #media-archiver-panel .ma-tabs { grid-template-columns: repeat(4, 1fr); }
-        #media-archiver-panel .ma-tab-content { overflow: hidden; }
+        #media-archiver-panel .ma-tab-content {
+            min-height: 0;
+            flex: 1 1 auto;
+            overflow-x: hidden;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable;
+        }
         #media-archiver-panel [data-ma-panel="setup"],
         #media-archiver-panel [data-ma-panel="archive"] { min-height: 0; }
         #media-archiver-panel .ma-advanced-disclosure {
