@@ -15,7 +15,7 @@ const transparentPng = Buffer.from(
     'base64'
 );
 
-function discordFixture() {
+function discordFixture(count = 3) {
     const attachment = (id, filename, timestamp) => `
         <article id="chat-messages-${id}" data-list-item-id="chat-messages___${id}">
             <time id="message-timestamp-${id}" datetime="${timestamp}"></time>
@@ -23,6 +23,12 @@ function discordFixture() {
                 <img src="https://media.discordapp.net/attachments/111/${id}/${filename}?width=640&height=640&ex=fixture&is=fixture&hm=redacted" alt="">
             </a>
         </article>`;
+    const items = Array.from({ length: count }, (_, index) => {
+        const id = String(100000000000000001n + BigInt(index));
+        const filename = `fixture-${String(index + 1).padStart(4, '0')}.${index % 3 === 0 ? 'jpg' : index % 3 === 1 ? 'png' : 'jpeg'}`;
+        const timestamp = new Date(Date.UTC(2026, 7, 5, 8, 0, index)).toISOString();
+        return attachment(id, filename, timestamp);
+    }).join('');
 
     return `<!doctype html>
         <html>
@@ -42,17 +48,13 @@ function discordFixture() {
         </head>
         <body>
             <main>
-                <div data-list-id="chat-messages">
-                    ${attachment('100000000000000001', 'one.jpg', '2026-08-05T08:00:00.000Z')}
-                    ${attachment('100000000000000002', 'two.png', '2026-08-05T08:01:00.000Z')}
-                    ${attachment('100000000000000003', 'three.jpeg', '2026-08-05T08:02:00.000Z')}
-                </div>
+                <div data-list-id="chat-messages">${items}</div>
             </main>
         </body>
         </html>`;
 }
 
-async function openDiscordFixture(page) {
+async function openDiscordFixture(page, { count = 3 } = {}) {
     await page.addInitScript(() => {
         const settings = new Map();
         globalThis.__maOriginalRequests = [];
@@ -89,7 +91,7 @@ async function openDiscordFixture(page) {
     await page.route('https://discord.com/**', route => route.fulfill({
         status: 200,
         contentType: 'text/html',
-        body: discordFixture()
+        body: discordFixture(count)
     }));
     await page.route('https://media.discordapp.net/**', route => route.fulfill({
         status: 200,
@@ -123,19 +125,19 @@ test('Review mode makes no original request before Archive selected', async ({ p
     expect(await page.evaluate(() => globalThis.__maOriginalRequests.length)).toBe(0);
 
     await page.locator('.ma-library-card').nth(1).click();
-    await expect(page.locator('.ma-library-card.ma-selected')).toHaveCount(1);
+    await expect(page.locator('.ma-library-card.ma-selected')).toHaveCount(2);
     await page.locator('#ma-library-close').click();
     await expect(library).toBeHidden();
     expect(await page.evaluate(() => globalThis.__maOriginalRequests.length)).toBe(0);
 
     await page.locator('#ma-zip').click();
     await expect(library).toBeVisible();
-    await expect(page.locator('.ma-library-card.ma-selected')).toHaveCount(1);
+    await expect(page.locator('.ma-library-card.ma-selected')).toHaveCount(2);
 
     await page.locator('#ma-library-archive').click();
     await expect.poll(
         () => page.evaluate(() => globalThis.__maOriginalRequests.length)
-    ).toBe(1);
+    ).toBe(2);
     await expect(page.locator('#ma-phase')).toContainText('FINISHED', {
         timeout: 15_000
     });
@@ -174,6 +176,54 @@ test('Library is keyboard accessible and selection does not rebuild all cards', 
 
     await page.keyboard.press('Escape');
     await expect(page.locator('#ma-library-overlay')).toBeHidden();
+});
+
+test('1,100-item Library stays scrollable, bounded and click-toggleable', async ({ page }) => {
+    test.setTimeout(60_000);
+    await openDiscordFixture(page, { count: 1_100 });
+
+    await page.locator('#ma-review-before').check();
+    await page.locator('#ma-scan-direction').selectOption('current-to-newest');
+    await page.locator('#ma-start').click();
+    await expect(page.locator('#ma-found')).toHaveText('1100', { timeout: 20_000 });
+    await page.locator('#ma-stop').click();
+    await expect(page.locator('#ma-library-overlay')).toBeVisible();
+
+    const items = page.locator('#ma-library-items');
+    const initialCards = await page.locator('.ma-library-card').count();
+    expect(initialCards).toBeGreaterThan(0);
+    expect(initialCards).toBeLessThanOrEqual(240);
+
+    const dimensions = await items.evaluate(element => ({
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        overflowY: getComputedStyle(element).overflowY
+    }));
+    expect(dimensions.clientHeight).toBeGreaterThan(100);
+    expect(dimensions.scrollHeight).toBeGreaterThan(dimensions.clientHeight);
+    expect(dimensions.overflowY).toBe('auto');
+
+    const firstCard = page.locator('.ma-library-card').first();
+    await expect(firstCard).toHaveAttribute('aria-selected', 'true');
+    await firstCard.click();
+    await expect(firstCard).toHaveAttribute('aria-selected', 'false');
+    await firstCard.click();
+    await expect(firstCard).toHaveAttribute('aria-selected', 'true');
+
+    await items.evaluate(element => {
+        element.scrollTop = element.scrollHeight;
+        element.dispatchEvent(new Event('scroll'));
+    });
+    await expect.poll(() => page.locator('.ma-library-card').count()).toBeGreaterThan(initialCards);
+    expect(await page.locator('.ma-library-card').count()).toBeLessThan(1_100);
+
+    await page.locator('#ma-library-close').click();
+    await page.locator('[data-ma-tab="activity"]').click();
+    await page.locator('#ma-developer-logs').click();
+    await expect(page.locator('#ma-developer-overlay')).toBeVisible();
+    const checkboxBox = await page.locator('[data-ma-dev-level]').first().boundingBox();
+    expect(checkboxBox?.width).toBeLessThanOrEqual(18);
+    expect(checkboxBox?.height).toBeLessThanOrEqual(18);
 });
 
 test('Activity remains selectable and diagnostics download sanitized Markdown', async ({ page }) => {
