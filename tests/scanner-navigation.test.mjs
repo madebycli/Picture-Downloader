@@ -49,6 +49,17 @@ test('fast scanning retains duplicate-safe canonical collection and date boundar
     assert.match(boundaries, /scanVisiblePage\(\);\s*await sleep\(120\);\s*scanVisiblePage\(\)/s);
 });
 
+test('enabling a supported date filter chooses the provider preferred fast mode', async () => {
+    const preferences = await read('src/core/64-provider-scan-preferences.user.js.part');
+    const manifest = JSON.parse(await read('src/build-manifest.json'));
+
+    assert.ok(manifest.afterAdapters.includes('src/core/64-provider-scan-preferences.user.js.part'));
+    assert.match(preferences, /activeSiteAdapter\.preferredDateScanMode \|\| activeSiteAdapter\.preferredScanMode/);
+    assert.match(preferences, /dateFilterCheckbox\.checked/);
+    assert.match(preferences, /capabilities\?\.dateFilter !== false/);
+    assert.match(preferences, /scanDirectionSelect\.value = preferred/);
+});
+
 test('adapter expansion runs before downward boundary completion', async () => {
     const boundaries = await read('src/core/31-scanner-boundaries.user.js.part');
     const reddit = await read('src/adapters/reddit-comments/00-config.user.js.part');
