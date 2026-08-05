@@ -1,85 +1,67 @@
 # Architecture
 
-## Runtime model
+## Build model
 
-The ordered files in `src/parts/` are concatenated without transformation into the root userscript. The userscript then runs inside Tampermonkey on Discord channel URLs. It injects a fixed control panel into the page and coordinates four main subsystems:
+`scripts/assemble-userscript.mjs` reads two manifests:
 
-1. DOM scanner
-2. scan/scroll controller
-3. media downloader
-4. ZIP/archive writer
+- `src/build-manifest.json` defines core module order and the generated output.
+- `src/adapters/manifest.json` defines ordered adapter modules, URL matches, and allowed connection hosts.
 
-## Data model
+The build injects adapter-derived Tampermonkey metadata and concatenates the modules without transpilation into `media-archiver.user.js`.
 
-Media entries are stored in a `Map` keyed by a canonical source identity. Each entry includes:
+## Runtime layers
 
-- source URL and preview URL
+### Bootstrap and adapter registry
+
+`00-bootstrap` defines shared constants, state, entry storage, and the adapter registry. Each adapter registers itself. `10-activate-adapter` selects the first adapter whose `matches(location)` method succeeds and stops before UI injection when no adapter supports the page.
+
+### Site adapter
+
+An adapter translates a site's rendered page into the shared model. It owns:
+
+- page matching and terminology
+- media discovery and URL normalization
+- item ID and timestamp extraction
+- scroller and virtual-timeline discovery
+- visible item IDs and date range
+- anchor capture and item restoration
+- archive context
+- runtime download allowlisting
+
+The core must not branch on hostnames or import site selectors.
+
+### Selection
+
+The selection module sorts entries newest-first and applies media-type and inclusive local-date filters. Counters distinguish total discovered, date-eligible, type-excluded, selected, saved, and failed entries.
+
+### Scanner
+
+The scanner operates only through adapter-facing wrappers. It moves a generic virtual timeline in overlapping steps, scans before and after movement, waits at possible boundaries, supports date-boundary early exits, and restores the selected final position.
+
+### Archive
+
+The archive layer downloads with `GM_xmlhttpRequest`, bounded concurrency, retries, and adapter URL validation. It produces numbered ZIP parts and CSV manifests. `fflate` is optional; the built-in ZIP32 STORE writer is mandatory.
+
+### Workflow
+
+The workflow module coordinates scan, stop, review-first, ZIP creation, reset, progress, logs, and counters.
+
+### UI
+
+The UI is a site-neutral panel with a persistent status area, Setup/Media/Activity tabs, and a stable action footer. The active adapter appears only as a context badge. Release notes do not appear in the panel.
+
+## Entry model
+
+Each Map entry contains:
+
+- canonical key
+- download and preview URLs
 - filename and media type
-- source kind and optional source page URL
-- message ID and timestamp
+- adapter-defined source kind and optional source page
+- item ID and timestamp
 - discovery order
-- processing status, error, size, and ZIP part
-
-The Map prevents duplicate downloads when Discord exposes the same media through multiple DOM elements or refreshes a signed URL.
-
-## DOM scanner
-
-The scanner looks for:
-
-- Discord attachment anchors and media elements with `/attachments/` URLs
-- semantic message containers and message timestamp elements
-- external GIF embed contexts with `aria-label="GIF"`, known GIF-page links, and `data-safe-src`
-
-Stable signals are preferred over generated Discord CSS class names.
-
-## Scroll controller
-
-The controller finds the main chat scroller, then moves in overlapping steps. It scans before and after movement. At a possible top or bottom boundary, it waits for Discord to load additional virtualized messages before declaring completion.
-
-The controller also supports:
-
-- current-position starting anchors
-- date-boundary early stopping
-- final viewport restoration or forced newest positioning
-
-## Filtering
-
-Filtering is applied after discovery and before ZIP creation:
-
-- media-type filter
-- date-range filter
-
-Counters intentionally distinguish all discovered media from media inside the date range and media selected for ZIP.
-
-## Download layer
-
-`GM_xmlhttpRequest` fetches ArrayBuffers from allowed Discord CDN/proxy hosts. Requests use bounded parallelism and retries for transient failures.
-
-Native Discord image URLs are normalized from media proxy to CDN and preview parameters are removed. Signed parameters are retained.
-
-## ZIP layer
-
-### Fast path
-
-If an `fflate` UMD global is available, `zipSync(..., { level: 0 })` creates a STORE archive quickly.
-
-### Fallback path
-
-A built-in ZIP32 STORE writer calculates CRC32, writes local headers, central-directory records, and the end record. It yields to the event loop during large CRC calculations to keep Firefox responsive.
-
-Both paths return a Blob with identical archive semantics.
-
-## UI layer
-
-The panel shows:
-
-- state and progress
-- discovery/filter/archive counters
-- type/date/direction/final-position controls
-- media list with status icons
-- live logs
-- start, stop, ZIP-now, reset, and ZIP-redownload actions
+- processing state, error, size, and ZIP part
 
 ## Security boundary
 
-The userscript may fetch only declared Discord CDN/proxy hosts. It does not access Discord authentication storage, internal API endpoints, message composition, or account actions.
+Tampermonkey metadata and runtime URL validation are both generated from or aligned with the adapter manifest. An adapter cannot download from an undeclared host merely by returning a URL.

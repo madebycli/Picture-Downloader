@@ -2,95 +2,71 @@
 
 ## Product statement
 
-Discord Media Archiver is a Tampermonkey userscript for saving large collections of media from a Discord channel or thread without manually downloading each attachment.
+Media Archiver is a Tampermonkey userscript for saving large collections of media from supported web applications without manually downloading each file.
 
-It scans the currently open Discord web interface, identifies eligible media, applies user-selected type and date filters, downloads the source files, and creates numbered ZIP parts with CSV manifests.
+The core is site-neutral. An active adapter discovers rendered media and exposes a virtual timeline to the shared filter, scanner, archive, workflow, and interface modules.
 
-## Primary user workflow
+## Primary workflow
 
-1. Open a Discord channel or thread in the browser.
-2. Choose one or more media categories:
-   - photos and native GIF files
-   - Discord-hosted videos
-   - external GIF previews rendered by Discord
-3. Optionally enable a date range.
-4. Choose scan direction and starting behavior.
-5. Choose the final chat position after the scan and ZIP process.
+1. Open a page supported by an installed adapter.
+2. Choose media categories.
+3. Optionally choose an inclusive local-date range.
+4. Choose scan direction and the final page position.
+5. Choose automatic ZIP creation or review-first mode.
 6. Start scanning.
-7. Review live counters, logs, and per-item states.
-8. Receive one or more ZIP downloads.
+7. Review collected entries in the Media tab and operational messages in Activity.
+8. Receive one or more numbered ZIP parts.
 
-## Media categories
+## Interface model
+
+- **Persistent status:** phase, progress, found, selected, saved, and error counts
+- **Setup:** media categories, date range, scan behavior, and automatic ZIP setting
+- **Media:** detailed counters and per-entry state
+- **Activity:** current-session operational messages
+- **Action footer:** start, stop, create ZIP, and reset
+
+Release history is repository documentation and is not shown in the runtime interface.
+
+## Shared media categories
 
 ### Photo
 
-Native image attachment from a Discord attachment URL. Native `.gif` files belong to this category.
+An image file rendered by the active site. Native `.gif` files remain in this category.
 
 ### Video
 
-Native video attachment from a Discord attachment URL. Common extensions include MP4, WebM, MOV, MKV, AVI, MPEG, OGV, 3GP, FLV, WMV, TS, M2TS, and related formats. A Discord-rendered `<video>` element can classify uncommon attachment extensions as video.
+A rendered video file. Common browser and uploaded-video containers are supported; adapters can also classify uncommon source extensions from semantic video elements.
 
-### External GIF preview
+### Rendered GIF preview
 
-An animated preview that Discord renders for an external GIF-page link. It is detected from the GIF embed context and a Discord `images-ext-*` proxy URL. The downloaded preview is often MP4, not GIF.
-
-## Excluded sources
-
-- YouTube and ordinary external video embeds
-- Arbitrary website media
-- Media that Discord has not rendered in the page
-- Internal Discord API results
-- Content outside the selected date range
-- Disabled media categories
+An animated preview rendered or proxied by the active site for an external GIF-page link. The downloaded file can be MP4 rather than GIF.
 
 ## Date semantics
 
-- The From date begins at local midnight in the browser’s timezone.
+- The From date begins at local midnight in the browser timezone.
 - A specific To date is inclusive through the end of that local day.
-- “Latest available” has no upper date boundary.
-- The exact Discord `time[datetime]` value is preferred.
-- The Discord snowflake timestamp is the fallback.
-- Media with no resolvable message date is excluded when the date filter is enabled.
+- Latest available has no upper boundary.
+- The adapter supplies exact item timestamps and may provide an ID-based fallback.
+- Entries without a resolvable date are excluded while date filtering is enabled.
 
 ## Scan modes
 
-### Newest → oldest
+- End → start
+- Current position → start
+- Current position → end
+- Full timeline: current → start → end
 
-Jump to the newest loaded message, then scan toward older messages. Best for “from a date through latest.”
+Virtualized timelines require delayed boundary confirmation. Scroll position alone is not proof that the true start or end has been reached.
 
-### Current → oldest
-
-Begin at the current viewport and scan upward.
-
-### Current → newest
-
-Begin at the current viewport and scan downward.
-
-### Full channel: current → oldest → newest
-
-Scan from the current position to the old boundary, then scan downward to the new boundary. This is the safest mode when starting in the middle of a date range.
-
-## Completion and boundary rules
-
-Discord’s message list is virtualized. Reaching scroll position zero or the current scroll height is not enough to prove the true boundary. The script waits for delayed DOM changes and retries before confirming the oldest or newest boundary.
-
-A selected date boundary can stop the scan earlier than the physical channel boundary once the entire visible viewport has passed outside the selected date range.
-
-## ZIP behavior
+## Archive behavior
 
 - Entries are ordered newest to oldest.
-- Filenames are six-digit sequence numbers plus the true extension.
-- Numbering continues across ZIP parts.
-- ZIP parts are divided by file count and byte size.
-- `fflate` with level 0 is the fast path.
-- The built-in ZIP32 STORE writer is the offline/Firefox fallback.
-- The built-in writer must not be removed unless replaced with another dependency-free fallback.
+- Filenames use continuous sequence numbers plus true extensions.
+- ZIP parts split by item count and byte size.
+- Each part contains `manifest_part.csv`.
+- `fflate` STORE mode is the fast path.
+- A built-in ZIP32 STORE writer is the required fallback.
 
-## Current constraints
+## Current adapter
 
-- The whole userscript is assembled from ordered source parts without transpilation.
-- Discord DOM changes may break selectors.
-- Large videos can exhaust browser memory.
-- Signed Discord URLs expire; fresh URLs are captured whenever the DOM exposes them.
-- External GIF preview availability depends on Discord rendering the preview.
-- ZIP32 imposes per-file and per-part limits below 4 GiB.
+The Discord adapter supports channels and threads, attachment media, and rendered external GIF previews. Its selectors, hosts, snowflake timestamps, and archive context live entirely in `src/adapters/discord/` and `src/adapters/manifest.json`.

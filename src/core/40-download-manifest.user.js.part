@@ -1,0 +1,311 @@
+    function abortActiveRequests() {
+        for (const request of activeRequests) {
+            try {
+                request.abort();
+            } catch {
+                // Ignore already-finished requests.
+            }
+        }
+        activeRequests.clear();
+    }
+
+    function requestArrayBuffer(url, attempt = 1) {
+        return new Promise((resolve, reject) => {
+            if (!activeSiteAdapter.isDownloadUrlAllowed(url)) {
+                reject(new Error('The active site adapter blocked this download URL.'));
+                return;
+            }
+
+            if (stopRequested) {
+                reject(new Error('Stopped by user'));
+                return;
+            }
+
+            let requestHandle;
+
+            requestHandle = GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                responseType: 'arraybuffer',
+                timeout: 120000,
+                anonymous: true,
+                headers: {
+                    'Accept': 'video/*,image/*,*/*;q=0.8'
+                },
+                onload: async response => {
+                    activeRequests.delete(requestHandle);
+
+                    if (
+                        response.status >= 200 &&
+                        response.status < 300 &&
+                        response.response
+                    ) {
+                        resolve(response.response);
+                        return;
+                    }
+
+                    const retryable =
+                        response.status === 429 ||
+                        response.status >= 500 ||
+                        response.status === 0;
+
+                    if (
+                        retryable &&
+                        attempt < REQUEST_RETRIES &&
+                        !stopRequested
+                    ) {
+                        await sleep(700 * attempt);
+                        try {
+                            resolve(await requestArrayBuffer(url, attempt + 1));
+                        } catch (error) {
+                            reject(error);
+                        }
+                        return;
+                    }
+
+                    reject(new Error(`HTTP ${response.status || 'unknown'}`));
+                },
+                onerror: async () => {
+                    activeRequests.delete(requestHandle);
+
+                    if (attempt < REQUEST_RETRIES && !stopRequested) {
+                        await sleep(700 * attempt);
+                        try {
+                            resolve(await requestArrayBuffer(url, attempt + 1));
+                        } catch (error) {
+                            reject(error);
+                        }
+                        return;
+                    }
+
+                    reject(new Error('Network error'));
+                },
+                ontimeout: async () => {
+                    activeRequests.delete(requestHandle);
+
+                    if (attempt < REQUEST_RETRIES && !stopRequested) {
+                        try {
+                            resolve(await requestArrayBuffer(url, attempt + 1));
+                        } catch (error) {
+                            reject(error);
+                        }
+                        return;
+                    }
+
+                    reject(new Error('Request timed out'));
+                }
+            });
+
+            activeRequests.add(requestHandle);
+        });
+    }
+
+    async function runWorkerPool(items, concurrency, worker) {
+        let cursor = 0;
+
+        async function runner() {
+            while (!stopRequested) {
+                const current = cursor++;
+                if (current >= items.length) return;
+                await worker(items[current], current);
+            }
+        }
+
+        await Promise.all(
+            Array.from(
+                { length: Math.min(concurrency, items.length) },
+                () => runner()
+            )
+        );
+    }
+
+    function uniqueArchiveName(index, entry, digits) {
+        const width = Math.max(6, digits);
+        const prefix = String(index + 1).padStart(width, '0');
+        let extension = extensionFromPath(new URL(entry.url, location.href).pathname);
+
+        if (!MEDIA_EXTENSIONS.has(extension)) {
+            extension = extensionFromPath(`/${entry.filename}`);
+        }
+
+        if (!MEDIA_EXTENSIONS.has(extension)) {
+            extension =
+                entry.mediaType === 'video' ||
+                entry.mediaType === 'external-gif'
+                    ? '.mp4'
+                    : '.jpg';
+        }
+
+        return `${prefix}${extension}`;
+    }
+
+    function csvCell(value) {
+        const text = String(value ?? '');
+        return `"${text.replace(/"/g, '""')}"`;
+    }
+
+    function buildManifest(entries, archiveNames) {
+        const rows = [
+            [
+                'order_newest_to_oldest',
+                'archive_filename',
+                'original_filename',
+                'media_type',
+                'source_kind',
+                'source_page_url',
+                'item_id',
+                'timestamp',
+                'status',
+                'size_bytes',
+                'source_url'
+            ].map(csvCell).join(',')
+        ];
+
+        entries.forEach((entry, index) => {
+            rows.push([
+                index + 1,
+                archiveNames.get(entry.key) || '',
+                entry.filename,
+                entry.mediaType,
+                entry.sourceKind || '',
+                entry.sourcePageUrl || '',
+                entry.itemId || '',
+                entry.timestamp || '',
+                entry.status,
+                entry.size || 0,
+                entry.url
+            ].map(csvCell).join(','));
+        });
+
+        return '\uFEFF' + rows.join('\r\n');
+    }
+
+    function splitRecordsBySize(records, maximumBytes) {
+        const groups = [];
+        let current = [];
+        let currentBytes = 0;
+
+        for (const record of records) {
+            const bytes = record.data.byteLength;
+
+            if (current.length && currentBytes + bytes > maximumBytes) {
+                groups.push(current);
+                current = [];
+                currentBytes = 0;
+            }
+
+            current.push(record);
+            currentBytes += bytes;
+        }
+
+        if (current.length) groups.push(current);
+        return groups;
+    }
+
+    function buildPartManifest(records, archiveNames, partNumber) {
+        const rows = [[
+            'order_newest_to_oldest',
+            'zip_part',
+            'archive_filename',
+            'original_filename',
+            'media_type',
+            'source_kind',
+            'source_page_url',
+            'item_id',
+            'timestamp',
+            'size_bytes',
+            'source_url'
+        ].map(csvCell).join(',')];
+
+        for (const record of records) {
+            const entry = record.entry;
+            rows.push([
+                record.globalIndex + 1,
+                partNumber,
+                archiveNames.get(entry.key) || '',
+                entry.filename,
+                entry.mediaType,
+                entry.sourceKind || '',
+                entry.sourcePageUrl || '',
+                entry.itemId || '',
+                entry.timestamp || '',
+                entry.size || 0,
+                entry.url
+            ].map(csvCell).join(','));
+        }
+
+        return '\uFEFF' + rows.join('\r\n');
+    }
+
+    function resolveFflateLibrary() {
+        const candidates = [];
+
+        // On Firefox/Tampermonkey, an @require UMD global can exist in the
+        // userscript scope without appearing as globalThis.fflate.
+        try {
+            if (typeof fflate !== 'undefined') {
+                candidates.push(fflate);
+            }
+        } catch {
+            // Ignore unavailable lexical global.
+        }
+
+        try {
+            candidates.push(globalThis?.fflate);
+        } catch {
+            // Ignore.
+        }
+
+        try {
+            candidates.push(window?.fflate);
+        } catch {
+            // Ignore.
+        }
+
+        try {
+            if (typeof unsafeWindow !== 'undefined') {
+                candidates.push(unsafeWindow?.fflate);
+            }
+        } catch {
+            // Ignore.
+        }
+
+        return candidates.find(candidate =>
+            candidate &&
+            typeof candidate.zipSync === 'function' &&
+            typeof candidate.strToU8 === 'function'
+        ) || null;
+    }
+
+    function encodeUtf8(value) {
+        const library = resolveFflateLibrary();
+
+        if (library) {
+            return library.strToU8(String(value));
+        }
+
+        return new TextEncoder().encode(String(value));
+    }
+
+    // Built-in ZIP32 STORE writer. This is used only when the optional
+    // external fflate library is unavailable. Media files are already
+    // compressed, so storing them without DEFLATE is appropriate and avoids
+    // depending on a CDN.
+    const FALLBACK_CRC32_TABLE = (() => {
+        const table = new Uint32Array(256);
+
+        for (let index = 0; index < 256; index++) {
+            let value = index;
+
+            for (let bit = 0; bit < 8; bit++) {
+                value = (value & 1)
+                    ? (0xEDB88320 ^ (value >>> 1))
+                    : (value >>> 1);
+            }
+
+            table[index] = value >>> 0;
+        }
+
+        return table;
+    })();
+

@@ -1,35 +1,32 @@
 # Contributing
 
-## Before changing code
-
-Read:
-
-- `AGENTS.md`
-- `docs/PROJECT_CONTEXT.md`
-- `docs/ARCHITECTURE.md`
-- `docs/DECISIONS.md`
-
 ## Development workflow
 
 1. Create a focused branch.
-2. Edit the ordered source files in `src/parts/`.
-3. Run `npm run build` to regenerate `discord-media-archiver.user.js`.
-4. Update documentation for behavior changes.
-5. Update both version declarations for a release.
-6. Run `npm test`.
-7. Manually test Firefox and Chromium.
-8. Open a pull request using the repository template.
+2. Edit site-neutral behavior in `src/core/` or site behavior in `src/adapters/`.
+3. Update `src/adapters/manifest.json` when adapter matches, modules, or download hosts change.
+4. Run `npm test` to regenerate and validate `media-archiver.user.js`.
+5. Test the affected browser, adapter, media types, scan modes, and ZIP path.
+6. Open a pull request using the repository template.
 
-## Pull-request expectations
+## Adding a site adapter
 
-Describe:
+Follow [`docs/ADAPTERS.md`](./docs/ADAPTERS.md). A new adapter must provide the full adapter contract, explicit metadata permissions, tests, and documentation. Site-specific selectors and URL normalization must remain outside `src/core/`.
 
-- the observed problem
-- the exact Discord DOM or URL pattern involved
-- browsers tested
-- media types tested
-- scan mode and date-range behavior tested
-- ZIP engine tested
-- memory or performance impact
+## Bug reports
 
-Do not submit code that extracts user tokens, calls internal authenticated Discord endpoints, sends account actions, or scrapes arbitrary external websites.
+Include:
+
+- userscript version
+- active site adapter
+- browser and Tampermonkey version
+- relevant page type
+- media filters, date range, scan direction, and final position
+- relevant Activity-tab messages
+- exact DOM or URL pattern when safe to share
+
+Remove personal content, signed private URLs, cookies, and credentials.
+
+## Safety
+
+Do not submit code that extracts credentials, calls authenticated internal APIs, performs account actions, or scrapes arbitrary linked websites. Download hosts must be minimal, explicit, and adapter-owned.

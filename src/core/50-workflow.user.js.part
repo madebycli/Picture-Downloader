@@ -1,0 +1,406 @@
+    async function startAutomaticWorkflow() {
+        if (running) return;
+
+        resetCollection();
+        stopRequested = false;
+        running = true;
+        scanning = true;
+        packing = false;
+        updateButtons();
+
+        const scanMode = scanDirectionSelect.value;
+        const dateRange = getDateRangeConfig();
+
+        if (!dateRange.valid) {
+            running = false;
+            scanning = false;
+            setPhase('DATE RANGE ERROR');
+            addLog(dateRange.error, 'error');
+            updateButtons();
+            return;
+        }
+
+        lastScanBoundaryReason = '';
+        setPhase('STARTING');
+        addLog(
+            `Scan started on ${activeSiteAdapter.label}. Mode: ` +
+            `${scanModeDescription(scanMode)}.`
+        );
+
+        if (dateRange.enabled) {
+            addLog(
+                `Date range: ${dateRange.label}. Calendar days use your browser's local time zone.`
+            );
+        }
+
+        await sleep(300);
+
+        const scroller = findTimelineScroller();
+        if (!scroller) {
+            running = false;
+            scanning = false;
+            setPhase('ERROR');
+            addLog(
+                `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found. ${activeSiteAdapter.openTargetHelp || ''}`.trim(),
+                'error'
+            );
+            updateButtons();
+            return;
+        }
+
+        // Capture media and an item anchor at the selected starting position.
+        scanVisiblePage();
+        const startingAnchor = captureStartingAnchor(scroller);
+
+        let reachedBoundary = false;
+        let completedBoundaryLabel = '';
+
+        if (scanMode === 'newest-to-oldest') {
+            await moveToNewest(scroller);
+
+            if (stopRequested) {
+                finishStoppedScan();
+                return;
+            }
+
+            reachedBoundary = await autoScrollToOldest(scroller);
+            completedBoundaryLabel = scanBoundaryDescription(
+                lastScanBoundaryReason
+            );
+        } else if (scanMode === 'current-to-oldest') {
+            reachedBoundary = await autoScrollToOldest(scroller);
+            completedBoundaryLabel = scanBoundaryDescription(
+                lastScanBoundaryReason
+            );
+        } else if (scanMode === 'current-to-newest') {
+            reachedBoundary = await autoScrollToNewest(scroller);
+            completedBoundaryLabel = scanBoundaryDescription(
+                lastScanBoundaryReason
+            );
+        } else if (scanMode === 'full-finish-down') {
+            addLog(
+                'Full downward-finish mode: first scanning from the current position to the timeline start.'
+            );
+
+            const reachedTop = await autoScrollToOldest(scroller);
+
+            if (stopRequested) {
+                finishStoppedScan();
+                return;
+            }
+
+            if (reachedTop) {
+                addLog(
+                    `${scanBoundaryDescription(lastScanBoundaryReason)} confirmed. ` +
+                    'Now scanning downward toward the selected end boundary.',
+                    'success'
+                );
+
+                lastScanBoundaryReason = '';
+                reachedBoundary = await autoScrollToNewest(scroller);
+                completedBoundaryLabel = scanBoundaryDescription(
+                    lastScanBoundaryReason
+                );
+            } else {
+                reachedBoundary = false;
+                completedBoundaryLabel = 'timeline-start boundary';
+                addLog(
+                    'The first scan did not confirm the timeline-start boundary, so the downward full-channel pass was not started.',
+                    'warn'
+                );
+            }
+        }
+
+        scanning = false;
+
+        if (stopRequested) {
+            finishStoppedScan();
+            return;
+        }
+
+        running = false;
+        updateCounters();
+        updateButtons();
+
+        if (reachedBoundary) {
+            setPhase(`SCAN FINISHED: ${mediaEntries.size} media files`);
+            addLog(
+                `Scan completed at the ${completedBoundaryLabel}: ` +
+                `${mediaEntries.size} unique media files found.`,
+                'success'
+            );
+        } else {
+            setPhase(`SCAN ENDED: ${mediaEntries.size} media files`);
+            addLog(
+                'The scan stopped at the safety iteration limit or could not confirm the selected boundary.',
+                'warn'
+            );
+        }
+
+        const statsAfterScan = selectionStatistics();
+        addLog(
+            `Selection summary: ${statsAfterScan.total} total found, ` +
+            `${statsAfterScan.inDateRange} in the date range, ` +
+            `${statsAfterScan.excludedByDate} excluded by date, ` +
+            `${statsAfterScan.excludedByType} excluded by media type, ` +
+            `${statsAfterScan.selected} selected for ZIP.`
+        );
+
+        const selectedAfterScan = selectedMediaEntries();
+        const createdZip =
+            selectedAfterScan.length > 0 &&
+            autoZipCheckbox.checked;
+
+        if (createdZip) {
+            await createAndDownloadZipParts();
+        }
+
+        if (!stopRequested) {
+            await applyFinalTimelinePosition(
+                scroller,
+                finalPositionSelect.value,
+                startingAnchor
+            );
+
+            setPhase(
+                createdZip
+                    ? 'FINISHED'
+                    : `SCAN FINISHED: ${mediaEntries.size} media files`
+            );
+        }
+    }
+
+    function finishStoppedScan() {
+        scanning = false;
+        running = false;
+        setPhase(`STOPPED: ${mediaEntries.size} media files collected`);
+        addLog(
+            'Scrolling stopped. Use “CREATE ZIP NOW” to save the media found so far.',
+            'warn'
+        );
+        updateButtons();
+    }
+
+    function requestStop() {
+        if (!running && !packing && !scanning) return;
+
+        stopRequested = true;
+        abortActiveRequests();
+        setPhase('STOPPING …');
+        addLog('Stop requested.', 'warn');
+        updateButtons();
+    }
+
+    function resetEntryStatuses() {
+        for (const entry of mediaEntries.values()) {
+            entry.status = STATUS.COLLECTED;
+            entry.error = '';
+            entry.size = 0;
+        }
+        scheduleRender();
+    }
+
+    function resetCollection() {
+        if (running || packing || scanning) return;
+
+        mediaEntries.clear();
+        firstSeenCounter = 0;
+        progressFill.style.width = '0%';
+        mediaList.replaceChildren();
+        updateCounters();
+        setPhase('READY');
+    }
+
+
+    function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        const power = Math.min(
+            Math.floor(Math.log(bytes) / Math.log(1024)),
+            units.length - 1
+        );
+        return `${(bytes / (1024 ** power)).toFixed(power ? 1 : 0)} ${units[power]}`;
+    }
+
+    function statusIcon(entry) {
+        if (!isEntryIncluded(entry) && entry.status === STATUS.COLLECTED) {
+            return ['–', entrySkipReason(entry), 'skipped'];
+        }
+
+        switch (entry.status) {
+            case STATUS.FETCHING:
+                return ['…', 'Downloading original', 'fetching'];
+            case STATUS.PACKED:
+                return ['✓', 'Saved in ZIP', 'packed'];
+            case STATUS.ERROR:
+                return ['!', entry.error || 'Error', 'error'];
+            default:
+                return ['○', 'Collected', 'collected'];
+        }
+    }
+
+    function scheduleRender() {
+        clearTimeout(renderTimer);
+        renderTimer = setTimeout(renderMediaList, 120);
+    }
+
+    function renderMediaList() {
+        const entries = sortedMediaEntries();
+        const fragment = document.createDocumentFragment();
+
+        entries.forEach((entry, index) => {
+            const row = document.createElement('div');
+            row.className = `ma-row ma-${entry.status}`;
+            if (!isEntryIncluded(entry)) row.classList.add('ma-skipped');
+
+            let thumbnail;
+
+            if (
+                entry.mediaType === 'video' ||
+                entry.mediaType === 'external-gif'
+            ) {
+                thumbnail = document.createElement('div');
+                thumbnail.className = 'ma-thumb ma-video-thumb';
+                thumbnail.textContent =
+                    entry.mediaType === 'external-gif'
+                        ? 'GIF'
+                        : '▶';
+                thumbnail.title =
+                    entry.mediaType === 'external-gif'
+                        ? 'External GIF preview (usually MP4)'
+                        : 'Video attachment';
+            } else {
+                thumbnail = document.createElement('img');
+                thumbnail.className = 'ma-thumb';
+                thumbnail.loading = 'lazy';
+                thumbnail.referrerPolicy = 'no-referrer';
+                thumbnail.src = entry.previewUrl;
+                thumbnail.alt = '';
+            }
+
+            const details = document.createElement('div');
+            details.className = 'ma-details';
+
+            const name = document.createElement('div');
+            name.className = 'ma-name';
+            name.textContent =
+                `${String(index + 1).padStart(4, '0')} · ${entry.filename}`;
+            name.title = entry.filename;
+
+            const meta = document.createElement('div');
+            meta.className = 'ma-meta';
+            meta.textContent = [
+                entry.mediaType === 'external-gif'
+                    ? 'EXTERNAL GIF PREVIEW'
+                    : entry.mediaType.toUpperCase(),
+                entry.timestamp
+                    ? new Date(entry.timestamp).toLocaleString('en-GB')
+                    : 'Time unknown',
+                entry.size ? formatBytes(entry.size) : '',
+                entry.itemId ? `ID ${entry.itemId}` : ''
+            ].filter(Boolean).join(' · ');
+
+            details.append(name, meta);
+
+            const [symbol, title, className] = statusIcon(entry);
+            const status = document.createElement('div');
+            status.className = `ma-check ma-check-${className}`;
+            status.textContent = symbol;
+            status.title = title;
+
+            row.append(thumbnail, details, status);
+            fragment.appendChild(row);
+        });
+
+        mediaList.replaceChildren(fragment);
+        updateCounters();
+    }
+
+    function addLog(message, type = 'info') {
+        const line = document.createElement('div');
+        line.className = `ma-log-line ma-log-${type}`;
+
+        const time = new Date().toLocaleTimeString('en-GB');
+        line.textContent = `[${time}] ${message}`;
+
+        logArea.appendChild(line);
+        while (logArea.childElementCount > 250) {
+            logArea.firstElementChild?.remove();
+        }
+        logArea.scrollTop = logArea.scrollHeight;
+    }
+
+    function setPhase(value) {
+        phaseElement.textContent = value;
+    }
+
+    function updateCounters() {
+        let packedCount = 0;
+        let errorCount = 0;
+
+        for (const entry of mediaEntries.values()) {
+            if (entry.status === STATUS.PACKED) packedCount++;
+            if (entry.status === STATUS.ERROR) errorCount++;
+        }
+
+        const counts = countMediaTypes();
+        const stats = selectionStatistics();
+
+        foundElement.textContent = String(stats.total);
+        photoCountElement.textContent = String(counts.photos);
+        videoCountElement.textContent = String(counts.videos);
+        externalGifCountElement.textContent =
+            String(counts.externalGifs);
+        inRangeElement.textContent =
+            String(stats.inDateRange);
+        excludedDateElement.textContent =
+            String(stats.excludedByDate);
+        selectedCountElement.textContent =
+            String(stats.selected);
+        selectedSummaryElement.textContent = `${stats.selected} selected`;
+        mediaTabCount.textContent = String(stats.total);
+        packedElement.textContent = String(packedCount);
+        errorElement.textContent = String(errorCount);
+        updateButtons();
+    }
+
+    function updateButtons() {
+        const selectedCount = selectedMediaEntries().length;
+        const busy = running || packing || scanning;
+
+        const dateRange = getDateRangeConfig();
+
+        startButton.textContent = autoZipCheckbox.checked
+            ? 'Scan & create ZIPs'
+            : 'Scan media';
+
+        startButton.disabled =
+            busy ||
+            (
+                !photoCheckbox.checked &&
+                !videoCheckbox.checked &&
+                !externalGifCheckbox.checked
+            ) ||
+            !dateRange.valid;
+        stopButton.disabled = !busy;
+        zipButton.disabled =
+            busy ||
+            selectedCount === 0 ||
+            !dateRange.valid;
+        resetButton.disabled = busy;
+        autoZipCheckbox.disabled = busy;
+        photoCheckbox.disabled = busy;
+        videoCheckbox.disabled = busy;
+        externalGifCheckbox.disabled = busy;
+        scanDirectionSelect.disabled = busy;
+        finalPositionSelect.disabled = busy;
+        dateFilterCheckbox.disabled = busy;
+        fromDateInput.disabled = busy || !dateFilterCheckbox.checked;
+        dateEndModeSelect.disabled = busy || !dateFilterCheckbox.checked;
+        toDateInput.disabled =
+            busy ||
+            !dateFilterCheckbox.checked ||
+            dateEndModeSelect.value !== 'specific';
+    }
+
+

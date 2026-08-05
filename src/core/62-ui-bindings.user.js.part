@@ -1,0 +1,137 @@
+    document.head.appendChild(style);
+    document.body.appendChild(panel);
+
+    const phaseElement = panel.querySelector('#ma-phase');
+    const progressFill = panel.querySelector('#ma-progress-fill');
+    const foundElement = panel.querySelector('#ma-found');
+    const photoCountElement = panel.querySelector('#ma-photo-count');
+    const videoCountElement = panel.querySelector('#ma-video-count');
+    const externalGifCountElement = panel.querySelector('#ma-external-gif-count');
+    const inRangeElement = panel.querySelector('#ma-in-range');
+    const excludedDateElement = panel.querySelector('#ma-excluded-date');
+    const selectedCountElement = panel.querySelector('#ma-selected-count');
+    const selectedSummaryElement = panel.querySelector('#ma-selected-summary');
+    const packedElement = panel.querySelector('#ma-packed');
+    const errorElement = panel.querySelector('#ma-errors');
+    const mediaTabCount = panel.querySelector('#ma-media-tab-count');
+    const mediaList = panel.querySelector('#ma-media-list');
+    const logArea = panel.querySelector('#ma-log');
+    const startButton = panel.querySelector('#ma-start');
+    const stopButton = panel.querySelector('#ma-stop');
+    const zipButton = panel.querySelector('#ma-zip');
+    const resetButton = panel.querySelector('#ma-reset');
+    const autoZipCheckbox = panel.querySelector('#ma-auto-zip');
+    const photoCheckbox = panel.querySelector('#ma-include-photos');
+    const videoCheckbox = panel.querySelector('#ma-include-videos');
+    const externalGifCheckbox = panel.querySelector('#ma-include-external-gifs');
+    const scanDirectionSelect = panel.querySelector('#ma-scan-direction');
+    const finalPositionSelect = panel.querySelector('#ma-final-position');
+    const dateFilterCheckbox = panel.querySelector('#ma-date-filter');
+    const dateFields = panel.querySelector('#ma-date-fields');
+    const fromDateInput = panel.querySelector('#ma-from-date');
+    const dateEndModeSelect = panel.querySelector('#ma-date-end-mode');
+    const toDateWrap = panel.querySelector('#ma-to-date-wrap');
+    const toDateInput = panel.querySelector('#ma-to-date');
+    const dateSummaryElement = panel.querySelector('#ma-date-summary');
+    const collapseButton = panel.querySelector('#ma-collapse');
+    const clearLogButton = panel.querySelector('#ma-clear-log');
+    const tabButtons = [...panel.querySelectorAll('[data-ma-tab]')];
+    const tabPanels = [...panel.querySelectorAll('[data-ma-panel]')];
+
+    function selectInterfaceTab(tabName) {
+        for (const button of tabButtons) {
+            const selected = button.dataset.maTab === tabName;
+            button.setAttribute('aria-selected', String(selected));
+        }
+
+        for (const tabPanel of tabPanels) {
+            tabPanel.hidden = tabPanel.dataset.maPanel !== tabName;
+        }
+    }
+
+    function refreshDateControls() {
+        const enabled = dateFilterCheckbox.checked;
+        const specificEnd = enabled && dateEndModeSelect.value === 'specific';
+
+        dateFields.classList.toggle('ma-disabled', !enabled);
+        toDateWrap.hidden = !specificEnd;
+
+        const range = getDateRangeConfig();
+        dateSummaryElement.classList.toggle('ma-date-error', !range.valid);
+        dateSummaryElement.textContent = !enabled
+            ? 'All scanned dates are included.'
+            : range.valid
+                ? `Inclusive range: ${range.label}`
+                : range.error;
+
+        scheduleRender();
+        updateCounters();
+    }
+
+    for (const button of tabButtons) {
+        button.addEventListener('click', () => {
+            selectInterfaceTab(button.dataset.maTab);
+        });
+    }
+
+    startButton.addEventListener('click', startAutomaticWorkflow);
+    stopButton.addEventListener('click', requestStop);
+    zipButton.addEventListener('click', createAndDownloadZipParts);
+    autoZipCheckbox.addEventListener('change', updateButtons);
+
+    for (const checkbox of [
+        photoCheckbox,
+        videoCheckbox,
+        externalGifCheckbox
+    ]) {
+        checkbox.addEventListener('change', () => {
+            scheduleRender();
+            updateCounters();
+        });
+    }
+
+    scanDirectionSelect.addEventListener('change', () => {
+        addLog(`Scan mode selected: ${scanModeDescription(scanDirectionSelect.value)}.`);
+    });
+    finalPositionSelect.addEventListener('change', () => {
+        addLog(`Final position: ${finalPositionDescription(finalPositionSelect.value)}.`);
+    });
+    dateFilterCheckbox.addEventListener('change', refreshDateControls);
+    fromDateInput.addEventListener('change', refreshDateControls);
+    dateEndModeSelect.addEventListener('change', refreshDateControls);
+    toDateInput.addEventListener('change', refreshDateControls);
+
+    resetButton.addEventListener('click', () => {
+        resetCollection();
+        logArea.replaceChildren();
+        addLog('Collection reset.');
+    });
+    clearLogButton.addEventListener('click', () => {
+        logArea.replaceChildren();
+    });
+    collapseButton.addEventListener('click', () => {
+        const collapsed = panel.classList.toggle('ma-collapsed');
+        collapseButton.textContent = collapsed ? '+' : '−';
+        collapseButton.title = collapsed ? 'Expand panel' : 'Collapse panel';
+        collapseButton.setAttribute(
+            'aria-label',
+            collapsed ? 'Expand panel' : 'Collapse panel'
+        );
+    });
+
+    window.addEventListener('beforeunload', abortActiveRequests);
+
+    const today = new Date();
+    const thirtyDaysAgo = new Date(today);
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    fromDateInput.value = localDateInputValue(thirtyDaysAgo);
+    toDateInput.value = localDateInputValue(today);
+    dateEndModeSelect.value = 'latest';
+
+    addLog(
+        `Ready on ${activeSiteAdapter.label}. Configure the scan, then start.`
+    );
+    selectInterfaceTab('setup');
+    refreshDateControls();
+})();

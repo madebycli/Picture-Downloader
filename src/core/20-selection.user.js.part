@@ -1,0 +1,321 @@
+    function compareEntriesNewestFirst(a, b) {
+        if (a.itemId && b.itemId) {
+            const comparison = compareItemIds(a.itemId, b.itemId);
+            if (comparison > 0) return -1;
+            if (comparison < 0) return 1;
+        }
+
+        if (a.timestamp && b.timestamp) {
+            const timeDifference =
+                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+            if (timeDifference) return timeDifference;
+        }
+
+        if (a.itemId && !b.itemId) return -1;
+        if (!a.itemId && b.itemId) return 1;
+        return a.firstSeen - b.firstSeen;
+    }
+
+    function sortedMediaEntries() {
+        return [...mediaEntries.values()].sort(compareEntriesNewestFirst);
+    }
+
+    function localDateInputValue(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    function localDayStartMilliseconds(value) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return NaN;
+
+        const [year, month, day] = value.split('-').map(Number);
+        const date = new Date(year, month - 1, day, 0, 0, 0, 0);
+
+        if (
+            date.getFullYear() !== year ||
+            date.getMonth() !== month - 1 ||
+            date.getDate() !== day
+        ) {
+            return NaN;
+        }
+
+        return date.getTime();
+    }
+
+    function getDateRangeConfig() {
+        const enabled = Boolean(dateFilterCheckbox?.checked);
+
+        if (!enabled) {
+            return {
+                enabled: false,
+                valid: true,
+                startMs: Number.NEGATIVE_INFINITY,
+                endExclusiveMs: Number.POSITIVE_INFINITY,
+                startValue: '',
+                endValue: '',
+                endMode: 'latest',
+                label: 'All dates'
+            };
+        }
+
+        const startValue = fromDateInput?.value || '';
+        const endMode = dateEndModeSelect?.value || 'latest';
+        const endValue = toDateInput?.value || '';
+        const startMs = localDayStartMilliseconds(startValue);
+
+        if (!Number.isFinite(startMs)) {
+            return {
+                enabled: true,
+                valid: false,
+                error: 'Choose a valid From date.'
+            };
+        }
+
+        let endExclusiveMs = Number.POSITIVE_INFINITY;
+
+        if (endMode === 'specific') {
+            const endStartMs = localDayStartMilliseconds(endValue);
+
+            if (!Number.isFinite(endStartMs)) {
+                return {
+                    enabled: true,
+                    valid: false,
+                    error: 'Choose a valid To date.'
+                };
+            }
+
+            if (endStartMs < startMs) {
+                return {
+                    enabled: true,
+                    valid: false,
+                    error: 'The To date cannot be earlier than the From date.'
+                };
+            }
+
+            const endDate = new Date(endStartMs);
+            endDate.setDate(endDate.getDate() + 1);
+            endExclusiveMs = endDate.getTime();
+        }
+
+        return {
+            enabled: true,
+            valid: true,
+            startMs,
+            endExclusiveMs,
+            startValue,
+            endValue,
+            endMode,
+            label: endMode === 'specific'
+                ? `${startValue} through ${endValue}`
+                : `${startValue} through latest available`
+        };
+    }
+
+    function entryTimestampMilliseconds(entry) {
+        const parsed = Date.parse(entry.timestamp || '');
+        if (Number.isFinite(parsed)) return parsed;
+
+        const fallback = timestampFromItemId(entry.itemId);
+        const fallbackParsed = Date.parse(fallback || '');
+        return Number.isFinite(fallbackParsed) ? fallbackParsed : NaN;
+    }
+
+    function isEntryInsideDateRange(entry) {
+        const range = getDateRangeConfig();
+        if (!range.enabled) return true;
+        if (!range.valid) return false;
+
+        const timestamp = entryTimestampMilliseconds(entry);
+        if (!Number.isFinite(timestamp)) return false;
+
+        return (
+            timestamp >= range.startMs &&
+            timestamp < range.endExclusiveMs
+        );
+    }
+
+    function mediaTypeIsEnabled(entry) {
+        if (entry.mediaType === 'video') {
+            return Boolean(videoCheckbox?.checked);
+        }
+
+        if (entry.mediaType === 'external-gif') {
+            return Boolean(externalGifCheckbox?.checked);
+        }
+
+        return Boolean(photoCheckbox?.checked);
+    }
+
+    function isEntryIncluded(entry) {
+        return (
+            mediaTypeIsEnabled(entry) &&
+            isEntryInsideDateRange(entry)
+        );
+    }
+
+    function entrySkipReason(entry) {
+        if (!mediaTypeIsEnabled(entry)) {
+            return 'Skipped by media-type filter';
+        }
+
+        if (!isEntryInsideDateRange(entry)) {
+            return Number.isFinite(entryTimestampMilliseconds(entry))
+                ? 'Skipped by date-range filter'
+                : 'Skipped because its source date is unknown';
+        }
+
+        return '';
+    }
+
+    function selectedMediaEntries() {
+        return sortedMediaEntries().filter(isEntryIncluded);
+    }
+
+    function selectionStatistics() {
+        let inDateRange = 0;
+        let excludedByDate = 0;
+        let excludedByType = 0;
+        let selected = 0;
+
+        for (const entry of mediaEntries.values()) {
+            const insideDate = isEntryInsideDateRange(entry);
+            const typeEnabled = mediaTypeIsEnabled(entry);
+
+            if (insideDate) inDateRange++;
+            else excludedByDate++;
+
+            if (insideDate && !typeEnabled) excludedByType++;
+            if (insideDate && typeEnabled) selected++;
+        }
+
+        return {
+            total: mediaEntries.size,
+            inDateRange,
+            excludedByDate,
+            excludedByType,
+            selected
+        };
+    }
+
+    function selectedDateBoundaryReached(direction) {
+        const range = getDateRangeConfig();
+        if (!range.enabled || !range.valid) return null;
+
+        const visible = visibleItemTimeRange();
+        if (!visible) return null;
+
+        // The whole visible viewport must be outside the selected range.
+        // This keeps the complete boundary day and avoids skipping media near
+        // the top or bottom edge of a virtualized timeline.
+        if (
+            direction === 'older' &&
+            visible.maxMs < range.startMs
+        ) {
+            return {
+                reason: 'date-start',
+                label: `passed the From date (${range.startValue})`
+            };
+        }
+
+        if (
+            direction === 'newer' &&
+            Number.isFinite(range.endExclusiveMs) &&
+            visible.minMs >= range.endExclusiveMs
+        ) {
+            return {
+                reason: 'date-end',
+                label: `passed the To date (${range.endValue})`
+            };
+        }
+
+        return null;
+    }
+
+    function scanBoundaryDescription(reason) {
+        switch (reason) {
+            case 'date-start':
+                return 'selected From-date boundary';
+            case 'date-end':
+                return 'selected To-date boundary';
+            case 'timeline-start':
+                return 'timeline-start boundary';
+            case 'timeline-end':
+                return 'timeline-end boundary';
+            default:
+                return 'selected scan boundary';
+        }
+    }
+
+    function dateRangeFilenameToken() {
+        const range = getDateRangeConfig();
+        if (!range.enabled || !range.valid) return 'all_dates';
+
+        const end = range.endMode === 'specific'
+            ? range.endValue
+            : 'latest';
+
+        return `${range.startValue}_to_${end}`;
+    }
+
+    function countMediaTypes(entries = [...mediaEntries.values()]) {
+        let photos = 0;
+        let videos = 0;
+        let externalGifs = 0;
+
+        for (const entry of entries) {
+            if (entry.mediaType === 'video') videos++;
+            else if (entry.mediaType === 'external-gif') externalGifs++;
+            else photos++;
+        }
+
+        return { photos, videos, externalGifs };
+    }
+
+    function selectedArchiveKind(entries) {
+        const { photos, videos, externalGifs } =
+            countMediaTypes(entries);
+
+        const selectedTypeCount = [
+            photos,
+            videos,
+            externalGifs
+        ].filter(value => value > 0).length;
+
+        if (selectedTypeCount > 1) return 'media';
+        if (videos) return 'videos';
+        if (externalGifs) return 'external_gifs';
+        return 'photos';
+    }
+
+    function takeAdaptiveWorkGroup(entries, startIndex) {
+        const group = [];
+        let estimatedBytes = 0;
+
+        for (
+            let index = startIndex;
+            index < entries.length && group.length < ZIP_BATCH_MAX_ITEMS;
+            index++
+        ) {
+            const entry = entries[index];
+            const estimate = entry.mediaType === 'video'
+                ? ESTIMATED_VIDEO_BYTES
+                : entry.mediaType === 'external-gif'
+                    ? ESTIMATED_EXTERNAL_GIF_BYTES
+                    : ESTIMATED_PHOTO_BYTES;
+
+            if (
+                group.length > 0 &&
+                estimatedBytes + estimate > WORK_BATCH_ESTIMATED_MAX_BYTES
+            ) {
+                break;
+            }
+
+            group.push(entry);
+            estimatedBytes += estimate;
+        }
+
+        return group;
+    }
+

@@ -1,0 +1,153 @@
+    function discordVisibleItemTimeRange() {
+        const values = [];
+
+        document
+            .querySelectorAll('time[id^="message-timestamp-"][datetime]')
+            .forEach(time => {
+                const milliseconds = Date.parse(
+                    time.getAttribute('datetime') || ''
+                );
+
+                if (Number.isFinite(milliseconds)) values.push(milliseconds);
+            });
+
+        if (!values.length) {
+            for (const itemId of visibleItemIds()) {
+                const timestamp = timestampFromItemId(itemId);
+                const milliseconds = Date.parse(timestamp || '');
+                if (Number.isFinite(milliseconds)) values.push(milliseconds);
+            }
+        }
+
+        if (!values.length) return null;
+
+        return {
+            minMs: Math.min(...values),
+            maxMs: Math.max(...values)
+        };
+    }
+
+    function findDiscordScroller() {
+        const messageList =
+            document.querySelector('ol[data-list-id="chat-messages"]') ||
+            document.querySelector('[data-list-id="chat-messages"]') ||
+            document.querySelector('main');
+
+        let current = messageList;
+        while (current && current !== document.body) {
+            if (isScrollable(current)) return current;
+            current = current.parentElement;
+        }
+
+        // Fallback: largest visible scroll container in the main area.
+        const candidates = [...document.querySelectorAll('main div, main section')]
+            .filter(isScrollable)
+            .sort((a, b) =>
+                (b.scrollHeight - b.clientHeight) -
+                (a.scrollHeight - a.clientHeight)
+            );
+
+        return candidates[0] || null;
+    }
+
+    function findDiscordItemElementById(itemId) {
+        if (!itemId) return null;
+
+        const elements = document.querySelectorAll(
+            '[id*="chat-messages"], [data-list-item-id*="chat-messages"], ' +
+            '[aria-labelledby*="chat-messages"]'
+        );
+
+        for (const element of elements) {
+            const values = [
+                element.id,
+                element.getAttribute('data-list-item-id'),
+                element.getAttribute('aria-labelledby')
+            ].filter(Boolean);
+
+            if (
+                values.some(value =>
+                    String(value).includes(itemId)
+                )
+            ) {
+                return element;
+            }
+        }
+
+        return null;
+    }
+
+    function captureDiscordStartingAnchor(scroller) {
+        const scrollerRect = scroller.getBoundingClientRect();
+        let best = null;
+
+        const elements = document.querySelectorAll(
+            '[id*="chat-messages"], [data-list-item-id*="chat-messages"]'
+        );
+
+        for (const element of elements) {
+            const itemId = findDiscordItemId(element);
+            if (!itemId) continue;
+
+            const rect = element.getBoundingClientRect();
+
+            if (
+                rect.bottom < scrollerRect.top ||
+                rect.top > scrollerRect.bottom
+            ) {
+                continue;
+            }
+
+            const distance = Math.abs(
+                rect.top - scrollerRect.top
+            );
+
+            if (!best || distance < best.distance) {
+                best = {
+                    itemId,
+                    offset: rect.top - scrollerRect.top,
+                    distance
+                };
+            }
+        }
+
+        const position = scrollPosition(scroller);
+
+        return {
+            itemId: best?.itemId || null,
+            offset: best?.offset || 0,
+            scrollRatio:
+                position.height > position.client
+                    ? position.top /
+                      (position.height - position.client)
+                    : 0
+        };
+    }
+
+    function discordVisibleItemIds() {
+        const ids = new Set();
+        const elements = document.querySelectorAll(
+            '[id*="chat-messages"], [data-list-item-id*="chat-messages"], ' +
+            '[aria-labelledby*="chat-messages"]'
+        );
+
+        for (const element of elements) {
+            const values = [
+                element.id,
+                element.getAttribute?.('data-list-item-id'),
+                element.getAttribute?.('aria-labelledby')
+            ].filter(Boolean);
+
+            for (const value of values) {
+                const matches = String(value).match(/\d{16,22}/g);
+                if (matches?.length) {
+                    ids.add(matches[matches.length - 1]);
+                    break;
+                }
+            }
+        }
+
+        return [...ids];
+    }
+
+

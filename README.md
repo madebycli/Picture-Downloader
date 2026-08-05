@@ -1,95 +1,96 @@
-# Discord Media Archiver
+# Media Archiver
 
-A Tampermonkey userscript that scans the Discord web client, collects media rendered in a channel or thread, and saves the selected files as numbered ZIP parts.
+Media Archiver is a modular Tampermonkey userscript for collecting media that a supported web application has already rendered in the browser and saving the selected files as numbered ZIP parts.
 
-The project is designed for large channels where manually opening and downloading hundreds of files is impractical. It operates on the Discord page currently open in the browser and does **not** read or store a Discord user token.
+The product name and core are site-neutral. Site behavior is supplied by adapters. The first included adapter supports Discord channels and threads; additional sites can be added without rebuilding the scanner, archive engine, or interface.
 
-## Features
+## Highlights
 
-- Photos and native animated GIF attachments
-- Discord-hosted videos in common container formats
-- Rendered previews for external GIF-page embeds such as Klipy, Tenor, and Giphy
-- Original Discord attachment URLs instead of resized image previews
-- Separate filters for photos/GIFs, videos, and external GIF previews
-- Date ranges with an inclusive start and end day, or “latest available”
-- Multiple scan directions, including starting from the current position
-- Automatic scrolling with delayed-boundary confirmation
-- Numbered archive names such as `000001.jpg`, `000002.mp4`, and `000003.gif`
-- ZIP splitting by item count and estimated/actual size
-- Fast `fflate` ZIP creation when available
-- Built-in Firefox-safe ZIP fallback when the external library is blocked
-- Live logs, counters, per-item status indicators, stop controls, and final-position controls
-- CSV manifest in every ZIP part
+- Compact tabbed interface with related controls grouped under **Setup**, **Media**, and **Activity**
+- Photos, native GIF files, videos, and rendered animated previews
+- Optional inclusive local-date filtering
+- Four scan directions for virtualized timelines
+- Automatic ZIP creation or review-before-archive workflow
+- Numbered ZIP parts with CSV manifests
+- Fast `fflate` ZIP path plus a dependency-free ZIP32 fallback
+- Adapter registry with generated Tampermonkey `@match` and `@connect` metadata
+- No user-token extraction and no authenticated internal API calls
 
-## Installation
+## Install
 
-1. Install Tampermonkey in a supported desktop browser.
-2. Open [`discord-media-archiver.user.js`](./discord-media-archiver.user.js).
-3. Use GitHub’s **Raw** view, then allow Tampermonkey to install the userscript.
-4. Open Discord in the browser and enter the channel or thread to archive.
-5. Configure media types, date range, scan direction, and final chat position.
-6. Click **START: SCAN + ZIP**.
+1. Install Tampermonkey in a current Firefox- or Chromium-based browser.
+2. Open [`media-archiver.user.js`](./media-archiver.user.js).
+3. Choose **Raw** and confirm the Tampermonkey installation prompt.
+4. Open a page supported by an installed adapter. For the included Discord adapter, open a text channel or thread.
+5. Open the Media Archiver panel, configure the scan, and start.
 
-Because this repository is private, the Raw link requires a GitHub session with access to the repository. Copying the file into a new Tampermonkey script is an alternative.
+Because this repository is private, GitHub must be signed in when the raw userscript is opened.
 
-## Recommended modes
+## Interface
 
-| Goal | Scan mode | Final position |
-| --- | --- | --- |
-| Archive the latest content back to a date | Newest → oldest | Jump to newest |
-| Continue from the current location toward older messages | Current → oldest | Return to starting position or stay at scan end |
-| Continue from the current location toward newer messages | Current → newest | Jump to newest |
-| Cover a date range while starting in the middle | Full channel: current → oldest → newest | Jump to newest |
+### Setup
 
-## What is downloaded
+Controls are grouped by purpose:
 
-### Native Discord attachments
+- **What to save** — media categories
+- **Date range** — optional source-date limits
+- **Scan behavior** — direction, starting point, and final page position
+- **Create ZIPs after scanning** — automatic archive creation or review-first mode
 
-Direct attachment URLs from `cdn.discordapp.com/attachments/...` or `media.discordapp.net/attachments/...` are collected. Preview sizing and conversion parameters are removed while Discord’s signed URL parameters remain intact.
+### Media
 
-### External GIF previews
+Shows collected entries, detailed type and filter counters, download state, file size, timestamp, and archive status.
 
-For supported GIF-page embeds, Discord may render an animated proxy file through `images-ext-1.discordapp.net` or `images-ext-2.discordapp.net`. The userscript downloads that rendered preview. It is commonly an MP4 file even when Discord labels the embed as a GIF.
+### Activity
 
-External pages such as YouTube are not downloaded.
+Contains only operational messages for the current session. Release notes and changelog content are intentionally kept out of the runtime interface.
 
-## ZIP output
+## Current adapter: Discord
 
-Files are sorted newest to oldest and named with a six-digit sequence while preserving the actual extension:
+The included adapter detects media rendered in Discord channels and threads:
 
-```text
-000001.mp4
-000002.jpg
-000003.webp
-000004.gif
-```
+- attachment images and native GIF files
+- Discord-hosted video attachments
+- animated external GIF previews rendered through Discord proxy hosts
 
-Each ZIP part includes `manifest_part.csv` with the archive filename, original filename, media type, source kind, source page, message ID, timestamp, byte size, and source URL.
+It works from the visible web interface and scrolls Discord's virtualized message timeline. It does not request a Discord token or call authenticated internal Discord APIs.
 
-## Browser notes
-
-- Allow multiple downloads when the browser asks; large archives are split into several ZIP parts.
-- Keep the Discord tab open while scanning and creating ZIPs.
-- Firefox may block the optional `fflate` CDN dependency. Version 5.6 includes a built-in ZIP fallback and continues instead of failing.
-- Large videos require substantial memory. Reduce the selected range or media types if the browser becomes unstable.
-- Discord’s web markup changes over time. Selectors and scan behavior may require maintenance after Discord updates.
-
-## Safety and account use
-
-Use this tool only for media you are authorized to access and save. The userscript intentionally avoids Discord user-token extraction, internal Discord API calls, and automated account messaging. It works by observing and scrolling the web interface that the signed-in user can already see.
-
-## Development
-
-Requirements: Node.js 20 or newer.
+## Build and validate
 
 ```bash
 npm test
 ```
 
-The validation command checks JavaScript syntax, userscript metadata, version consistency, required permissions, important feature markers, and the absence of known token/API access patterns.
+This command:
 
-See the project context in [`AGENTS.md`](./AGENTS.md) and [`docs/PROJECT_CONTEXT.md`](./docs/PROJECT_CONTEXT.md).
+1. reads `src/build-manifest.json`
+2. reads all adapters from `src/adapters/manifest.json`
+3. generates Tampermonkey host metadata from the adapter manifest
+4. assembles `media-archiver.user.js`
+5. checks JavaScript syntax and project invariants
 
-## Current release
+## Source layout
 
-`5.6.0` — Firefox-safe ZIP fallback, stable final chat positioning, date filters, native media support, and external GIF preview support.
+```text
+src/
+├── build-manifest.json
+├── adapters/
+│   ├── manifest.json
+│   └── discord.user.js.part
+└── core/
+    ├── 00-bootstrap.user.js.part
+    ├── 10-activate-adapter.user.js.part
+    ├── 20-selection.user.js.part
+    ├── 30-scanner.user.js.part
+    ├── 40-archive.user.js.part
+    ├── 50-workflow.user.js.part
+    └── 60-ui.user.js.part
+```
+
+The generated root file is a release artifact. Make source changes in `src/core/` or `src/adapters/`, then run `npm test`.
+
+See [`docs/ADAPTERS.md`](./docs/ADAPTERS.md) for the adapter contract and extension process.
+
+## Safety and use
+
+Use this tool only for media you are authorized to access and save. Each adapter must restrict downloads to explicitly declared hosts and must operate on content already available to the signed-in browser page. See [`SECURITY.md`](./SECURITY.md).

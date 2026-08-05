@@ -1,57 +1,53 @@
-# Engineering decisions
+# Architecture decisions
 
-## 001 — DOM-only Discord integration
+## 001 — Rendered-page integration
 
-**Decision:** Work from the rendered Discord web interface instead of a user token or internal authenticated API.
+**Decision:** Collect media from the rendered browser page rather than account credentials or authenticated internal APIs.
 
-**Reason:** Reduces account risk, avoids token handling, and keeps the tool aligned with content the user can already see.
+**Reason:** This preserves a narrow security boundary and keeps behavior visible to the user.
 
-**Consequence:** Scanning depends on scrolling and Discord DOM stability.
+**Consequence:** Scanning depends on adapter-maintained DOM rules and virtual-timeline behavior.
 
-## 002 — Original attachment URL normalization
+## 002 — Adapter-owned site behavior
 
-**Decision:** Convert `media.discordapp.net/attachments/...` to `cdn.discordapp.com/attachments/...` and remove display-size/conversion query parameters while preserving signed parameters.
+**Decision:** Hostnames, selectors, IDs, timestamps, URL normalization, terminology, and download allowlists live in site adapters.
 
-**Reason:** Avoid saving resized previews when the original attachment is available.
+**Reason:** The product must support additional web applications without forking the scanner, archive engine, workflow, or UI.
 
-## 003 — External GIF previews are a separate category
+**Consequence:** Core modules may call only the adapter contract and must not contain site checks.
 
-**Decision:** Treat rendered external GIF previews separately from native GIF attachments and videos.
+## 003 — Manifest-generated permissions
 
-**Reason:** They originate from an external page link but are delivered through Discord’s proxy, and the actual file is commonly MP4.
+**Decision:** Generate userscript `@match` and `@connect` metadata from `src/adapters/manifest.json`.
 
-## 004 — No external-site scraping
+**Reason:** Runtime adapters and Tampermonkey permissions should have one reviewable source of truth.
 
-**Decision:** Do not open or scrape Klipy, Tenor, Giphy, YouTube, or other external websites.
+## 004 — Persistent status plus task tabs
 
-**Reason:** Keeps host permissions narrow and avoids fragile provider-specific scraping.
+**Decision:** Keep progress and primary counters visible while separating Setup, Media, and Activity.
 
-## 005 — Local-day date ranges
+**Reason:** Related controls belong together, and long single-panel layouts obscure the current task.
 
-**Decision:** Interpret date inputs as full calendar days in the browser’s local timezone.
+**Consequence:** Changelog and release-note content remains outside the runtime UI.
 
-**Reason:** Matches how users choose dates in an HTML date input.
+## 005 — Newest-first archive ordering
 
-## 006 — Newest-to-oldest archive numbering
+**Decision:** Sort through adapter item IDs or timestamps and keep numbering continuous across ZIP parts.
 
-**Decision:** Sort selected entries newest to oldest and use continuous six-digit numbering across ZIP parts.
+## 006 — Dual ZIP implementation
 
-**Reason:** Gives deterministic ordering independent of ZIP-part boundaries.
+**Decision:** Use `fflate` STORE mode when available and retain a dependency-free ZIP32 STORE writer.
 
-## 007 — Optional fast ZIP dependency plus mandatory fallback
+**Reason:** Browser extension content policies or network failures can block the external library.
 
-**Decision:** Use `fflate` when available but retain a built-in ZIP32 STORE writer.
+## 007 — Defensive virtual-boundary confirmation
 
-**Reason:** Firefox/Tampermonkey or network filters can block the CDN dependency. ZIP creation must still work.
+**Decision:** Wait and rescan before confirming timeline start or end.
 
-## 008 — STORE rather than recompressing media
+**Reason:** Virtualized pages can temporarily appear complete while content is still loading.
 
-**Decision:** Store image and video bytes without DEFLATE compression.
+## 008 — Discord remains an adapter
 
-**Reason:** These formats are already compressed; recompression costs CPU and memory with little benefit.
+**Decision:** Preserve Discord support as the first adapter, not as product identity or core architecture.
 
-## 009 — Defensive chat-boundary confirmation
-
-**Decision:** Wait and rescan before accepting a top or bottom boundary.
-
-**Reason:** Discord’s virtualized list can temporarily appear complete while older or newer messages are still loading.
+**Consequence:** Discord-specific attachment hosts, proxy rules, snowflake timestamps, and selectors remain in the Discord adapter.

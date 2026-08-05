@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest a focused improvement to media detection, scanning, filtering, ZIP output, or the interface.
+description: Suggest an adapter, scanner, filter, archive, or interface improvement.
 title: "[Feature]: "
 labels:
   - enhancement
@@ -15,14 +15,19 @@ body:
     id: proposal
     attributes:
       label: Proposed behavior
-      description: Describe the desired controls, detection rule, or output.
+      description: Describe the desired adapter, controls, detection rule, or output.
     validations:
       required: true
+  - type: input
+    id: adapter
+    attributes:
+      label: Site or adapter
+      placeholder: Discord, another supported site, or a proposed new site
   - type: textarea
     id: boundaries
     attributes:
       label: Source and safety boundaries
-      description: Identify the Discord-rendered source, host, or DOM pattern involved.
+      description: Identify the rendered source, download host, and DOM or URL pattern involved.
   - type: textarea
     id: alternatives
     attributes:

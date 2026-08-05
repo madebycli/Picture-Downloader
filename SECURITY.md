@@ -1,27 +1,28 @@
 # Security policy
 
-## Scope
+Media Archiver runs with Tampermonkey privileges and can download files from hosts declared by installed site adapters. Changes must therefore preserve a narrow trust boundary.
 
-Security-sensitive areas include:
+## Prohibited behavior
 
-- Discord authentication or account data
-- unexpected network hosts
-- arbitrary external-page scraping
-- unsafe filename handling
-- ZIP corruption or path traversal
-- excessive memory allocation
+- reading or exporting account tokens, cookies, authorization data, or browser credentials
+- calling undocumented authenticated APIs to enumerate private content
+- sending messages, reactions, posts, follows, or other account actions
+- scraping arbitrary linked third-party pages
+- accepting download URLs outside the active adapter's allowlist
+- logging private source URLs, personal content, or credentials unnecessarily
 
-## Design guarantees
+## Required adapter controls
 
-The userscript is intended to:
+Every adapter must:
 
-- avoid Discord user-token access
-- avoid authenticated internal Discord APIs
-- fetch only declared Discord CDN/proxy hosts
-- sanitize generated filenames
-- place flat numbered filenames and a manifest in ZIP parts
-- keep external GIF handling limited to Discord-rendered proxy media
+- activate only on explicit `@match` patterns
+- declare the minimum required `@connect` hosts
+- validate every requested download URL at runtime
+- collect only media represented in the rendered page
+- document selectors, timestamp logic, and external-source boundaries
+
+The included Discord adapter additionally forbids Discord user-token access and authenticated internal Discord API calls.
 
 ## Reporting
 
-Report security concerns through a private repository issue with enough detail to reproduce the problem. Do not include Discord tokens, cookies, signed URLs that expose private content, or personal message data.
+Report security concerns privately with enough sanitized detail to reproduce the issue. Do not include tokens, cookies, private signed URLs, or personal message content.

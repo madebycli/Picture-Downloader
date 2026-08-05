@@ -1,0 +1,182 @@
+    // ---------- Interface ----------
+
+    const panel = document.createElement('aside');
+    panel.id = 'media-archiver-panel';
+    panel.innerHTML = `
+        <header class="ma-header">
+            <div class="ma-brand">
+                <div class="ma-title-row">
+                    <div class="ma-title">${APP_NAME}</div>
+                    <span class="ma-site-badge">${activeSiteAdapter.label}</span>
+                </div>
+                <div class="ma-subtitle">Rendered media · v${VERSION}</div>
+            </div>
+            <button
+                id="ma-collapse"
+                class="ma-icon-button"
+                type="button"
+                title="Collapse panel"
+                aria-label="Collapse panel"
+            >−</button>
+        </header>
+
+        <div id="ma-body">
+            <section class="ma-status-card" aria-live="polite">
+                <div class="ma-phase-row">
+                    <div id="ma-phase">READY</div>
+                    <span id="ma-selected-summary">0 selected</span>
+                </div>
+                <div class="ma-progress" aria-hidden="true">
+                    <div id="ma-progress-fill"></div>
+                </div>
+                <div class="ma-primary-metrics">
+                    <div><strong id="ma-found">0</strong><span>Found</span></div>
+                    <div><strong id="ma-selected-count">0</strong><span>Selected</span></div>
+                    <div><strong id="ma-packed">0</strong><span>Saved</span></div>
+                    <div><strong id="ma-errors">0</strong><span>Errors</span></div>
+                </div>
+            </section>
+
+            <nav class="ma-tabs" aria-label="Media Archiver sections">
+                <button type="button" data-ma-tab="setup" aria-selected="true">Setup</button>
+                <button type="button" data-ma-tab="media" aria-selected="false">
+                    Media <span id="ma-media-tab-count">0</span>
+                </button>
+                <button type="button" data-ma-tab="activity" aria-selected="false">Activity</button>
+            </nav>
+
+            <div class="ma-tab-content">
+                <section data-ma-panel="setup">
+                    <section class="ma-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>What to save</h2>
+                                <p>Choose the media categories included in the archive.</p>
+                            </div>
+                        </div>
+                        <div class="ma-choice-grid">
+                            <label class="ma-choice">
+                                <input id="ma-include-photos" type="checkbox" checked>
+                                <span><strong>Photos & native GIFs</strong><small>Image attachments</small></span>
+                            </label>
+                            <label class="ma-choice">
+                                <input id="ma-include-videos" type="checkbox" checked>
+                                <span><strong>Videos</strong><small>Video attachments</small></span>
+                            </label>
+                            <label class="ma-choice ma-choice-wide">
+                                <input id="ma-include-external-gifs" type="checkbox" checked>
+                                <span><strong>Rendered GIF previews</strong><small>Animated previews supplied by the active site</small></span>
+                            </label>
+                        </div>
+                    </section>
+
+                    <section class="ma-group">
+                        <div class="ma-group-heading ma-heading-with-control">
+                            <div>
+                                <h2>Date range</h2>
+                                <p>Filter by each item's source timestamp.</p>
+                            </div>
+                            <label class="ma-switch">
+                                <input id="ma-date-filter" type="checkbox">
+                                <span aria-hidden="true"></span>
+                                <b>Use filter</b>
+                            </label>
+                        </div>
+
+                        <div id="ma-date-fields" class="ma-field-grid ma-date-fields">
+                            <label>
+                                <span>From</span>
+                                <input id="ma-from-date" type="date">
+                            </label>
+                            <label>
+                                <span>Range end</span>
+                                <select id="ma-date-end-mode">
+                                    <option value="latest">Latest available</option>
+                                    <option value="specific">Specific date</option>
+                                </select>
+                            </label>
+                            <label id="ma-to-date-wrap" class="ma-field-wide">
+                                <span>To, inclusive</span>
+                                <input id="ma-to-date" type="date">
+                            </label>
+                        </div>
+                        <div id="ma-date-summary" class="ma-inline-status">All scanned dates are included.</div>
+                    </section>
+
+                    <section class="ma-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>Scan behavior</h2>
+                                <p>Control where the scan starts, ends, and leaves the page.</p>
+                            </div>
+                        </div>
+                        <div class="ma-field-grid">
+                            <label class="ma-field-wide">
+                                <span>Direction and starting point</span>
+                                <select id="ma-scan-direction">
+                                    <option value="newest-to-oldest">End → start (jump to end first)</option>
+                                    <option value="current-to-oldest">Current position → start</option>
+                                    <option value="current-to-newest">Current position → end</option>
+                                    <option value="full-finish-down">Full timeline: current → start → end</option>
+                                </select>
+                            </label>
+                            <label class="ma-field-wide">
+                                <span>Position after completion</span>
+                                <select id="ma-final-position">
+                                    <option value="newest" selected>Jump to timeline end</option>
+                                    <option value="scan-end">Stay at scan end</option>
+                                    <option value="start">Return to starting position</option>
+                                </select>
+                            </label>
+                        </div>
+                    </section>
+
+                    <section class="ma-group ma-compact-group">
+                        <label class="ma-option-row">
+                            <span>
+                                <strong>Create ZIPs after scanning</strong>
+                                <small>Turn this off to review the collected media first.</small>
+                            </span>
+                            <input id="ma-auto-zip" type="checkbox" checked>
+                        </label>
+                    </section>
+                </section>
+
+                <section data-ma-panel="media" hidden>
+                    <div class="ma-detail-metrics">
+                        <div><span>Photos</span><strong id="ma-photo-count">0</strong></div>
+                        <div><span>Videos</span><strong id="ma-video-count">0</strong></div>
+                        <div><span>GIF previews</span><strong id="ma-external-gif-count">0</strong></div>
+                        <div><span>In range</span><strong id="ma-in-range">0</strong></div>
+                        <div><span>Date excluded</span><strong id="ma-excluded-date">0</strong></div>
+                    </div>
+                    <div class="ma-list-heading">
+                        <div>
+                            <h2>Collected media</h2>
+                            <p>○ collected · … downloading · ✓ saved · – filtered out</p>
+                        </div>
+                    </div>
+                    <div id="ma-media-list" class="ma-media-list"></div>
+                </section>
+
+                <section data-ma-panel="activity" hidden>
+                    <div class="ma-list-heading ma-heading-with-control">
+                        <div>
+                            <h2>Activity</h2>
+                            <p>Operational messages for the current session.</p>
+                        </div>
+                        <button id="ma-clear-log" class="ma-text-button" type="button">Clear</button>
+                    </div>
+                    <div id="ma-log" class="ma-log" aria-live="polite"></div>
+                </section>
+            </div>
+
+            <footer class="ma-actions">
+                <button id="ma-start" class="ma-primary" type="button">Scan & create ZIPs</button>
+                <button id="ma-stop" class="ma-danger" type="button" disabled>Stop</button>
+                <button id="ma-zip" class="ma-success" type="button" disabled>Create ZIP now</button>
+                <button id="ma-reset" class="ma-secondary" type="button">Reset</button>
+            </footer>
+        </div>
+    `;
+

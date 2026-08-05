@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "output": "media-archiver.user.js",
+  "beforeAdapters": [
+    "src/core/00-bootstrap.user.js.part"
+  ],
+  "afterAdapters": [
+    "src/core/10-activate-adapter.user.js.part",
+    "src/core/20-selection.user.js.part",
+    "src/core/30-scanner-position.user.js.part",
+    "src/core/31-scanner-boundaries.user.js.part",
+    "src/core/40-download-manifest.user.js.part",
+    "src/core/41-zip-engine.user.js.part",
+    "src/core/42-archive-workflow.user.js.part",
+    "src/core/50-workflow.user.js.part",
+    "src/core/60-ui-markup.user.js.part",
+    "src/core/61-ui-style.user.js.part",
+    "src/core/62-ui-bindings.user.js.part"
+  ]
+}

@@ -1,0 +1,246 @@
+    function findDiscordItemContainer(element) {
+        return element.closest?.(
+            'li[id*="chat-messages"], div[id*="chat-messages"], ' +
+            '[data-list-item-id*="chat-messages"], article'
+        ) || null;
+    }
+
+    function findDiscordItemId(element) {
+        let current = findDiscordItemContainer(element) || element;
+
+        for (let depth = 0; current && depth < 14; depth++, current = current.parentElement) {
+            const values = [
+                current.id,
+                current.getAttribute?.('data-list-item-id'),
+                current.getAttribute?.('aria-labelledby')
+            ].filter(Boolean);
+
+            for (const value of values) {
+                const matches = String(value).match(/\d{16,22}/g);
+                if (matches?.length) {
+                    return matches[matches.length - 1];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    function discordTimestampFromSnowflake(itemId) {
+        if (!itemId) return null;
+
+        try {
+            const milliseconds =
+                Number((BigInt(itemId) >> 22n) + BigInt(DISCORD_EPOCH_MS));
+
+            if (!Number.isFinite(milliseconds)) return null;
+            return new Date(milliseconds).toISOString();
+        } catch {
+            return null;
+        }
+    }
+
+    function findDiscordItemTimestamp(element) {
+        const container = findDiscordItemContainer(element);
+        const itemId = findDiscordItemId(element);
+
+        if (itemId) {
+            const exactTime = document.getElementById(
+                `message-timestamp-${itemId}`
+            );
+
+            if (
+                exactTime?.matches?.('time[datetime]') &&
+                (!container || container.contains(exactTime))
+            ) {
+                return exactTime.getAttribute('datetime');
+            }
+        }
+
+        const time = container?.querySelector?.(
+            'time[id^="message-timestamp-"][datetime], time[datetime]'
+        );
+
+        return (
+            time?.getAttribute('datetime') ||
+            timestampFromItemId(itemId)
+        );
+    }
+
+    function addOrUpdateMediaEntry(rawUrl, sourceElement) {
+        if (!isDiscordAttachmentUrl(rawUrl, sourceElement)) return false;
+
+        const originalUrl = normalizeDiscordAttachmentUrl(rawUrl);
+        const key = canonicalKey(originalUrl);
+        const existing = mediaEntries.get(key);
+
+        if (existing) {
+            if (urlQualityScore(originalUrl) > urlQualityScore(existing.url)) {
+                existing.url = originalUrl;
+            }
+
+            // A freshly loaded URL usually has the newest signature.
+            if (new URL(originalUrl).searchParams.has('ex')) {
+                existing.url = originalUrl;
+            }
+
+            if (!existing.itemId) existing.itemId = findItemId(sourceElement);
+            if (!existing.timestamp) existing.timestamp = findItemTimestamp(sourceElement);
+            return false;
+        }
+
+        mediaEntries.set(key, {
+            key,
+            url: originalUrl,
+            previewUrl: rawUrl,
+            filename: filenameFromUrl(originalUrl),
+            mediaType: mediaTypeFromUrl(originalUrl, sourceElement),
+            sourceKind: 'discord-attachment',
+            sourcePageUrl: null,
+            itemId: findItemId(sourceElement),
+            timestamp: findItemTimestamp(sourceElement),
+            firstSeen: firstSeenCounter++,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0
+        });
+
+        scheduleRender();
+        return true;
+    }
+
+    function addOrUpdateExternalGif(
+        rawUrl,
+        sourceElement,
+        sourcePageUrl = null
+    ) {
+        if (
+            !isDiscordExternalProxyUrl(rawUrl) ||
+            !isExternalGifEmbedContext(sourceElement)
+        ) {
+            return false;
+        }
+
+        const mediaUrl = new URL(rawUrl, location.href).href;
+        const key = `external-gif:${canonicalKey(mediaUrl)}`;
+        const existing = mediaEntries.get(key);
+
+        if (existing) {
+            existing.url = mediaUrl;
+            existing.previewUrl = mediaUrl;
+
+            if (!existing.sourcePageUrl && sourcePageUrl) {
+                existing.sourcePageUrl = sourcePageUrl;
+            }
+
+            if (!existing.itemId) {
+                existing.itemId = findItemId(sourceElement);
+            }
+
+            if (!existing.timestamp) {
+                existing.timestamp = findItemTimestamp(sourceElement);
+            }
+
+            return false;
+        }
+
+        let filename = filenameFromUrl(mediaUrl);
+
+        if (!MEDIA_EXTENSIONS.has(extensionFromPath(`/${filename}`))) {
+            filename = 'external-gif-preview.mp4';
+        }
+
+        mediaEntries.set(key, {
+            key,
+            url: mediaUrl,
+            previewUrl: mediaUrl,
+            filename,
+            mediaType: 'external-gif',
+            sourceKind: 'external-gif-preview',
+            sourcePageUrl:
+                sourcePageUrl ||
+                findExternalGifPageUrl(sourceElement),
+            itemId: findItemId(sourceElement),
+            timestamp: findItemTimestamp(sourceElement),
+            firstSeen: firstSeenCounter++,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0
+        });
+
+        scheduleRender();
+        return true;
+    }
+
+    function scanExternalGifPreviews() {
+        let added = 0;
+
+        const elements = document.querySelectorAll([
+            'a[data-role="img"][data-safe-src]',
+            'a[href*="klipy.com/gifs/"]',
+            'a[href*="tenor.com/"]',
+            'a[href*="giphy.com/gifs/"]',
+            'video[aria-label*="GIF" i]',
+            '[aria-label="GIF"] video',
+            '[aria-label="GIF"] source[src]'
+        ].join(','));
+
+        for (const element of elements) {
+            if (!isExternalGifEmbedContext(element)) continue;
+
+            const sourcePageUrl =
+                findExternalGifPageUrl(element);
+
+            for (
+                const mediaUrl of
+                externalGifProxyCandidates(element)
+            ) {
+                if (
+                    addOrUpdateExternalGif(
+                        mediaUrl,
+                        element,
+                        sourcePageUrl
+                    )
+                ) {
+                    added++;
+                    break;
+                }
+            }
+        }
+
+        return added;
+    }
+
+    function scanDiscordVisibleMedia() {
+        let added = 0;
+
+        const selectors = [
+            'a[href*="/attachments/"]',
+            'img[src*="/attachments/"]',
+            'video[src*="/attachments/"]',
+            'source[src*="/attachments/"]'
+        ].join(',');
+
+        document.querySelectorAll(selectors).forEach(element => {
+            const candidates = [
+                element.href,
+                element.currentSrc,
+                element.src,
+                element.getAttribute?.('href'),
+                element.getAttribute?.('src')
+            ].filter(Boolean);
+
+            for (const candidate of candidates) {
+                if (addOrUpdateMediaEntry(candidate, element)) {
+                    added++;
+                    break;
+                }
+            }
+        });
+
+        added += scanExternalGifPreviews();
+
+        updateCounters();
+        return added;
+    }
+

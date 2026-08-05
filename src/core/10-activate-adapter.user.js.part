@@ -1,0 +1,6 @@
+    activeSiteAdapter = resolveSiteAdapter();
+
+    if (!activeSiteAdapter) {
+        return;
+    }
+

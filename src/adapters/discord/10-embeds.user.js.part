@@ -1,0 +1,196 @@
+    function hasGifAriaLabel(element) {
+        let current = element;
+
+        for (
+            let depth = 0;
+            current && depth < 8;
+            depth++, current = current.parentElement
+        ) {
+            const label = current.getAttribute?.('aria-label') || '';
+            if (/\bgif\b/i.test(label)) return true;
+        }
+
+        return false;
+    }
+
+    function isKnownGifPageUrl(rawUrl) {
+        if (!rawUrl) return false;
+
+        try {
+            const url = new URL(rawUrl, location.href);
+            const host = url.hostname.toLowerCase();
+            const path = url.pathname.toLowerCase();
+
+            return (
+                (host === 'klipy.com' || host.endsWith('.klipy.com')) &&
+                path.startsWith('/gifs/')
+            ) || (
+                (host === 'tenor.com' || host.endsWith('.tenor.com')) &&
+                (path.includes('/view/') || path.includes('/search/'))
+            ) || (
+                (host === 'giphy.com' || host.endsWith('.giphy.com')) &&
+                path.includes('/gifs/')
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    function findGifEmbedWrapper(element) {
+        let current = element;
+
+        for (
+            let depth = 0;
+            current && depth < 10;
+            depth++, current = current.parentElement
+        ) {
+            if (
+                current.querySelector?.('[aria-label="GIF"]') ||
+                current.querySelector?.('video[aria-label*="GIF" i]') ||
+                current.querySelector?.('a[data-role="img"][data-safe-src]')
+            ) {
+                return current;
+            }
+        }
+
+        return findDiscordItemContainer(element);
+    }
+
+    function findExternalGifPageUrl(element) {
+        const wrapper = findGifEmbedWrapper(element);
+
+        const candidates = [
+            element?.matches?.('a[href]') ? element.href : null,
+            element?.closest?.('a[href]')?.href,
+            wrapper?.querySelector?.('a[data-role="img"][href]')?.href,
+            wrapper?.querySelector?.('a[href*="klipy.com/gifs/"]')?.href,
+            wrapper?.querySelector?.('a[href*="tenor.com/"]')?.href,
+            wrapper?.querySelector?.('a[href*="giphy.com/gifs/"]')?.href
+        ].filter(Boolean);
+
+        return (
+            candidates.find(isKnownGifPageUrl) ||
+            candidates.find(value => {
+                try {
+                    const url = new URL(value, location.href);
+                    return ![
+                        'discord.com',
+                        'cdn.discordapp.com',
+                        'media.discordapp.net',
+                        'images-ext-1.discordapp.net',
+                        'images-ext-2.discordapp.net'
+                    ].includes(url.hostname);
+                } catch {
+                    return false;
+                }
+            }) ||
+            null
+        );
+    }
+
+    function isExternalGifEmbedContext(element) {
+        if (!element) return false;
+        if (hasGifAriaLabel(element)) return true;
+
+        const wrapper = findGifEmbedWrapper(element);
+
+        if (
+            wrapper?.querySelector?.('[aria-label="GIF"]') ||
+            wrapper?.querySelector?.('video[aria-label*="GIF" i]')
+        ) {
+            return true;
+        }
+
+        return isKnownGifPageUrl(
+            findExternalGifPageUrl(element)
+        );
+    }
+
+    function externalGifProxyCandidates(element) {
+        const wrapper = findGifEmbedWrapper(element);
+        const gifVideo =
+            wrapper?.querySelector?.('video[aria-label*="GIF" i]') ||
+            wrapper?.querySelector?.('[aria-label="GIF"] video');
+        const gifSource =
+            wrapper?.querySelector?.('[aria-label="GIF"] source[src]');
+
+        const candidates = [
+            element?.getAttribute?.('data-safe-src'),
+            element?.dataset?.safeSrc,
+            element?.currentSrc,
+            element?.src,
+            element?.getAttribute?.('src'),
+            wrapper?.querySelector?.(
+                'a[data-role="img"][data-safe-src]'
+            )?.getAttribute('data-safe-src'),
+            gifVideo?.currentSrc,
+            gifVideo?.src,
+            gifSource?.src
+        ].filter(Boolean);
+
+        return [...new Set(candidates)]
+            .filter(isDiscordExternalProxyUrl);
+    }
+
+    function normalizeDiscordAttachmentUrl(rawUrl) {
+        const url = new URL(rawUrl, location.href);
+
+        // media.discordapp.net often serves a scaled preview.
+        // The same attachment path on cdn.discordapp.com is the original file.
+        if (url.hostname === 'media.discordapp.net') {
+            url.hostname = 'cdn.discordapp.com';
+        }
+
+        // Temporary signature parameters ex/is/hm are preserved.
+        // Only preview, size, and conversion parameters are removed.
+        for (const parameter of [
+            'width', 'height', 'size', 'quality', 'format',
+            'animated', 'passthrough'
+        ]) {
+            url.searchParams.delete(parameter);
+        }
+
+        // Discord occasionally appends an empty parameter: "&="
+        for (const [key] of [...url.searchParams.entries()]) {
+            if (!key) url.searchParams.delete(key);
+        }
+
+        return url.href;
+    }
+
+    function urlQualityScore(rawUrl) {
+        try {
+            const url = new URL(rawUrl, location.href);
+            let score = 0;
+            if (url.hostname === 'cdn.discordapp.com') score += 100;
+            if (!url.searchParams.has('width')) score += 20;
+            if (!url.searchParams.has('height')) score += 20;
+            if (!url.searchParams.has('format')) score += 10;
+            return score;
+        } catch {
+            return 0;
+        }
+    }
+
+    function canonicalKey(rawUrl) {
+        const url = new URL(rawUrl, location.href);
+        const normalizedHost =
+            url.hostname === 'images-ext-1.discordapp.net' ||
+            url.hostname === 'images-ext-2.discordapp.net'
+                ? 'images-ext.discordapp.net'
+                : url.hostname.toLowerCase();
+
+        return `${normalizedHost}${url.pathname}`.toLowerCase();
+    }
+
+    function filenameFromUrl(rawUrl) {
+        try {
+            const url = new URL(rawUrl, location.href);
+            return sanitizeFilename(
+                decodeURIComponent(url.pathname.split('/').pop() || 'bild.jpg')
+            );
+        } catch {
+            return 'bild.jpg';
+        }
+    }
+

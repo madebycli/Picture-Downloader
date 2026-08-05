@@ -1,0 +1,231 @@
+    async function createAndDownloadZipParts() {
+        const selectedEntries = selectedMediaEntries();
+
+        if (packing || selectedEntries.length === 0) {
+            if (!packing && selectedEntries.length === 0) {
+                setPhase('NOTHING SELECTED');
+                addLog('Enable photos, videos, external GIF previews, or a combination before creating ZIP files.', 'warn');
+            }
+            return;
+        }
+
+        packing = true;
+        running = true;
+        scanning = false;
+        stopRequested = false;
+        resetEntryStatuses();
+        updateButtons();
+
+        const entries = selectedEntries;
+        const digits = Math.max(6, String(entries.length).length);
+        const archiveNames = new Map();
+        const archiveContext = activeSiteAdapter.getArchiveContext();
+        const stamp = new Date()
+            .toISOString()
+            .slice(0, 16)
+            .replace('T', '_')
+            .replace(':', '-');
+        const archiveKind = selectedArchiveKind(entries);
+        const selectedCounts = countMediaTypes(entries);
+        const initialZipLibrary = resolveFflateLibrary();
+
+        addLog(
+            initialZipLibrary
+                ? 'ZIP engine: fflate loaded successfully.'
+                : 'ZIP engine: fflate is unavailable. Using the built-in Firefox-safe ZIP fallback; ZIP creation may take longer.',
+            initialZipLibrary ? 'success' : 'warn'
+        );
+
+        let zipPart = 0;
+        let zippedCount = 0;
+        let errorCount = 0;
+        let groupStart = 0;
+
+        addLog(
+            `${entries.length} selected files (${selectedCounts.photos} photos/native GIFs, ` +
+            `${selectedCounts.videos} videos, ${selectedCounts.externalGifs} external GIF previews). ` +
+            `Using ${DOWNLOAD_CONCURRENCY} parallel media downloads.`
+        );
+
+        while (groupStart < entries.length && !stopRequested) {
+            const group = takeAdaptiveWorkGroup(entries, groupStart);
+            if (!group.length) break;
+
+            const records = new Array(group.length);
+            let finishedInGroup = 0;
+            let bytesInGroup = 0;
+
+            setPhase(
+                `DOWNLOADING ORIGINALS: ${groupStart + 1}–` +
+                `${groupStart + group.length}/${entries.length}`
+            );
+
+            await runWorkerPool(
+                group,
+                DOWNLOAD_CONCURRENCY,
+                async (entry, localIndex) => {
+                    if (stopRequested) return;
+
+                    entry.status = STATUS.FETCHING;
+                    entry.error = '';
+                    scheduleRender();
+
+                    try {
+                        const buffer = await requestArrayBuffer(entry.url);
+                        if (stopRequested) return;
+
+                        entry.size = buffer.byteLength;
+                        bytesInGroup += buffer.byteLength;
+                        records[localIndex] = {
+                            entry,
+                            globalIndex: groupStart + localIndex,
+                            data: new Uint8Array(buffer)
+                        };
+                    } catch (error) {
+                        if (stopRequested) return;
+
+                        entry.status = STATUS.ERROR;
+                        entry.error = error?.message || String(error);
+                        errorCount++;
+                        addLog(
+                            `Failed: ${entry.filename} — ${entry.error}`,
+                            'error'
+                        );
+                    }
+
+                    finishedInGroup++;
+                    setPhase(
+                        `DOWNLOADING ORIGINALS: ${finishedInGroup}/${group.length} · ` +
+                        `${formatBytes(bytesInGroup)}`
+                    );
+                    progressFill.style.width =
+                        `${(finishedInGroup / group.length) * 100}%`;
+                    scheduleRender();
+                }
+            );
+
+            if (stopRequested) break;
+
+            const successfulRecords = records.filter(Boolean);
+            const sizeGroups = splitRecordsBySize(
+                successfulRecords,
+                ZIP_MAX_BYTES
+            );
+
+            for (const partRecords of sizeGroups) {
+                if (stopRequested) break;
+
+                zipPart++;
+                const partLabel = String(zipPart).padStart(3, '0');
+                const files = {};
+
+                for (const record of partRecords) {
+                    const archiveName = uniqueArchiveName(
+                        record.globalIndex,
+                        record.entry,
+                        digits
+                    );
+                    archiveNames.set(record.entry.key, archiveName);
+                    record.entry.part = zipPart;
+                    files[archiveName] = record.data;
+                }
+
+                files['manifest_part.csv'] = encodeUtf8(
+                    buildPartManifest(
+                        partRecords,
+                        archiveNames,
+                        zipPart
+                    )
+                );
+
+                setPhase(
+                    `CREATING ZIP PART ${partLabel}: ` +
+                    `${partRecords.length} files`
+                );
+                progressFill.style.width = '0%';
+                await sleep(20);
+
+                let zipResult;
+                try {
+                    zipResult = await createZipBlob(
+                        files,
+                        progress => {
+                            setPhase(
+                                `CREATING ZIP PART ${partLabel}: ` +
+                                `${progress.completed}/${progress.total} files · ` +
+                                `${progress.percent.toFixed(0)}%`
+                            );
+                            progressFill.style.width =
+                                `${progress.percent}%`;
+                        }
+                    );
+                } catch (error) {
+                    addLog(
+                        `ZIP part ${partLabel} failed: ${error.message}`,
+                        'error'
+                    );
+                    errorCount += partRecords.length;
+
+                    for (const record of partRecords) {
+                        record.entry.status = STATUS.ERROR;
+                        record.entry.error = `ZIP: ${error.message}`;
+                    }
+                    continue;
+                }
+
+                const blob = zipResult.blob;
+                const usedZipBackend = zipResult.backend;
+                const filename =
+                    `${activeSiteAdapter.archivePrefix}_${archiveKind}_${archiveContext.id}_` +
+                    `${dateRangeFilenameToken()}_${stamp}_part_${partLabel}.zip`;
+
+                downloadZipBlob(blob, filename);
+
+                for (const record of partRecords) {
+                    record.entry.status = STATUS.PACKED;
+                    zippedCount++;
+                    record.data = null;
+                }
+
+                zipResult = null;
+                progressFill.style.width = '100%';
+                scheduleRender();
+                updateCounters();
+                addLog(
+                    `ZIP part ${partLabel}: ${partRecords.length} files, ` +
+                    `${formatBytes(blob.size)}, engine ${usedZipBackend}; ` +
+                    `sent to the browser.`,
+                    'success'
+                );
+
+                // Give the browser time to accept consecutive ZIP downloads.
+                await sleep(900);
+            }
+
+            groupStart += group.length;
+        }
+
+        abortActiveRequests();
+        packing = false;
+        running = false;
+
+        if (stopRequested) {
+            setPhase(`STOPPED: ${zippedCount} files already saved`);
+            addLog(
+                'The operation was stopped. Completed ZIP parts remain available.',
+                'warn'
+            );
+        } else {
+            setPhase('FINISHED');
+            progressFill.style.width = '100%';
+            addLog(
+                `Finished: ${zippedCount} files in ${zipPart} ZIP parts, ` +
+                `${errorCount} errors.`,
+                errorCount ? 'warn' : 'success'
+            );
+        }
+
+        updateButtons();
+        updateCounters();
+    }
+

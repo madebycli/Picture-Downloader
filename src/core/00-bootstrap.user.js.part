@@ -1,0 +1,199 @@
+// ==UserScript==
+// @name         Media Archiver
+// @namespace    https://github.com/madebycli/Picture-Downloader
+// @version      6.0.0
+// @description  Collect rendered media from supported web apps and save filtered files as numbered ZIP parts.
+// @homepageURL  https://github.com/madebycli/Picture-Downloader
+// @supportURL   https://github.com/madebycli/Picture-Downloader/issues
+// __ADAPTER_MATCHES__
+// @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
+// @grant        GM_xmlhttpRequest
+// __ADAPTER_CONNECTS__
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    const VERSION = '6.0.0';
+    const APP_NAME = 'Media Archiver';
+    const SCAN_DELAY_MS = 650;
+    const REAL_TOP_CONFIRM_MS = 20_000;
+    const REAL_BOTTOM_CONFIRM_MS = 20_000;
+    const FINAL_NEWEST_SETTLE_MS = 7_000;
+    const RESTORE_POSITION_MAX_STEPS = 700;
+    const TOP_PROBE_INTERVAL_MS = 1000;
+    const NEWEST_STABLE_ROUNDS_REQUIRED = 3;
+    const DOWNLOAD_CONCURRENCY = 8;
+    const REQUEST_RETRIES = 4;
+    const ZIP_BATCH_MAX_ITEMS = 200;
+    const ZIP_MAX_BYTES = 350 * 1024 * 1024;
+    const WORK_BATCH_ESTIMATED_MAX_BYTES = 420 * 1024 * 1024;
+    const ESTIMATED_PHOTO_BYTES = 1.5 * 1024 * 1024;
+    const ESTIMATED_VIDEO_BYTES = 60 * 1024 * 1024;
+    const ESTIMATED_EXTERNAL_GIF_BYTES = 8 * 1024 * 1024;
+
+    const IMAGE_EXTENSIONS = new Set([
+        '.jpg', '.jpeg', '.png', '.gif', '.webp',
+        '.bmp', '.tif', '.tiff', '.avif', '.heic'
+    ]);
+
+    const VIDEO_EXTENSIONS = new Set([
+        // Common browser-compatible video containers
+        '.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi',
+
+        // Additional uploaded video containers
+        '.mpeg', '.mpg', '.mpe', '.mpv',
+        '.ogv', '.ogg',
+        '.3gp', '.3g2',
+        '.flv', '.f4v',
+        '.wmv', '.asf',
+        '.ts', '.mts', '.m2ts',
+        '.vob', '.divx',
+        '.rm', '.rmvb'
+    ]);
+
+    const MEDIA_EXTENSIONS = new Set([
+        ...IMAGE_EXTENSIONS,
+        ...VIDEO_EXTENSIONS
+    ]);
+
+    const STATUS = Object.freeze({
+        COLLECTED: 'collected',
+        FETCHING: 'fetching',
+        PACKED: 'packed',
+        ERROR: 'error'
+    });
+
+    /** @type {Map<string, {
+     * key: string,
+     * url: string,
+     * previewUrl: string,
+     * filename: string,
+     * mediaType: 'photo'|'video'|'external-gif',
+     * sourceKind: string,
+     * sourcePageUrl: string|null,
+     * itemId: string|null,
+     * timestamp: string|null,
+     * firstSeen: number,
+     * status: string,
+     * error: string,
+     * size: number
+     * }>} */
+    const mediaEntries = new Map(); // Stores attachments and external GIF previews.
+
+    const activeRequests = new Set();
+
+    let firstSeenCounter = 0;
+    let running = false;
+    let scanning = false;
+    let packing = false;
+    let stopRequested = false;
+    let renderTimer = null;
+    let lastScanBoundaryReason = '';
+
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+
+    const SITE_ADAPTERS = [];
+    let activeSiteAdapter = null;
+
+    function registerSiteAdapter(adapter) {
+        const requiredMethods = [
+            'matches',
+            'scanVisibleMedia',
+            'findScroller',
+            'visibleItemIds',
+            'visibleItemTimeRange',
+            'findItemElementById',
+            'captureStartingAnchor',
+            'findItemId',
+            'findItemTimestamp',
+            'compareItemIds',
+            'getArchiveContext',
+            'isDownloadUrlAllowed'
+        ];
+
+        if (!adapter?.id || !adapter?.label) {
+            throw new Error('A site adapter needs an id and label.');
+        }
+
+        for (const method of requiredMethods) {
+            if (typeof adapter[method] !== 'function') {
+                throw new Error(
+                    `Site adapter ${adapter.id} is missing ${method}().`
+                );
+            }
+        }
+
+        SITE_ADAPTERS.push(Object.freeze(adapter));
+    }
+
+    function resolveSiteAdapter() {
+        return SITE_ADAPTERS.find(adapter => {
+            try {
+                return adapter.matches(location);
+            } catch {
+                return false;
+            }
+        }) || null;
+    }
+
+    function scanVisiblePage() {
+        return activeSiteAdapter.scanVisibleMedia();
+    }
+
+    function findTimelineScroller() {
+        return activeSiteAdapter.findScroller();
+    }
+
+    function visibleItemIds() {
+        return activeSiteAdapter.visibleItemIds();
+    }
+
+    function visibleItemTimeRange() {
+        return activeSiteAdapter.visibleItemTimeRange();
+    }
+
+    function findItemElementById(itemId) {
+        return activeSiteAdapter.findItemElementById(itemId);
+    }
+
+    function captureStartingAnchor(scroller) {
+        return activeSiteAdapter.captureStartingAnchor(scroller);
+    }
+
+    function findItemId(element) {
+        return activeSiteAdapter.findItemId(element);
+    }
+
+    function findItemTimestamp(element) {
+        return activeSiteAdapter.findItemTimestamp(element);
+    }
+
+    function timestampFromItemId(itemId) {
+        return activeSiteAdapter.timestampFromItemId?.(itemId) || null;
+    }
+
+    function compareItemIds(left, right) {
+        return activeSiteAdapter.compareItemIds(left, right);
+    }
+
+    function adapterTerm(key, fallback) {
+        return activeSiteAdapter?.terms?.[key] || fallback;
+    }
+
+    function sanitizeFilename(value) {
+        return (value || 'bild')
+            .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+            .replace(/\s+/g, ' ')
+            .replace(/[. ]+$/g, '')
+            .slice(0, 180) || 'bild';
+    }
+
+    function extensionFromPath(pathname) {
+        const filename = pathname.split('/').pop() || '';
+        const dot = filename.lastIndexOf('.');
+        return dot >= 0 ? filename.slice(dot).toLowerCase() : '';
+    }
+

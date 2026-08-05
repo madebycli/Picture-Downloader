@@ -1,15 +1,13 @@
 # Release process
 
-1. Update the userscript metadata `@version`.
-2. Update the internal `VERSION` constant to the same value.
-3. Run `npm run build` and verify the generated root file.
-4. Add a dated entry to `CHANGELOG.md`.
+1. Make source changes in `src/core/` or `src/adapters/`.
+2. Update adapter/build manifests when modules or permissions change.
+3. Update the metadata version, runtime `VERSION`, and `package.json` together.
+4. Add user-visible changes to `CHANGELOG.md`; do not add release notes to the runtime UI.
 5. Run `npm test`.
-6. Complete the manual smoke test in Firefox and a Chromium browser.
-7. Confirm both ZIP engines:
-   - `fflate` available
-   - built-in fallback with the CDN blocked
-8. Commit with a message such as `release: v5.7.0`.
-9. Create a matching Git tag and GitHub release when the repository release process is enabled.
+6. Test Firefox and Chromium, both ZIP engines, and every affected adapter.
+7. Review generated `@match` and `@connect` metadata.
+8. Commit the generated `media-archiver.user.js` with the source changes.
+9. Merge only after GitHub Actions succeeds.
 
-The root `discord-media-archiver.user.js` file is the release artifact.
+The root `media-archiver.user.js` file is the installable release artifact.

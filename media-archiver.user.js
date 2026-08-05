@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Discord Media Archiver - Photos and Videos
+// @name         Media Archiver
 // @namespace    https://github.com/madebycli/Picture-Downloader
-// @version      5.6.0
-// @description  Archive Discord photos, GIFs, videos, and rendered external GIF previews into numbered ZIP parts.
+// @version      6.0.0
+// @description  Collect rendered media from supported web apps and save filtered files as numbered ZIP parts.
 // @homepageURL  https://github.com/madebycli/Picture-Downloader
 // @supportURL   https://github.com/madebycli/Picture-Downloader/issues
 // @match        https://discord.com/channels/*
@@ -20,7 +20,8 @@
 (() => {
     'use strict';
 
-    const VERSION = '5.6.0';
+    const VERSION = '6.0.0';
+    const APP_NAME = 'Media Archiver';
     const SCAN_DELAY_MS = 650;
     const REAL_TOP_CONFIRM_MS = 20_000;
     const REAL_BOTTOM_CONFIRM_MS = 20_000;
@@ -28,7 +29,6 @@
     const RESTORE_POSITION_MAX_STEPS = 700;
     const TOP_PROBE_INTERVAL_MS = 1000;
     const NEWEST_STABLE_ROUNDS_REQUIRED = 3;
-    const DISCORD_EPOCH_MS = 1420070400000;
     const DOWNLOAD_CONCURRENCY = 8;
     const REQUEST_RETRIES = 4;
     const ZIP_BATCH_MAX_ITEMS = 200;
@@ -44,7 +44,7 @@
     ]);
 
     const VIDEO_EXTENSIONS = new Set([
-        // Common browser/Discord video containers
+        // Common browser-compatible video containers
         '.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi',
 
         // Additional uploaded video containers
@@ -76,16 +76,16 @@
      * previewUrl: string,
      * filename: string,
      * mediaType: 'photo'|'video'|'external-gif',
-     * sourceKind: 'discord-attachment'|'external-gif-preview',
+     * sourceKind: string,
      * sourcePageUrl: string|null,
-     * messageId: string|null,
+     * itemId: string|null,
      * timestamp: string|null,
      * firstSeen: number,
      * status: string,
      * error: string,
      * size: number
      * }>} */
-    const images = new Map(); // Stores attachments and external GIF previews.
+    const mediaEntries = new Map(); // Stores attachments and external GIF previews.
 
     const activeRequests = new Set();
 
@@ -95,11 +95,98 @@
     let packing = false;
     let stopRequested = false;
     let renderTimer = null;
-    let lastZipBlobUrl = null;
-    let lastZipFilename = null;
     let lastScanBoundaryReason = '';
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+
+    const SITE_ADAPTERS = [];
+    let activeSiteAdapter = null;
+
+    function registerSiteAdapter(adapter) {
+        const requiredMethods = [
+            'matches',
+            'scanVisibleMedia',
+            'findScroller',
+            'visibleItemIds',
+            'visibleItemTimeRange',
+            'findItemElementById',
+            'captureStartingAnchor',
+            'findItemId',
+            'findItemTimestamp',
+            'compareItemIds',
+            'getArchiveContext',
+            'isDownloadUrlAllowed'
+        ];
+
+        if (!adapter?.id || !adapter?.label) {
+            throw new Error('A site adapter needs an id and label.');
+        }
+
+        for (const method of requiredMethods) {
+            if (typeof adapter[method] !== 'function') {
+                throw new Error(
+                    `Site adapter ${adapter.id} is missing ${method}().`
+                );
+            }
+        }
+
+        SITE_ADAPTERS.push(Object.freeze(adapter));
+    }
+
+    function resolveSiteAdapter() {
+        return SITE_ADAPTERS.find(adapter => {
+            try {
+                return adapter.matches(location);
+            } catch {
+                return false;
+            }
+        }) || null;
+    }
+
+    function scanVisiblePage() {
+        return activeSiteAdapter.scanVisibleMedia();
+    }
+
+    function findTimelineScroller() {
+        return activeSiteAdapter.findScroller();
+    }
+
+    function visibleItemIds() {
+        return activeSiteAdapter.visibleItemIds();
+    }
+
+    function visibleItemTimeRange() {
+        return activeSiteAdapter.visibleItemTimeRange();
+    }
+
+    function findItemElementById(itemId) {
+        return activeSiteAdapter.findItemElementById(itemId);
+    }
+
+    function captureStartingAnchor(scroller) {
+        return activeSiteAdapter.captureStartingAnchor(scroller);
+    }
+
+    function findItemId(element) {
+        return activeSiteAdapter.findItemId(element);
+    }
+
+    function findItemTimestamp(element) {
+        return activeSiteAdapter.findItemTimestamp(element);
+    }
+
+    function timestampFromItemId(itemId) {
+        return activeSiteAdapter.timestampFromItemId?.(itemId) || null;
+    }
+
+    function compareItemIds(left, right) {
+        return activeSiteAdapter.compareItemIds(left, right);
+    }
+
+    function adapterTerm(key, fallback) {
+        return activeSiteAdapter?.terms?.[key] || fallback;
+    }
 
     function sanitizeFilename(value) {
         return (value || 'bild')
@@ -113,6 +200,76 @@
         const filename = pathname.split('/').pop() || '';
         const dot = filename.lastIndexOf('.');
         return dot >= 0 ? filename.slice(dot).toLowerCase() : '';
+    }
+
+    const DISCORD_EPOCH_MS = 1420070400000;
+
+    function createDiscordAdapter() {
+        const downloadHosts = new Set([
+            'cdn.discordapp.com',
+            'media.discordapp.net',
+            'images-ext-1.discordapp.net',
+            'images-ext-2.discordapp.net'
+        ]);
+
+        return {
+            id: 'discord',
+            label: 'Discord',
+            archivePrefix: 'discord',
+            terms: Object.freeze({
+                timeline: 'channel or thread',
+                item: 'message',
+                items: 'messages',
+                oldest: 'timeline start',
+                newest: 'timeline end'
+            }),
+            matches(currentLocation) {
+                return [
+                    'discord.com',
+                    'ptb.discord.com',
+                    'canary.discord.com'
+                ].includes(currentLocation.hostname) &&
+                    currentLocation.pathname.startsWith('/channels/');
+            },
+            scanVisibleMedia: scanDiscordVisibleMedia,
+            findScroller: findDiscordScroller,
+            visibleItemIds: discordVisibleItemIds,
+            visibleItemTimeRange: discordVisibleItemTimeRange,
+            findItemElementById: findDiscordItemElementById,
+            captureStartingAnchor: captureDiscordStartingAnchor,
+            findItemId: findDiscordItemId,
+            findItemTimestamp: findDiscordItemTimestamp,
+            timestampFromItemId: discordTimestampFromSnowflake,
+            compareItemIds(left, right) {
+                if (!left || !right) return 0;
+                try {
+                    const a = BigInt(left);
+                    const b = BigInt(right);
+                    return a === b ? 0 : a < b ? -1 : 1;
+                } catch {
+                    return String(left).localeCompare(String(right));
+                }
+            },
+            getArchiveContext() {
+                const id =
+                    location.pathname.match(
+                        /\/channels\/(?:@me|\d+)\/(\d+)/
+                    )?.[1] ||
+                    'timeline';
+
+                return { id, label: 'channel' };
+            },
+            isDownloadUrlAllowed(rawUrl) {
+                try {
+                    return downloadHosts.has(
+                        new URL(rawUrl, location.href).hostname
+                    );
+                } catch {
+                    return false;
+                }
+            },
+            openTargetHelp: 'Open a text channel or thread first.'
+        };
     }
 
     // Only direct Discord attachment hosts are accepted. External embeds
@@ -247,7 +404,7 @@
             }
         }
 
-        return findMessageContainer(element);
+        return findDiscordItemContainer(element);
     }
 
     function findExternalGifPageUrl(element) {
@@ -326,7 +483,7 @@
             .filter(isDiscordExternalProxyUrl);
     }
 
-    function toOriginalUrl(rawUrl) {
+    function normalizeDiscordAttachmentUrl(rawUrl) {
         const url = new URL(rawUrl, location.href);
 
         // media.discordapp.net often serves a scaled preview.
@@ -388,15 +545,15 @@
         }
     }
 
-    function findMessageContainer(element) {
+    function findDiscordItemContainer(element) {
         return element.closest?.(
             'li[id*="chat-messages"], div[id*="chat-messages"], ' +
             '[data-list-item-id*="chat-messages"], article'
         ) || null;
     }
 
-    function findMessageId(element) {
-        let current = findMessageContainer(element) || element;
+    function findDiscordItemId(element) {
+        let current = findDiscordItemContainer(element) || element;
 
         for (let depth = 0; current && depth < 14; depth++, current = current.parentElement) {
             const values = [
@@ -416,12 +573,12 @@
         return null;
     }
 
-    function timestampFromSnowflake(messageId) {
-        if (!messageId) return null;
+    function discordTimestampFromSnowflake(itemId) {
+        if (!itemId) return null;
 
         try {
             const milliseconds =
-                Number((BigInt(messageId) >> 22n) + BigInt(DISCORD_EPOCH_MS));
+                Number((BigInt(itemId) >> 22n) + BigInt(DISCORD_EPOCH_MS));
 
             if (!Number.isFinite(milliseconds)) return null;
             return new Date(milliseconds).toISOString();
@@ -430,13 +587,13 @@
         }
     }
 
-    function findTimestamp(element) {
-        const container = findMessageContainer(element);
-        const messageId = findMessageId(element);
+    function findDiscordItemTimestamp(element) {
+        const container = findDiscordItemContainer(element);
+        const itemId = findDiscordItemId(element);
 
-        if (messageId) {
+        if (itemId) {
             const exactTime = document.getElementById(
-                `message-timestamp-${messageId}`
+                `message-timestamp-${itemId}`
             );
 
             if (
@@ -453,16 +610,16 @@
 
         return (
             time?.getAttribute('datetime') ||
-            timestampFromSnowflake(messageId)
+            timestampFromItemId(itemId)
         );
     }
 
-    function addOrUpdateImage(rawUrl, sourceElement) {
+    function addOrUpdateMediaEntry(rawUrl, sourceElement) {
         if (!isDiscordAttachmentUrl(rawUrl, sourceElement)) return false;
 
-        const originalUrl = toOriginalUrl(rawUrl);
+        const originalUrl = normalizeDiscordAttachmentUrl(rawUrl);
         const key = canonicalKey(originalUrl);
-        const existing = images.get(key);
+        const existing = mediaEntries.get(key);
 
         if (existing) {
             if (urlQualityScore(originalUrl) > urlQualityScore(existing.url)) {
@@ -474,12 +631,12 @@
                 existing.url = originalUrl;
             }
 
-            if (!existing.messageId) existing.messageId = findMessageId(sourceElement);
-            if (!existing.timestamp) existing.timestamp = findTimestamp(sourceElement);
+            if (!existing.itemId) existing.itemId = findItemId(sourceElement);
+            if (!existing.timestamp) existing.timestamp = findItemTimestamp(sourceElement);
             return false;
         }
 
-        images.set(key, {
+        mediaEntries.set(key, {
             key,
             url: originalUrl,
             previewUrl: rawUrl,
@@ -487,8 +644,8 @@
             mediaType: mediaTypeFromUrl(originalUrl, sourceElement),
             sourceKind: 'discord-attachment',
             sourcePageUrl: null,
-            messageId: findMessageId(sourceElement),
-            timestamp: findTimestamp(sourceElement),
+            itemId: findItemId(sourceElement),
+            timestamp: findItemTimestamp(sourceElement),
             firstSeen: firstSeenCounter++,
             status: STATUS.COLLECTED,
             error: '',
@@ -513,7 +670,7 @@
 
         const mediaUrl = new URL(rawUrl, location.href).href;
         const key = `external-gif:${canonicalKey(mediaUrl)}`;
-        const existing = images.get(key);
+        const existing = mediaEntries.get(key);
 
         if (existing) {
             existing.url = mediaUrl;
@@ -523,12 +680,12 @@
                 existing.sourcePageUrl = sourcePageUrl;
             }
 
-            if (!existing.messageId) {
-                existing.messageId = findMessageId(sourceElement);
+            if (!existing.itemId) {
+                existing.itemId = findItemId(sourceElement);
             }
 
             if (!existing.timestamp) {
-                existing.timestamp = findTimestamp(sourceElement);
+                existing.timestamp = findItemTimestamp(sourceElement);
             }
 
             return false;
@@ -540,7 +697,7 @@
             filename = 'external-gif-preview.mp4';
         }
 
-        images.set(key, {
+        mediaEntries.set(key, {
             key,
             url: mediaUrl,
             previewUrl: mediaUrl,
@@ -550,8 +707,8 @@
             sourcePageUrl:
                 sourcePageUrl ||
                 findExternalGifPageUrl(sourceElement),
-            messageId: findMessageId(sourceElement),
-            timestamp: findTimestamp(sourceElement),
+            itemId: findItemId(sourceElement),
+            timestamp: findItemTimestamp(sourceElement),
             firstSeen: firstSeenCounter++,
             status: STATUS.COLLECTED,
             error: '',
@@ -601,7 +758,7 @@
         return added;
     }
 
-    function scanVisiblePage() {
+    function scanDiscordVisibleMedia() {
         let added = 0;
 
         const selectors = [
@@ -621,7 +778,7 @@
             ].filter(Boolean);
 
             for (const candidate of candidates) {
-                if (addOrUpdateImage(candidate, element)) {
+                if (addOrUpdateMediaEntry(candidate, element)) {
                     added++;
                     break;
                 }
@@ -634,16 +791,171 @@
         return added;
     }
 
-    function compareImagesNewestFirst(a, b) {
-        if (a.messageId && b.messageId) {
-            try {
-                const left = BigInt(a.messageId);
-                const right = BigInt(b.messageId);
-                if (left > right) return -1;
-                if (left < right) return 1;
-            } catch {
-                // Fall back to timestamp/detection order.
+    function discordVisibleItemTimeRange() {
+        const values = [];
+
+        document
+            .querySelectorAll('time[id^="message-timestamp-"][datetime]')
+            .forEach(time => {
+                const milliseconds = Date.parse(
+                    time.getAttribute('datetime') || ''
+                );
+
+                if (Number.isFinite(milliseconds)) values.push(milliseconds);
+            });
+
+        if (!values.length) {
+            for (const itemId of visibleItemIds()) {
+                const timestamp = timestampFromItemId(itemId);
+                const milliseconds = Date.parse(timestamp || '');
+                if (Number.isFinite(milliseconds)) values.push(milliseconds);
             }
+        }
+
+        if (!values.length) return null;
+
+        return {
+            minMs: Math.min(...values),
+            maxMs: Math.max(...values)
+        };
+    }
+
+    function findDiscordScroller() {
+        const messageList =
+            document.querySelector('ol[data-list-id="chat-messages"]') ||
+            document.querySelector('[data-list-id="chat-messages"]') ||
+            document.querySelector('main');
+
+        let current = messageList;
+        while (current && current !== document.body) {
+            if (isScrollable(current)) return current;
+            current = current.parentElement;
+        }
+
+        // Fallback: largest visible scroll container in the main area.
+        const candidates = [...document.querySelectorAll('main div, main section')]
+            .filter(isScrollable)
+            .sort((a, b) =>
+                (b.scrollHeight - b.clientHeight) -
+                (a.scrollHeight - a.clientHeight)
+            );
+
+        return candidates[0] || null;
+    }
+
+    function findDiscordItemElementById(itemId) {
+        if (!itemId) return null;
+
+        const elements = document.querySelectorAll(
+            '[id*="chat-messages"], [data-list-item-id*="chat-messages"], ' +
+            '[aria-labelledby*="chat-messages"]'
+        );
+
+        for (const element of elements) {
+            const values = [
+                element.id,
+                element.getAttribute('data-list-item-id'),
+                element.getAttribute('aria-labelledby')
+            ].filter(Boolean);
+
+            if (
+                values.some(value =>
+                    String(value).includes(itemId)
+                )
+            ) {
+                return element;
+            }
+        }
+
+        return null;
+    }
+
+    function captureDiscordStartingAnchor(scroller) {
+        const scrollerRect = scroller.getBoundingClientRect();
+        let best = null;
+
+        const elements = document.querySelectorAll(
+            '[id*="chat-messages"], [data-list-item-id*="chat-messages"]'
+        );
+
+        for (const element of elements) {
+            const itemId = findDiscordItemId(element);
+            if (!itemId) continue;
+
+            const rect = element.getBoundingClientRect();
+
+            if (
+                rect.bottom < scrollerRect.top ||
+                rect.top > scrollerRect.bottom
+            ) {
+                continue;
+            }
+
+            const distance = Math.abs(
+                rect.top - scrollerRect.top
+            );
+
+            if (!best || distance < best.distance) {
+                best = {
+                    itemId,
+                    offset: rect.top - scrollerRect.top,
+                    distance
+                };
+            }
+        }
+
+        const position = scrollPosition(scroller);
+
+        return {
+            itemId: best?.itemId || null,
+            offset: best?.offset || 0,
+            scrollRatio:
+                position.height > position.client
+                    ? position.top /
+                      (position.height - position.client)
+                    : 0
+        };
+    }
+
+    function discordVisibleItemIds() {
+        const ids = new Set();
+        const elements = document.querySelectorAll(
+            '[id*="chat-messages"], [data-list-item-id*="chat-messages"], ' +
+            '[aria-labelledby*="chat-messages"]'
+        );
+
+        for (const element of elements) {
+            const values = [
+                element.id,
+                element.getAttribute?.('data-list-item-id'),
+                element.getAttribute?.('aria-labelledby')
+            ].filter(Boolean);
+
+            for (const value of values) {
+                const matches = String(value).match(/\d{16,22}/g);
+                if (matches?.length) {
+                    ids.add(matches[matches.length - 1]);
+                    break;
+                }
+            }
+        }
+
+        return [...ids];
+    }
+
+
+    registerSiteAdapter(createDiscordAdapter());
+    activeSiteAdapter = resolveSiteAdapter();
+
+    if (!activeSiteAdapter) {
+        return;
+    }
+
+    function compareEntriesNewestFirst(a, b) {
+        if (a.itemId && b.itemId) {
+            const comparison = compareItemIds(a.itemId, b.itemId);
+            if (comparison > 0) return -1;
+            if (comparison < 0) return 1;
         }
 
         if (a.timestamp && b.timestamp) {
@@ -652,13 +964,13 @@
             if (timeDifference) return timeDifference;
         }
 
-        if (a.messageId && !b.messageId) return -1;
-        if (!a.messageId && b.messageId) return 1;
+        if (a.itemId && !b.itemId) return -1;
+        if (!a.itemId && b.itemId) return 1;
         return a.firstSeen - b.firstSeen;
     }
 
-    function sortedImages() {
-        return [...images.values()].sort(compareImagesNewestFirst);
+    function sortedMediaEntries() {
+        return [...mediaEntries.values()].sort(compareEntriesNewestFirst);
     }
 
     function localDateInputValue(date) {
@@ -758,7 +1070,7 @@
         const parsed = Date.parse(entry.timestamp || '');
         if (Number.isFinite(parsed)) return parsed;
 
-        const fallback = timestampFromSnowflake(entry.messageId);
+        const fallback = timestampFromItemId(entry.itemId);
         const fallbackParsed = Date.parse(fallback || '');
         return Number.isFinite(fallbackParsed) ? fallbackParsed : NaN;
     }
@@ -804,14 +1116,14 @@
         if (!isEntryInsideDateRange(entry)) {
             return Number.isFinite(entryTimestampMilliseconds(entry))
                 ? 'Skipped by date-range filter'
-                : 'Skipped because its message date is unknown';
+                : 'Skipped because its source date is unknown';
         }
 
         return '';
     }
 
     function selectedMediaEntries() {
-        return sortedImages().filter(isEntryIncluded);
+        return sortedMediaEntries().filter(isEntryIncluded);
     }
 
     function selectionStatistics() {
@@ -820,7 +1132,7 @@
         let excludedByType = 0;
         let selected = 0;
 
-        for (const entry of images.values()) {
+        for (const entry of mediaEntries.values()) {
             const insideDate = isEntryInsideDateRange(entry);
             const typeEnabled = mediaTypeIsEnabled(entry);
 
@@ -832,7 +1144,7 @@
         }
 
         return {
-            total: images.size,
+            total: mediaEntries.size,
             inDateRange,
             excludedByDate,
             excludedByType,
@@ -840,45 +1152,16 @@
         };
     }
 
-    function visibleMessageTimeRange() {
-        const values = [];
-
-        document
-            .querySelectorAll('time[id^="message-timestamp-"][datetime]')
-            .forEach(time => {
-                const milliseconds = Date.parse(
-                    time.getAttribute('datetime') || ''
-                );
-
-                if (Number.isFinite(milliseconds)) values.push(milliseconds);
-            });
-
-        if (!values.length) {
-            for (const messageId of visibleMessageIds()) {
-                const timestamp = timestampFromSnowflake(messageId);
-                const milliseconds = Date.parse(timestamp || '');
-                if (Number.isFinite(milliseconds)) values.push(milliseconds);
-            }
-        }
-
-        if (!values.length) return null;
-
-        return {
-            minMs: Math.min(...values),
-            maxMs: Math.max(...values)
-        };
-    }
-
     function selectedDateBoundaryReached(direction) {
         const range = getDateRangeConfig();
         if (!range.enabled || !range.valid) return null;
 
-        const visible = visibleMessageTimeRange();
+        const visible = visibleItemTimeRange();
         if (!visible) return null;
 
         // The whole visible viewport must be outside the selected range.
         // This keeps the complete boundary day and avoids skipping media near
-        // the top or bottom edge of Discord's virtualized message list.
+        // the top or bottom edge of a virtualized timeline.
         if (
             direction === 'older' &&
             visible.maxMs < range.startMs
@@ -909,10 +1192,10 @@
                 return 'selected From-date boundary';
             case 'date-end':
                 return 'selected To-date boundary';
-            case 'chat-top':
-                return 'oldest-message boundary';
-            case 'chat-bottom':
-                return 'newest-message boundary';
+            case 'timeline-start':
+                return 'timeline-start boundary';
+            case 'timeline-end':
+                return 'timeline-end boundary';
             default:
                 return 'selected scan boundary';
         }
@@ -929,7 +1212,7 @@
         return `${range.startValue}_to_${end}`;
     }
 
-    function countMediaTypes(entries = [...images.values()]) {
+    function countMediaTypes(entries = [...mediaEntries.values()]) {
         let photos = 0;
         let videos = 0;
         let externalGifs = 0;
@@ -997,108 +1280,11 @@
         return ['auto', 'scroll', 'overlay'].includes(style.overflowY);
     }
 
-    function findChatScroller() {
-        const messageList =
-            document.querySelector('ol[data-list-id="chat-messages"]') ||
-            document.querySelector('[data-list-id="chat-messages"]') ||
-            document.querySelector('main');
-
-        let current = messageList;
-        while (current && current !== document.body) {
-            if (isScrollable(current)) return current;
-            current = current.parentElement;
-        }
-
-        // Fallback: largest visible scroll container in the main area.
-        const candidates = [...document.querySelectorAll('main div, main section')]
-            .filter(isScrollable)
-            .sort((a, b) =>
-                (b.scrollHeight - b.clientHeight) -
-                (a.scrollHeight - a.clientHeight)
-            );
-
-        return candidates[0] || null;
-    }
-
     function scrollPosition(scroller) {
         return {
             top: Math.round(scroller.scrollTop),
             height: Math.round(scroller.scrollHeight),
             client: Math.round(scroller.clientHeight)
-        };
-    }
-
-    function findMessageElementById(messageId) {
-        if (!messageId) return null;
-
-        const elements = document.querySelectorAll(
-            '[id*="chat-messages"], [data-list-item-id*="chat-messages"], ' +
-            '[aria-labelledby*="chat-messages"]'
-        );
-
-        for (const element of elements) {
-            const values = [
-                element.id,
-                element.getAttribute('data-list-item-id'),
-                element.getAttribute('aria-labelledby')
-            ].filter(Boolean);
-
-            if (
-                values.some(value =>
-                    String(value).includes(messageId)
-                )
-            ) {
-                return element;
-            }
-        }
-
-        return null;
-    }
-
-    function captureStartingAnchor(scroller) {
-        const scrollerRect = scroller.getBoundingClientRect();
-        let best = null;
-
-        const elements = document.querySelectorAll(
-            '[id*="chat-messages"], [data-list-item-id*="chat-messages"]'
-        );
-
-        for (const element of elements) {
-            const messageId = findMessageId(element);
-            if (!messageId) continue;
-
-            const rect = element.getBoundingClientRect();
-
-            if (
-                rect.bottom < scrollerRect.top ||
-                rect.top > scrollerRect.bottom
-            ) {
-                continue;
-            }
-
-            const distance = Math.abs(
-                rect.top - scrollerRect.top
-            );
-
-            if (!best || distance < best.distance) {
-                best = {
-                    messageId,
-                    offset: rect.top - scrollerRect.top,
-                    distance
-                };
-            }
-        }
-
-        const position = scrollPosition(scroller);
-
-        return {
-            messageId: best?.messageId || null,
-            offset: best?.offset || 0,
-            scrollRatio:
-                position.height > position.client
-                    ? position.top /
-                      (position.height - position.client)
-                    : 0
         };
     }
 
@@ -1142,7 +1328,7 @@
             }
         }
 
-        // Discord's virtual list can move the viewport after the first
+        // Virtualized timelines can move the viewport after the first
         // bottom jump. Re-apply the bottom position twice after settling.
         for (let pass = 0; pass < 2; pass++) {
             scroller.scrollTop = scroller.scrollHeight;
@@ -1169,7 +1355,7 @@
             step++
         ) {
             const element =
-                findMessageElementById(anchor.messageId);
+                findItemElementById(anchor.itemId);
 
             if (element) {
                 const scrollerRect =
@@ -1187,48 +1373,34 @@
                 return true;
             }
 
-            if (!anchor.messageId) break;
+            if (!anchor.itemId) break;
 
-            const ids = visibleMessageIds();
+            const ids = visibleItemIds();
             let oldest = null;
             let newest = null;
 
             for (const id of ids) {
-                try {
-                    if (
-                        oldest === null ||
-                        BigInt(id) < BigInt(oldest)
-                    ) {
-                        oldest = id;
-                    }
+                if (oldest === null || compareItemIds(id, oldest) < 0) {
+                    oldest = id;
+                }
 
-                    if (
-                        newest === null ||
-                        BigInt(id) > BigInt(newest)
-                    ) {
-                        newest = id;
-                    }
-                } catch {
-                    // Ignore invalid IDs.
+                if (newest === null || compareItemIds(id, newest) > 0) {
+                    newest = id;
                 }
             }
 
             let direction = 0;
 
-            try {
-                if (
-                    oldest &&
-                    BigInt(anchor.messageId) < BigInt(oldest)
-                ) {
-                    direction = -1;
-                } else if (
-                    newest &&
-                    BigInt(anchor.messageId) > BigInt(newest)
-                ) {
-                    direction = 1;
-                }
-            } catch {
-                direction = 0;
+            if (
+                oldest &&
+                compareItemIds(anchor.itemId, oldest) < 0
+            ) {
+                direction = -1;
+            } else if (
+                newest &&
+                compareItemIds(anchor.itemId, newest) > 0
+            ) {
+                direction = 1;
             }
 
             if (direction === 0) break;
@@ -1247,7 +1419,7 @@
             scanVisiblePage();
         }
 
-        // Best-effort fallback if the original message could not be found.
+        // Best-effort fallback if the original item could not be found.
         const position = scrollPosition(scroller);
         scroller.scrollTop =
             anchor.scrollRatio *
@@ -1267,11 +1439,11 @@
             case 'start':
                 return 'Return to starting position';
             default:
-                return 'Jump to newest after scan / ZIP';
+                return 'Jump to timeline end after scan / ZIP';
         }
     }
 
-    async function applyFinalChatPosition(
+    async function applyFinalTimelinePosition(
         scroller,
         option,
         startingAnchor
@@ -1294,15 +1466,15 @@
             addLog(
                 exact
                     ? 'Starting position restored.'
-                    : 'Starting position restored approximately because Discord had unloaded the original message.',
+                    : `Starting position restored approximately because ${activeSiteAdapter.label} unloaded the original ${adapterTerm('item', 'item')}.`,
                 exact ? 'success' : 'warn'
             );
             return;
         }
 
-        setPhase('RETURNING TO NEWEST MESSAGE');
+        setPhase('RETURNING TO TIMELINE END');
         addLog(
-            'Returning to the newest message and waiting for Discord’s virtual list to settle.'
+            'Returning to the timeline end and waiting for ${activeSiteAdapter.label} virtual timeline to settle.'
         );
 
         const reachedBottom =
@@ -1310,80 +1482,48 @@
 
         addLog(
             reachedBottom
-                ? 'Final chat position is now at the newest message.'
-                : 'Discord moved the virtual list again; the script applied its strongest bottom-position correction.',
+                ? 'Final position is now at the timeline end.'
+                : `${activeSiteAdapter.label} moved the virtual timeline again; the strongest end-position correction was applied.`,
             reachedBottom ? 'success' : 'warn'
         );
     }
 
     async function moveToNewest(scroller) {
-        setPhase('SCAN: moving to newest message');
-        addLog('Moving to the newest loaded message first.');
+        setPhase('SCAN: moving to timeline end');
+        addLog('Moving to the timeline end first.');
         await forceScrollToNewest(scroller, 5_000);
     }
 
-    function visibleMessageIds() {
-        const ids = new Set();
-        const elements = document.querySelectorAll(
-            '[id*="chat-messages"], [data-list-item-id*="chat-messages"], ' +
-            '[aria-labelledby*="chat-messages"]'
-        );
-
-        for (const element of elements) {
-            const values = [
-                element.id,
-                element.getAttribute?.('data-list-item-id'),
-                element.getAttribute?.('aria-labelledby')
-            ].filter(Boolean);
-
-            for (const value of values) {
-                const matches = String(value).match(/\d{16,22}/g);
-                if (matches?.length) {
-                    ids.add(matches[matches.length - 1]);
-                    break;
-                }
-            }
-        }
-
-        return [...ids];
-    }
-
-    function oldestVisibleMessageId() {
+    function oldestVisibleItemId() {
         let oldest = null;
 
-        for (const id of visibleMessageIds()) {
-            try {
-                if (oldest === null || BigInt(id) < BigInt(oldest)) {
-                    oldest = id;
-                }
-            } catch {
-                // Ignore invalid IDs.
+        for (const id of visibleItemIds()) {
+            if (oldest === null || compareItemIds(id, oldest) < 0) {
+                oldest = id;
             }
         }
 
         return oldest;
     }
 
-    function isOlderSnowflake(candidate, baseline) {
-        if (!candidate || !baseline) return false;
-
-        try {
-            return BigInt(candidate) < BigInt(baseline);
-        } catch {
-            return false;
-        }
+    function isOlderItemId(candidate, baseline) {
+        return Boolean(
+            candidate &&
+            baseline &&
+            compareItemIds(candidate, baseline) < 0
+        );
     }
 
-    async function confirmRealChatTop(scroller) {
+    async function confirmRealTimelineStart(scroller) {
         const startedAt = performance.now();
         const baseline = {
-            oldestId: oldestVisibleMessageId(),
-            mediaCount: images.size,
+            oldestId: oldestVisibleItemId(),
+            mediaCount: mediaEntries.size,
             height: scrollPosition(scroller).height
         };
 
         addLog(
-            'Possible chat beginning reached. Waiting 20 seconds for delayed older messages.'
+            'Possible timeline start reached. Waiting 20 seconds for delayed older items.'
         );
 
         while (!stopRequested) {
@@ -1393,20 +1533,20 @@
             scanVisiblePage();
 
             const current = scrollPosition(scroller);
-            const currentOldestId = oldestVisibleMessageId();
-            const olderMessageLoaded = isOlderSnowflake(
+            const currentOldestId = oldestVisibleItemId();
+            const olderItemLoaded = isOlderItemId(
                 currentOldestId,
                 baseline.oldestId
             );
             const changed =
-                olderMessageLoaded ||
-                images.size > baseline.mediaCount ||
+                olderItemLoaded ||
+                mediaEntries.size > baseline.mediaCount ||
                 Math.abs(current.height - baseline.height) >= 3 ||
                 current.top > 8;
 
             if (changed) {
                 addLog(
-                    `Discord loaded more content; scanning continues (${images.size} media files found).`,
+                    `${activeSiteAdapter.label} loaded more content; scanning continues (${mediaEntries.size} media files found).`,
                     'success'
                 );
                 return false;
@@ -1415,7 +1555,7 @@
             const elapsed = performance.now() - startedAt;
             const remaining = Math.max(0, REAL_TOP_CONFIRM_MS - elapsed);
             setPhase(
-                `SCAN: confirming real chat beginning · ${Math.ceil(remaining / 1000)} s left`
+                `SCAN: confirming real timeline start · ${Math.ceil(remaining / 1000)} s left`
             );
 
             if (remaining <= 0) {
@@ -1429,7 +1569,7 @@
 
     async function autoScrollToOldest(scroller) {
         setPhase('SCAN: newest → oldest');
-        addLog('Fast scan started. A 20-second confirmation runs at the possible chat beginning.');
+        addLog('Fast scan started. A 20-second confirmation runs at the possible timeline start.');
 
         let iterations = 0;
 
@@ -1444,7 +1584,7 @@
             await sleep(SCAN_DELAY_MS);
             scanVisiblePage();
 
-            // A second short scan catches attachments inserted shortly after the message
+            // A second short scan catches media inserted shortly after the item
             // without slowing the whole run too much.
             await sleep(120);
             scanVisiblePage();
@@ -1462,16 +1602,16 @@
             }
 
             if (iterations % 25 === 0) {
-                addLog(`Scan running: ${images.size} media files found.`);
+                addLog(`Scan running: ${mediaEntries.size} media files found.`);
             }
 
             if (after.top <= 5) {
-                const reallyAtTop = await confirmRealChatTop(scroller);
+                const reallyAtTop = await confirmRealTimelineStart(scroller);
 
                 if (reallyAtTop) {
-                    lastScanBoundaryReason = 'chat-top';
+                    lastScanBoundaryReason = 'timeline-start';
                     addLog(
-                        'No older messages appeared for 20 seconds. Chat beginning confirmed.',
+                        'No older items appeared for 20 seconds. Timeline start confirmed.',
                         'success'
                     );
                     return true;
@@ -1482,42 +1622,36 @@
         return false;
     }
 
-    function newestVisibleMessageId() {
+    function newestVisibleItemId() {
         let newest = null;
 
-        for (const id of visibleMessageIds()) {
-            try {
-                if (newest === null || BigInt(id) > BigInt(newest)) {
-                    newest = id;
-                }
-            } catch {
-                // Ignore invalid IDs.
+        for (const id of visibleItemIds()) {
+            if (newest === null || compareItemIds(id, newest) > 0) {
+                newest = id;
             }
         }
 
         return newest;
     }
 
-    function isNewerSnowflake(candidate, baseline) {
-        if (!candidate || !baseline) return false;
-
-        try {
-            return BigInt(candidate) > BigInt(baseline);
-        } catch {
-            return false;
-        }
+    function isNewerItemId(candidate, baseline) {
+        return Boolean(
+            candidate &&
+            baseline &&
+            compareItemIds(candidate, baseline) > 0
+        );
     }
 
-    async function confirmRealChatBottom(scroller) {
+    async function confirmRealTimelineEnd(scroller) {
         const startedAt = performance.now();
         const baseline = {
-            newestId: newestVisibleMessageId(),
-            mediaCount: images.size,
+            newestId: newestVisibleItemId(),
+            mediaCount: mediaEntries.size,
             height: scrollPosition(scroller).height
         };
 
         addLog(
-            'Possible newest-message boundary reached. Waiting 20 seconds for delayed newer messages.'
+            'Possible timeline-end boundary reached. Waiting 20 seconds for delayed newer items.'
         );
 
         while (!stopRequested) {
@@ -1527,8 +1661,8 @@
             scanVisiblePage();
 
             const current = scrollPosition(scroller);
-            const currentNewestId = newestVisibleMessageId();
-            const newerMessageLoaded = isNewerSnowflake(
+            const currentNewestId = newestVisibleItemId();
+            const newerItemLoaded = isNewerItemId(
                 currentNewestId,
                 baseline.newestId
             );
@@ -1536,14 +1670,14 @@
                 current.height - (current.top + current.client);
 
             const changed =
-                newerMessageLoaded ||
-                images.size > baseline.mediaCount ||
+                newerItemLoaded ||
+                mediaEntries.size > baseline.mediaCount ||
                 Math.abs(current.height - baseline.height) >= 3 ||
                 distanceFromBottom > 8;
 
             if (changed) {
                 addLog(
-                    `Discord loaded newer content; downward scanning continues (${images.size} media files found).`,
+                    `${activeSiteAdapter.label} loaded newer content; downward scanning continues (${mediaEntries.size} media files found).`,
                     'success'
                 );
                 return false;
@@ -1556,7 +1690,7 @@
             );
 
             setPhase(
-                `SCAN: confirming newest-message boundary · ${Math.ceil(remaining / 1000)} s left`
+                `SCAN: confirming timeline-end boundary · ${Math.ceil(remaining / 1000)} s left`
             );
 
             if (remaining <= 0) {
@@ -1571,7 +1705,7 @@
     async function autoScrollToNewest(scroller) {
         setPhase('SCAN: current → newest');
         addLog(
-            'Downward scan started. A 20-second confirmation runs at the possible newest-message boundary.'
+            'Downward scan started. A 20-second confirmation runs at the possible timeline-end boundary.'
         );
 
         let iterations = 0;
@@ -1614,18 +1748,18 @@
 
             if (iterations % 25 === 0) {
                 addLog(
-                    `Downward scan running: ${images.size} media files found.`
+                    `Downward scan running: ${mediaEntries.size} media files found.`
                 );
             }
 
             if (nearBottom) {
                 const reallyAtBottom =
-                    await confirmRealChatBottom(scroller);
+                    await confirmRealTimelineEnd(scroller);
 
                 if (reallyAtBottom) {
-                    lastScanBoundaryReason = 'chat-bottom';
+                    lastScanBoundaryReason = 'timeline-end';
                     addLog(
-                        'No newer messages appeared for 20 seconds. Newest-message boundary confirmed.',
+                        'No newer items appeared for 20 seconds. Timeline end confirmed.',
                         'success'
                     );
                     return true;
@@ -1639,13 +1773,13 @@
     function scanModeDescription(mode) {
         switch (mode) {
             case 'current-to-oldest':
-                return 'Current position → oldest';
+                return 'Current position → start';
             case 'current-to-newest':
-                return 'Current position → newest';
+                return 'Current position → end';
             case 'full-finish-down':
-                return 'Full channel: current → oldest → newest';
+                return 'Full timeline: current → start → end';
             default:
-                return 'Newest → oldest (jump to newest first)';
+                return 'End → start (jump to end first)';
         }
     }
 
@@ -1654,7 +1788,7 @@
             try {
                 request.abort();
             } catch {
-                // Ignorieren.
+                // Ignore already-finished requests.
             }
         }
         activeRequests.clear();
@@ -1662,6 +1796,11 @@
 
     function requestArrayBuffer(url, attempt = 1) {
         return new Promise((resolve, reject) => {
+            if (!activeSiteAdapter.isDownloadUrlAllowed(url)) {
+                reject(new Error('The active site adapter blocked this download URL.'));
+                return;
+            }
+
             if (stopRequested) {
                 reject(new Error('Stopped by user'));
                 return;
@@ -1799,7 +1938,7 @@
                 'media_type',
                 'source_kind',
                 'source_page_url',
-                'message_id',
+                'item_id',
                 'timestamp',
                 'status',
                 'size_bytes',
@@ -1815,7 +1954,7 @@
                 entry.mediaType,
                 entry.sourceKind || '',
                 entry.sourcePageUrl || '',
-                entry.messageId || '',
+                entry.itemId || '',
                 entry.timestamp || '',
                 entry.status,
                 entry.size || 0,
@@ -1857,7 +1996,7 @@
             'media_type',
             'source_kind',
             'source_page_url',
-            'message_id',
+            'item_id',
             'timestamp',
             'size_bytes',
             'source_url'
@@ -1873,7 +2012,7 @@
                 entry.mediaType,
                 entry.sourceKind || '',
                 entry.sourcePageUrl || '',
-                entry.messageId || '',
+                entry.itemId || '',
                 entry.timestamp || '',
                 entry.size || 0,
                 entry.url
@@ -2228,9 +2367,7 @@
         const entries = selectedEntries;
         const digits = Math.max(6, String(entries.length).length);
         const archiveNames = new Map();
-        const channelId =
-            location.pathname.match(/\/channels\/(?:@me|\d+)\/(\d+)/)?.[1] ||
-            'channel';
+        const archiveContext = activeSiteAdapter.getArchiveContext();
         const stamp = new Date()
             .toISOString()
             .slice(0, 16)
@@ -2387,7 +2524,7 @@
                 const blob = zipResult.blob;
                 const usedZipBackend = zipResult.backend;
                 const filename =
-                    `discord_${archiveKind}_${channelId}_` +
+                    `${activeSiteAdapter.archivePrefix}_${archiveKind}_${archiveContext.id}_` +
                     `${dateRangeFilenameToken()}_${stamp}_part_${partLabel}.zip`;
 
                 downloadZipBlob(blob, filename);
@@ -2465,8 +2602,8 @@
         lastScanBoundaryReason = '';
         setPhase('STARTING');
         addLog(
-            `Version ${VERSION}: automatic photo/GIF/video scan started. ` +
-            `Mode: ${scanModeDescription(scanMode)}.`
+            `Scan started on ${activeSiteAdapter.label}. Mode: ` +
+            `${scanModeDescription(scanMode)}.`
         );
 
         if (dateRange.enabled) {
@@ -2477,20 +2614,20 @@
 
         await sleep(300);
 
-        const scroller = findChatScroller();
+        const scroller = findTimelineScroller();
         if (!scroller) {
             running = false;
             scanning = false;
             setPhase('ERROR');
             addLog(
-                'Discord chat area was not found. Open a text channel or thread first.',
+                `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found. ${activeSiteAdapter.openTargetHelp || ''}`.trim(),
                 'error'
             );
             updateButtons();
             return;
         }
 
-        // Capture media and a message anchor at the selected starting position.
+        // Capture media and an item anchor at the selected starting position.
         scanVisiblePage();
         const startingAnchor = captureStartingAnchor(scroller);
 
@@ -2521,7 +2658,7 @@
             );
         } else if (scanMode === 'full-finish-down') {
             addLog(
-                'Full downward-finish mode: first scanning from the current position to the oldest message.'
+                'Full downward-finish mode: first scanning from the current position to the timeline start.'
             );
 
             const reachedTop = await autoScrollToOldest(scroller);
@@ -2545,9 +2682,9 @@
                 );
             } else {
                 reachedBoundary = false;
-                completedBoundaryLabel = 'oldest-message boundary';
+                completedBoundaryLabel = 'timeline-start boundary';
                 addLog(
-                    'The first scan did not confirm the oldest-message boundary, so the downward full-channel pass was not started.',
+                    'The first scan did not confirm the timeline-start boundary, so the downward full-channel pass was not started.',
                     'warn'
                 );
             }
@@ -2565,14 +2702,14 @@
         updateButtons();
 
         if (reachedBoundary) {
-            setPhase(`SCAN FINISHED: ${images.size} media files`);
+            setPhase(`SCAN FINISHED: ${mediaEntries.size} media files`);
             addLog(
                 `Scan completed at the ${completedBoundaryLabel}: ` +
-                `${images.size} unique media files found.`,
+                `${mediaEntries.size} unique media files found.`,
                 'success'
             );
         } else {
-            setPhase(`SCAN ENDED: ${images.size} media files`);
+            setPhase(`SCAN ENDED: ${mediaEntries.size} media files`);
             addLog(
                 'The scan stopped at the safety iteration limit or could not confirm the selected boundary.',
                 'warn'
@@ -2598,7 +2735,7 @@
         }
 
         if (!stopRequested) {
-            await applyFinalChatPosition(
+            await applyFinalTimelinePosition(
                 scroller,
                 finalPositionSelect.value,
                 startingAnchor
@@ -2607,7 +2744,7 @@
             setPhase(
                 createdZip
                     ? 'FINISHED'
-                    : `SCAN FINISHED: ${images.size} media files`
+                    : `SCAN FINISHED: ${mediaEntries.size} media files`
             );
         }
     }
@@ -2615,7 +2752,7 @@
     function finishStoppedScan() {
         scanning = false;
         running = false;
-        setPhase(`STOPPED: ${images.size} media files collected`);
+        setPhase(`STOPPED: ${mediaEntries.size} media files collected`);
         addLog(
             'Scrolling stopped. Use “CREATE ZIP NOW” to save the media found so far.',
             'warn'
@@ -2634,7 +2771,7 @@
     }
 
     function resetEntryStatuses() {
-        for (const entry of images.values()) {
+        for (const entry of mediaEntries.values()) {
             entry.status = STATUS.COLLECTED;
             entry.error = '';
             entry.size = 0;
@@ -2645,23 +2782,14 @@
     function resetCollection() {
         if (running || packing || scanning) return;
 
-        images.clear();
+        mediaEntries.clear();
         firstSeenCounter = 0;
         progressFill.style.width = '0%';
-        imageList.replaceChildren();
-        releaseLastZipUrl();
+        mediaList.replaceChildren();
         updateCounters();
-        updateDownloadAgainButton();
         setPhase('READY');
     }
 
-    function releaseLastZipUrl() {
-        if (lastZipBlobUrl) {
-            URL.revokeObjectURL(lastZipBlobUrl);
-        }
-        lastZipBlobUrl = null;
-        lastZipFilename = null;
-    }
 
     function formatBytes(bytes) {
         if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -2692,17 +2820,17 @@
 
     function scheduleRender() {
         clearTimeout(renderTimer);
-        renderTimer = setTimeout(renderImageList, 120);
+        renderTimer = setTimeout(renderMediaList, 120);
     }
 
-    function renderImageList() {
-        const entries = sortedImages();
+    function renderMediaList() {
+        const entries = sortedMediaEntries();
         const fragment = document.createDocumentFragment();
 
         entries.forEach((entry, index) => {
             const row = document.createElement('div');
-            row.className = `daz-row daz-${entry.status}`;
-            if (!isEntryIncluded(entry)) row.classList.add('daz-skipped');
+            row.className = `ma-row ma-${entry.status}`;
+            if (!isEntryIncluded(entry)) row.classList.add('ma-skipped');
 
             let thumbnail;
 
@@ -2711,7 +2839,7 @@
                 entry.mediaType === 'external-gif'
             ) {
                 thumbnail = document.createElement('div');
-                thumbnail.className = 'daz-thumb daz-video-thumb';
+                thumbnail.className = 'ma-thumb ma-video-thumb';
                 thumbnail.textContent =
                     entry.mediaType === 'external-gif'
                         ? 'GIF'
@@ -2722,7 +2850,7 @@
                         : 'Video attachment';
             } else {
                 thumbnail = document.createElement('img');
-                thumbnail.className = 'daz-thumb';
+                thumbnail.className = 'ma-thumb';
                 thumbnail.loading = 'lazy';
                 thumbnail.referrerPolicy = 'no-referrer';
                 thumbnail.src = entry.previewUrl;
@@ -2730,16 +2858,16 @@
             }
 
             const details = document.createElement('div');
-            details.className = 'daz-details';
+            details.className = 'ma-details';
 
             const name = document.createElement('div');
-            name.className = 'daz-name';
+            name.className = 'ma-name';
             name.textContent =
                 `${String(index + 1).padStart(4, '0')} · ${entry.filename}`;
             name.title = entry.filename;
 
             const meta = document.createElement('div');
-            meta.className = 'daz-meta';
+            meta.className = 'ma-meta';
             meta.textContent = [
                 entry.mediaType === 'external-gif'
                     ? 'EXTERNAL GIF PREVIEW'
@@ -2748,14 +2876,14 @@
                     ? new Date(entry.timestamp).toLocaleString('en-GB')
                     : 'Time unknown',
                 entry.size ? formatBytes(entry.size) : '',
-                entry.messageId ? `ID ${entry.messageId}` : ''
+                entry.itemId ? `ID ${entry.itemId}` : ''
             ].filter(Boolean).join(' · ');
 
             details.append(name, meta);
 
             const [symbol, title, className] = statusIcon(entry);
             const status = document.createElement('div');
-            status.className = `daz-check daz-check-${className}`;
+            status.className = `ma-check ma-check-${className}`;
             status.textContent = symbol;
             status.title = title;
 
@@ -2763,13 +2891,13 @@
             fragment.appendChild(row);
         });
 
-        imageList.replaceChildren(fragment);
+        mediaList.replaceChildren(fragment);
         updateCounters();
     }
 
     function addLog(message, type = 'info') {
         const line = document.createElement('div');
-        line.className = `daz-log-line daz-log-${type}`;
+        line.className = `ma-log-line ma-log-${type}`;
 
         const time = new Date().toLocaleTimeString('en-GB');
         line.textContent = `[${time}] ${message}`;
@@ -2789,7 +2917,7 @@
         let packedCount = 0;
         let errorCount = 0;
 
-        for (const entry of images.values()) {
+        for (const entry of mediaEntries.values()) {
             if (entry.status === STATUS.PACKED) packedCount++;
             if (entry.status === STATUS.ERROR) errorCount++;
         }
@@ -2808,6 +2936,8 @@
             String(stats.excludedByDate);
         selectedCountElement.textContent =
             String(stats.selected);
+        selectedSummaryElement.textContent = `${stats.selected} selected`;
+        mediaTabCount.textContent = String(stats.total);
         packedElement.textContent = String(packedCount);
         errorElement.textContent = String(errorCount);
         updateButtons();
@@ -2818,6 +2948,10 @@
         const busy = running || packing || scanning;
 
         const dateRange = getDateRangeConfig();
+
+        startButton.textContent = autoZipCheckbox.checked
+            ? 'Scan & create ZIPs'
+            : 'Scan media';
 
         startButton.disabled =
             busy ||
@@ -2846,637 +2980,426 @@
             busy ||
             !dateFilterCheckbox.checked ||
             dateEndModeSelect.value !== 'specific';
-        updateDownloadAgainButton();
     }
 
-    function updateDownloadAgainButton() {
-        downloadAgainButton.hidden = !lastZipBlobUrl;
-        downloadAgainButton.disabled = !lastZipBlobUrl;
-    }
 
     // ---------- Interface ----------
 
     const panel = document.createElement('aside');
-    panel.id = 'discord-auto-zip-panel';
+    panel.id = 'media-archiver-panel';
     panel.innerHTML = `
-        <header class="daz-header">
-            <div>
-                <div class="daz-title">Discord Media Archiver</div>
-                <div class="daz-version">Attachments · Firefox-safe ZIP fallback · v${VERSION}</div>
+        <header class="ma-header">
+            <div class="ma-brand">
+                <div class="ma-title-row">
+                    <div class="ma-title">${APP_NAME}</div>
+                    <span class="ma-site-badge">${activeSiteAdapter.label}</span>
+                </div>
+                <div class="ma-subtitle">Rendered media · v${VERSION}</div>
             </div>
-            <button id="daz-collapse" class="daz-icon-button" title="Collapse or expand">−</button>
+            <button
+                id="ma-collapse"
+                class="ma-icon-button"
+                type="button"
+                title="Collapse panel"
+                aria-label="Collapse panel"
+            >−</button>
         </header>
 
-        <div id="daz-body">
-            <section class="daz-status-card">
-                <div id="daz-phase">READY</div>
-                <div class="daz-progress">
-                    <div id="daz-progress-fill"></div>
+        <div id="ma-body">
+            <section class="ma-status-card" aria-live="polite">
+                <div class="ma-phase-row">
+                    <div id="ma-phase">READY</div>
+                    <span id="ma-selected-summary">0 selected</span>
                 </div>
-                <div class="daz-counters">
-                    <span>Total found <strong id="daz-found">0</strong></span>
-                    <span>Photos <strong id="daz-photo-count">0</strong></span>
-                    <span>Videos <strong id="daz-video-count">0</strong></span>
-                    <span>Embed GIFs <strong id="daz-external-gif-count">0</strong></span>
-                    <span>In date range <strong id="daz-in-range">0</strong></span>
-                    <span>Excluded by date <strong id="daz-excluded-date">0</strong></span>
-                    <span>Selected for ZIP <strong id="daz-selected-count">0</strong></span>
-                    <span>✓ ZIP saved <strong id="daz-packed">0</strong></span>
-                    <span>Errors <strong id="daz-errors">0</strong></span>
+                <div class="ma-progress" aria-hidden="true">
+                    <div id="ma-progress-fill"></div>
+                </div>
+                <div class="ma-primary-metrics">
+                    <div><strong id="ma-found">0</strong><span>Found</span></div>
+                    <div><strong id="ma-selected-count">0</strong><span>Selected</span></div>
+                    <div><strong id="ma-packed">0</strong><span>Saved</span></div>
+                    <div><strong id="ma-errors">0</strong><span>Errors</span></div>
                 </div>
             </section>
 
-            <div class="daz-media-options">
-                <label class="daz-option">
-                    <input id="daz-include-photos" type="checkbox" checked>
-                    Include photos / GIFs
-                </label>
-                <label class="daz-option">
-                    <input id="daz-include-videos" type="checkbox" checked>
-                    Include videos
-                </label>
-                <label class="daz-option daz-wide-option">
-                    <input id="daz-include-external-gifs" type="checkbox" checked>
-                    Include external GIF previews
-                </label>
+            <nav class="ma-tabs" aria-label="Media Archiver sections">
+                <button type="button" data-ma-tab="setup" aria-selected="true">Setup</button>
+                <button type="button" data-ma-tab="media" aria-selected="false">
+                    Media <span id="ma-media-tab-count">0</span>
+                </button>
+                <button type="button" data-ma-tab="activity" aria-selected="false">Activity</button>
+            </nav>
+
+            <div class="ma-tab-content">
+                <section data-ma-panel="setup">
+                    <section class="ma-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>What to save</h2>
+                                <p>Choose the media categories included in the archive.</p>
+                            </div>
+                        </div>
+                        <div class="ma-choice-grid">
+                            <label class="ma-choice">
+                                <input id="ma-include-photos" type="checkbox" checked>
+                                <span><strong>Photos & native GIFs</strong><small>Image attachments</small></span>
+                            </label>
+                            <label class="ma-choice">
+                                <input id="ma-include-videos" type="checkbox" checked>
+                                <span><strong>Videos</strong><small>Video attachments</small></span>
+                            </label>
+                            <label class="ma-choice ma-choice-wide">
+                                <input id="ma-include-external-gifs" type="checkbox" checked>
+                                <span><strong>Rendered GIF previews</strong><small>Animated previews supplied by the active site</small></span>
+                            </label>
+                        </div>
+                    </section>
+
+                    <section class="ma-group">
+                        <div class="ma-group-heading ma-heading-with-control">
+                            <div>
+                                <h2>Date range</h2>
+                                <p>Filter by each item's source timestamp.</p>
+                            </div>
+                            <label class="ma-switch">
+                                <input id="ma-date-filter" type="checkbox">
+                                <span aria-hidden="true"></span>
+                                <b>Use filter</b>
+                            </label>
+                        </div>
+
+                        <div id="ma-date-fields" class="ma-field-grid ma-date-fields">
+                            <label>
+                                <span>From</span>
+                                <input id="ma-from-date" type="date">
+                            </label>
+                            <label>
+                                <span>Range end</span>
+                                <select id="ma-date-end-mode">
+                                    <option value="latest">Latest available</option>
+                                    <option value="specific">Specific date</option>
+                                </select>
+                            </label>
+                            <label id="ma-to-date-wrap" class="ma-field-wide">
+                                <span>To, inclusive</span>
+                                <input id="ma-to-date" type="date">
+                            </label>
+                        </div>
+                        <div id="ma-date-summary" class="ma-inline-status">All scanned dates are included.</div>
+                    </section>
+
+                    <section class="ma-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>Scan behavior</h2>
+                                <p>Control where the scan starts, ends, and leaves the page.</p>
+                            </div>
+                        </div>
+                        <div class="ma-field-grid">
+                            <label class="ma-field-wide">
+                                <span>Direction and starting point</span>
+                                <select id="ma-scan-direction">
+                                    <option value="newest-to-oldest">End → start (jump to end first)</option>
+                                    <option value="current-to-oldest">Current position → start</option>
+                                    <option value="current-to-newest">Current position → end</option>
+                                    <option value="full-finish-down">Full timeline: current → start → end</option>
+                                </select>
+                            </label>
+                            <label class="ma-field-wide">
+                                <span>Position after completion</span>
+                                <select id="ma-final-position">
+                                    <option value="newest" selected>Jump to timeline end</option>
+                                    <option value="scan-end">Stay at scan end</option>
+                                    <option value="start">Return to starting position</option>
+                                </select>
+                            </label>
+                        </div>
+                    </section>
+
+                    <section class="ma-group ma-compact-group">
+                        <label class="ma-option-row">
+                            <span>
+                                <strong>Create ZIPs after scanning</strong>
+                                <small>Turn this off to review the collected media first.</small>
+                            </span>
+                            <input id="ma-auto-zip" type="checkbox" checked>
+                        </label>
+                    </section>
+                </section>
+
+                <section data-ma-panel="media" hidden>
+                    <div class="ma-detail-metrics">
+                        <div><span>Photos</span><strong id="ma-photo-count">0</strong></div>
+                        <div><span>Videos</span><strong id="ma-video-count">0</strong></div>
+                        <div><span>GIF previews</span><strong id="ma-external-gif-count">0</strong></div>
+                        <div><span>In range</span><strong id="ma-in-range">0</strong></div>
+                        <div><span>Date excluded</span><strong id="ma-excluded-date">0</strong></div>
+                    </div>
+                    <div class="ma-list-heading">
+                        <div>
+                            <h2>Collected media</h2>
+                            <p>○ collected · … downloading · ✓ saved · – filtered out</p>
+                        </div>
+                    </div>
+                    <div id="ma-media-list" class="ma-media-list"></div>
+                </section>
+
+                <section data-ma-panel="activity" hidden>
+                    <div class="ma-list-heading ma-heading-with-control">
+                        <div>
+                            <h2>Activity</h2>
+                            <p>Operational messages for the current session.</p>
+                        </div>
+                        <button id="ma-clear-log" class="ma-text-button" type="button">Clear</button>
+                    </div>
+                    <div id="ma-log" class="ma-log" aria-live="polite"></div>
+                </section>
             </div>
 
-            <label class="daz-direction-option">
-                <span>Scan direction / starting point</span>
-                <select id="daz-scan-direction">
-                    <option value="newest-to-oldest">
-                        Newest → oldest (jump to newest first)
-                    </option>
-                    <option value="current-to-oldest">
-                        Current position → oldest (scroll up)
-                    </option>
-                    <option value="current-to-newest">
-                        Current position → newest (scroll down)
-                    </option>
-                    <option value="full-finish-down">
-                        Full channel: current → oldest → newest
-                    </option>
-                </select>
-            </label>
-
-            <label class="daz-direction-option">
-                <span>Final chat position after scan / ZIP</span>
-                <select id="daz-final-position">
-                    <option value="newest" selected>
-                        Jump to newest after scan / ZIP
-                    </option>
-                    <option value="scan-end">
-                        Stay at scan end
-                    </option>
-                    <option value="start">
-                        Return to starting position
-                    </option>
-                </select>
-            </label>
-
-            <section class="daz-date-card">
-                <label class="daz-option daz-date-enable">
-                    <input id="daz-date-filter" type="checkbox">
-                    Limit media by message date
-                </label>
-
-                <div id="daz-date-fields" class="daz-date-fields">
-                    <label>
-                        <span>From date</span>
-                        <input id="daz-from-date" type="date">
-                    </label>
-
-                    <label>
-                        <span>End of range</span>
-                        <select id="daz-date-end-mode">
-                            <option value="latest">Latest available</option>
-                            <option value="specific">Specific date</option>
-                        </select>
-                    </label>
-
-                    <label id="daz-to-date-wrap">
-                        <span>To date (inclusive)</span>
-                        <input id="daz-to-date" type="date">
-                    </label>
-                </div>
-
-                <div id="daz-date-summary" class="daz-date-summary">
-                    Date filter disabled
-                </div>
-            </section>
-
-            <label class="daz-option daz-auto-option">
-                <input id="daz-auto-zip" type="checkbox" checked>
-                Automatically create ZIP parts after the scan
-            </label>
-
-            <div class="daz-actions">
-                <button id="daz-start" class="daz-primary">START: SCAN + ZIP</button>
-                <button id="daz-stop" class="daz-danger" disabled>STOP</button>
-                <button id="daz-zip" class="daz-success" disabled>CREATE ZIP NOW</button>
-                <button id="daz-reset" class="daz-secondary">RESET</button>
-            </div>
-
-            <div class="daz-section-title">
-                Media <span class="daz-legend">○ collected · … downloading · ✓ saved</span>
-            </div>
-            <div id="daz-image-list" class="daz-image-list"></div>
-
-            <div class="daz-section-title">Live log</div>
-            <div id="daz-log" class="daz-log"></div>
-
-            <div class="daz-note">
-                Total found and the media-type counters include everything detected
-                while scrolling. In date range and Selected for ZIP show what passes
-                the active filters. Native Discord GIF files use the Photos / GIFs
-                switch. External GIF-page links are detected from Discord's rendered
-                preview and use
-                the External GIF previews switch. These previews are commonly MP4
-                files even though Discord labels them as GIFs. Disabled media types
-                are skipped. The date filter reads each Discord message's exact
-                timestamp and includes complete local calendar days. For a range such
-                as 5 September through today, choose the From date and leave End of
-                range on Latest available. “Full channel: current → oldest → newest”
-                is the safest date-range mode when you start in the middle.
-                If the external fast ZIP library is blocked, the script automatically
-                uses a built-in ZIP writer instead of stopping.
-            </div>
+            <footer class="ma-actions">
+                <button id="ma-start" class="ma-primary" type="button">Scan & create ZIPs</button>
+                <button id="ma-stop" class="ma-danger" type="button" disabled>Stop</button>
+                <button id="ma-zip" class="ma-success" type="button" disabled>Create ZIP now</button>
+                <button id="ma-reset" class="ma-secondary" type="button">Reset</button>
+            </footer>
         </div>
     `;
 
     const style = document.createElement('style');
     style.textContent = `
-        #discord-auto-zip-panel {
-            --daz-bg: #111214;
-            --daz-card: #1e1f22;
-            --daz-border: rgba(255,255,255,.12);
-            --daz-text: #f2f3f5;
-            --daz-muted: #949ba4;
+        #media-archiver-panel {
+            --ma-bg: #111418;
+            --ma-surface: #181d23;
+            --ma-surface-2: #20262e;
+            --ma-border: rgba(255, 255, 255, .11);
+            --ma-text: #f4f7fa;
+            --ma-muted: #98a3af;
+            --ma-accent: #4f8cff;
+            --ma-accent-strong: #3276f5;
+            --ma-success: #28a76f;
+            --ma-danger: #d94c57;
             position: fixed;
             right: 18px;
             bottom: 18px;
             z-index: 2147483647;
-            width: min(430px, calc(100vw - 36px));
-            max-height: min(780px, calc(100vh - 36px));
+            width: min(460px, calc(100vw - 36px));
+            max-height: min(820px, calc(100vh - 36px));
             overflow: hidden;
-            border: 1px solid var(--daz-border);
-            border-radius: 14px;
-            background: var(--daz-bg);
-            color: var(--daz-text);
-            box-shadow: 0 14px 50px rgba(0,0,0,.55);
-            font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            border: 1px solid var(--ma-border);
+            border-radius: 16px;
+            background: var(--ma-bg);
+            color: var(--ma-text);
+            box-shadow: 0 22px 70px rgba(0, 0, 0, .48);
+            font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
 
-        #discord-auto-zip-panel * {
-            box-sizing: border-box;
-        }
+        #media-archiver-panel * { box-sizing: border-box; }
+        #media-archiver-panel [hidden] { display: none !important; }
 
-        .daz-header {
+        .ma-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 10px;
-            padding: 12px 14px;
-            border-bottom: 1px solid var(--daz-border);
-            background: #0c0d0e;
+            gap: 12px;
+            padding: 13px 14px;
+            border-bottom: 1px solid var(--ma-border);
+            background: rgba(8, 10, 13, .72);
         }
 
-        .daz-title {
-            font-size: 16px;
-            font-weight: 800;
-        }
-
-        .daz-version,
-        .daz-note,
-        .daz-legend {
-            color: var(--daz-muted);
-            font-size: 11px;
-        }
-
-        #daz-body {
-            max-height: calc(min(780px, 100vh - 36px) - 59px);
-            overflow-y: auto;
-            padding: 12px;
-        }
-
-        .daz-status-card {
-            padding: 10px;
-            border: 1px solid var(--daz-border);
-            border-radius: 9px;
-            background: var(--daz-card);
-        }
-
-        #daz-phase {
-            min-height: 19px;
-            margin-bottom: 7px;
-            font-weight: 750;
-            overflow-wrap: anywhere;
-        }
-
-        .daz-progress {
-            height: 7px;
+        .ma-brand { min-width: 0; }
+        .ma-title-row { display: flex; align-items: center; gap: 8px; }
+        .ma-title { font-size: 16px; font-weight: 800; letter-spacing: -.01em; }
+        .ma-site-badge {
+            max-width: 150px;
             overflow: hidden;
-            border-radius: 99px;
-            background: #2b2d31;
-        }
-
-        #daz-progress-fill {
-            width: 0;
-            height: 100%;
-            border-radius: inherit;
-            background: #5865f2;
-            transition: width .18s ease;
-        }
-
-        .daz-counters {
-            display: flex;
-            justify-content: space-between;
-            gap: 8px;
-            margin-top: 8px;
-            color: #b5bac1;
-            font-size: 12px;
-        }
-
-        .daz-option {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            margin: 0;
-            cursor: pointer;
-            color: #dbdee1;
-        }
-
-        .daz-media-options {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 7px;
-            margin: 10px 0 8px;
-        }
-
-        .daz-media-options .daz-option {
-            padding: 9px;
-            border: 1px solid var(--daz-border);
-            border-radius: 7px;
-            background: var(--daz-card);
-        }
-
-        .daz-media-options .daz-wide-option {
-            grid-column: 1 / -1;
-        }
-
-        .daz-direction-option {
-            display: block;
-            margin: 9px 0;
-            color: #dbdee1;
-            font-size: 11px;
-        }
-
-        .daz-direction-option span {
-            display: block;
-            margin-bottom: 4px;
-            font-weight: 700;
-        }
-
-        .daz-direction-option select {
-            width: 100%;
-            border: 1px solid var(--daz-border);
-            border-radius: 6px;
-            padding: 8px;
-            background: var(--daz-card);
-            color: var(--daz-text);
-            font: inherit;
-        }
-
-        .daz-date-card {
-            margin: 9px 0;
-            padding: 9px;
-            border: 1px solid var(--daz-border);
-            border-radius: 8px;
-            background: var(--daz-card);
-        }
-
-        .daz-date-enable {
-            font-weight: 700;
-        }
-
-        .daz-date-fields {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 7px;
-            margin-top: 9px;
-        }
-
-        .daz-date-fields label {
-            min-width: 0;
-            color: #b5bac1;
-            font-size: 11px;
-        }
-
-        .daz-date-fields label span {
-            display: block;
-            margin-bottom: 4px;
-        }
-
-        .daz-date-fields input,
-        .daz-date-fields select {
-            width: 100%;
-            border: 1px solid var(--daz-border);
-            border-radius: 6px;
-            padding: 7px;
-            background: #111214;
-            color: var(--daz-text);
-            color-scheme: dark;
-            font: inherit;
-        }
-
-        .daz-date-fields.daz-disabled {
-            opacity: .45;
-        }
-
-        .daz-date-summary {
-            margin-top: 7px;
-            color: var(--daz-muted);
+            padding: 2px 7px;
+            border: 1px solid rgba(79, 140, 255, .42);
+            border-radius: 999px;
+            color: #bcd2ff;
+            background: rgba(79, 140, 255, .12);
             font-size: 10px;
-            overflow-wrap: anywhere;
-        }
-
-        .daz-date-summary.daz-date-error {
-            color: #ed4245;
-        }
-
-        #daz-to-date-wrap[hidden] {
-            display: none;
-        }
-
-        .daz-auto-option {
-            margin: 9px 1px 10px;
-        }
-
-        .daz-actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 7px;
-        }
-
-        #discord-auto-zip-panel button {
-            border: 0;
-            border-radius: 6px;
-            padding: 9px 8px;
-            color: #fff;
-            cursor: pointer;
-            font: inherit;
             font-weight: 750;
-        }
-
-        #discord-auto-zip-panel button:hover:not(:disabled) {
-            filter: brightness(1.12);
-        }
-
-        #discord-auto-zip-panel button:disabled {
-            cursor: not-allowed;
-            opacity: .42;
-        }
-
-        .daz-primary {
-            grid-column: 1 / -1;
-            background: #5865f2;
-        }
-
-        .daz-danger {
-            background: #da373c;
-        }
-
-        .daz-success {
-            background: #248046;
-        }
-
-        .daz-secondary,
-        .daz-icon-button {
-            background: #4e5058;
-        }
-
-        #daz-download-again {
-            grid-column: 1 / -1;
-        }
-
-        .daz-icon-button {
-            width: 34px;
-            min-width: 34px;
-            padding: 6px !important;
-        }
-
-        .daz-section-title {
-            display: flex;
-            justify-content: space-between;
-            align-items: baseline;
-            gap: 8px;
-            margin: 13px 1px 6px;
-            font-weight: 800;
-        }
-
-        .daz-image-list {
-            max-height: 260px;
-            overflow-y: auto;
-            border: 1px solid var(--daz-border);
-            border-radius: 8px;
-            background: #0c0d0e;
-        }
-
-        .daz-image-list:empty::before {
-            display: block;
-            padding: 16px;
-            color: var(--daz-muted);
-            text-align: center;
-            content: "No media collected yet";
-        }
-
-        .daz-row {
-            display: grid;
-            grid-template-columns: 42px minmax(0, 1fr) 31px;
-            align-items: center;
-            gap: 8px;
-            min-height: 50px;
-            padding: 5px 7px;
-            border-bottom: 1px solid rgba(255,255,255,.07);
-        }
-
-        .daz-row:last-child {
-            border-bottom: 0;
-        }
-
-        .daz-thumb {
-            width: 42px;
-            height: 42px;
-            border-radius: 5px;
-            background: #2b2d31;
-            object-fit: cover;
-        }
-
-        .daz-video-thumb {
-            display: grid;
-            place-items: center;
-            color: #fff;
-            background: #2b2d31;
-            font-size: 18px;
-        }
-
-        .daz-skipped {
-            opacity: .45;
-        }
-
-        .daz-details {
-            min-width: 0;
-        }
-
-        .daz-name {
-            overflow: hidden;
-            font-size: 12px;
-            font-weight: 650;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .ma-subtitle { margin-top: 2px; color: var(--ma-muted); font-size: 10px; }
 
-        .daz-meta {
-            margin-top: 3px;
+        #ma-body {
+            display: flex;
+            max-height: calc(min(820px, 100vh - 36px) - 58px);
+            flex-direction: column;
             overflow: hidden;
-            color: var(--daz-muted);
-            font-size: 10px;
-            text-overflow: ellipsis;
-            white-space: nowrap;
         }
 
-        .daz-check {
-            display: grid;
-            width: 25px;
-            height: 25px;
-            place-items: center;
-            border: 1px solid var(--daz-border);
-            border-radius: 50%;
-            font-weight: 900;
+        .ma-status-card {
+            margin: 12px 12px 0;
+            padding: 11px;
+            border: 1px solid var(--ma-border);
+            border-radius: 11px;
+            background: linear-gradient(145deg, var(--ma-surface-2), var(--ma-surface));
         }
+        .ma-phase-row { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+        #ma-phase { min-width: 0; font-weight: 760; overflow-wrap: anywhere; }
+        #ma-selected-summary { flex: none; color: var(--ma-muted); font-size: 10px; }
+        .ma-progress { height: 6px; margin-top: 9px; overflow: hidden; border-radius: 999px; background: #0d1014; }
+        #ma-progress-fill { width: 0; height: 100%; border-radius: inherit; background: var(--ma-accent); transition: width .18s ease; }
+        .ma-primary-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 10px; }
+        .ma-primary-metrics div { min-width: 0; padding: 7px 6px; border-radius: 8px; background: rgba(0, 0, 0, .18); text-align: center; }
+        .ma-primary-metrics strong { display: block; font-size: 15px; }
+        .ma-primary-metrics span { display: block; margin-top: 1px; color: var(--ma-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
 
-        .daz-check-collected {
-            color: #b5bac1;
-        }
+        .ma-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 10px 12px 0; padding: 3px; border: 1px solid var(--ma-border); border-radius: 10px; background: #0c0f13; }
+        .ma-tabs button { padding: 7px 8px !important; border-radius: 7px !important; background: transparent !important; color: var(--ma-muted) !important; font-weight: 700 !important; }
+        .ma-tabs button[aria-selected="true"] { background: var(--ma-surface-2) !important; color: var(--ma-text) !important; box-shadow: 0 1px 4px rgba(0,0,0,.28); }
+        #ma-media-tab-count { display: inline-grid; min-width: 18px; height: 18px; margin-left: 3px; place-items: center; border-radius: 999px; background: rgba(255,255,255,.09); font-size: 9px; }
 
-        .daz-check-fetching {
-            color: #f0b232;
-            animation: daz-pulse .7s infinite alternate;
-        }
+        .ma-tab-content { min-height: 0; overflow-y: auto; padding: 10px 12px 12px; }
+        .ma-group { margin-bottom: 9px; padding: 11px; border: 1px solid var(--ma-border); border-radius: 11px; background: var(--ma-surface); }
+        .ma-compact-group { padding: 9px 11px; }
+        .ma-group-heading, .ma-list-heading { margin-bottom: 10px; }
+        .ma-heading-with-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .ma-group h2, .ma-list-heading h2 { margin: 0; color: var(--ma-text); font-size: 12px; font-weight: 800; }
+        .ma-group p, .ma-list-heading p { margin: 2px 0 0; color: var(--ma-muted); font-size: 10px; }
 
-        .daz-check-packed {
-            border-color: #248046;
-            background: #248046;
-            color: white;
-        }
+        .ma-choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+        .ma-choice { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px; border: 1px solid var(--ma-border); border-radius: 9px; background: rgba(0,0,0,.15); cursor: pointer; }
+        .ma-choice-wide { grid-column: 1 / -1; }
+        .ma-choice span, .ma-option-row span { min-width: 0; }
+        .ma-choice strong, .ma-option-row strong { display: block; font-size: 11px; }
+        .ma-choice small, .ma-option-row small { display: block; margin-top: 2px; color: var(--ma-muted); font-size: 9px; }
 
-        .daz-check-error {
-            border-color: #da373c;
-            background: #da373c;
-            color: white;
-        }
+        .ma-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .ma-field-grid label { min-width: 0; color: #c8d0d8; font-size: 10px; }
+        .ma-field-grid label > span { display: block; margin-bottom: 4px; }
+        .ma-field-wide { grid-column: 1 / -1; }
+        .ma-field-grid input, .ma-field-grid select { width: 100%; min-height: 34px; border: 1px solid var(--ma-border); border-radius: 8px; padding: 7px 8px; background: #0d1116; color: var(--ma-text); color-scheme: dark; font: inherit; }
+        .ma-date-fields.ma-disabled { display: none; }
+        .ma-inline-status { margin-top: 8px; color: var(--ma-muted); font-size: 10px; overflow-wrap: anywhere; }
+        .ma-inline-status.ma-date-error { color: #ff7b84; }
 
-        .daz-check-skipped {
-            color: #949ba4;
-        }
+        .ma-switch { display: inline-flex; align-items: center; gap: 6px; flex: none; cursor: pointer; color: var(--ma-muted); font-size: 10px; }
+        .ma-switch input { position: absolute; opacity: 0; pointer-events: none; }
+        .ma-switch span { position: relative; width: 30px; height: 17px; border-radius: 999px; background: #3a424c; transition: background .15s ease; }
+        .ma-switch span::after { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: white; content: ""; transition: transform .15s ease; }
+        .ma-switch input:checked + span { background: var(--ma-accent); }
+        .ma-switch input:checked + span::after { transform: translateX(13px); }
+        .ma-switch b { font-weight: 650; }
 
-        @keyframes daz-pulse {
-            to { opacity: .35; }
-        }
+        .ma-option-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; }
+        .ma-option-row input { width: 17px; height: 17px; flex: none; }
 
-        .daz-log {
-            height: 130px;
-            overflow: auto;
-            padding: 7px;
-            border: 1px solid var(--daz-border);
-            border-radius: 8px;
-            background: #08090a;
-            color: #b5bac1;
-            font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
-        }
+        .ma-detail-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 11px; }
+        .ma-detail-metrics div { min-width: 0; padding: 7px 5px; border: 1px solid var(--ma-border); border-radius: 8px; background: var(--ma-surface); text-align: center; }
+        .ma-detail-metrics span { display: block; overflow: hidden; color: var(--ma-muted); font-size: 8px; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+        .ma-detail-metrics strong { display: block; margin-top: 2px; font-size: 13px; }
 
-        .daz-log-line {
-            overflow-wrap: anywhere;
-        }
+        .ma-media-list { max-height: 390px; overflow-y: auto; border: 1px solid var(--ma-border); border-radius: 10px; background: #090c0f; }
+        .ma-media-list:empty::before { display: block; padding: 28px 14px; color: var(--ma-muted); text-align: center; content: "No media collected yet"; }
+        .ma-row { display: grid; grid-template-columns: 42px minmax(0, 1fr) 29px; align-items: center; gap: 8px; min-height: 52px; padding: 5px 7px; border-bottom: 1px solid rgba(255,255,255,.07); }
+        .ma-row:last-child { border-bottom: 0; }
+        .ma-thumb { width: 42px; height: 42px; border-radius: 7px; background: #242b33; object-fit: cover; }
+        .ma-video-thumb { display: grid; place-items: center; color: white; font-size: 16px; }
+        .ma-skipped { opacity: .44; }
+        .ma-details { min-width: 0; }
+        .ma-name { overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+        .ma-meta { margin-top: 3px; overflow: hidden; color: var(--ma-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+        .ma-check { display: grid; width: 24px; height: 24px; place-items: center; border: 1px solid var(--ma-border); border-radius: 50%; font-weight: 900; }
+        .ma-check-collected, .ma-check-skipped { color: #aeb8c2; }
+        .ma-check-fetching { color: #ffc857; animation: ma-pulse .7s infinite alternate; }
+        .ma-check-packed { border-color: var(--ma-success); background: var(--ma-success); color: white; }
+        .ma-check-error { border-color: var(--ma-danger); background: var(--ma-danger); color: white; }
+        @keyframes ma-pulse { to { opacity: .35; } }
 
-        .daz-log-success {
-            color: #57f287;
-        }
+        .ma-log { min-height: 290px; max-height: 440px; overflow: auto; padding: 9px; border: 1px solid var(--ma-border); border-radius: 10px; background: #080a0d; color: #bac3cc; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+        .ma-log-line { overflow-wrap: anywhere; }
+        .ma-log-success { color: #67d89e; }
+        .ma-log-warn { color: #ffd06b; }
+        .ma-log-error { color: #ff7b84; }
 
-        .daz-log-warn {
-            color: #f0b232;
-        }
+        .ma-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 10px 12px 12px; border-top: 1px solid var(--ma-border); background: rgba(8,10,13,.88); }
+        #media-archiver-panel button { border: 0; border-radius: 8px; padding: 9px 8px; color: white; cursor: pointer; font: inherit; font-weight: 760; }
+        #media-archiver-panel button:hover:not(:disabled) { filter: brightness(1.1); }
+        #media-archiver-panel button:disabled { cursor: not-allowed; opacity: .42; }
+        .ma-primary { grid-column: 1 / -1; background: var(--ma-accent-strong); }
+        .ma-danger { background: var(--ma-danger); }
+        .ma-success { background: var(--ma-success); }
+        .ma-secondary, .ma-icon-button { background: #404954; }
+        .ma-icon-button { width: 34px; min-width: 34px; padding: 6px !important; }
+        .ma-text-button { padding: 5px 8px !important; background: transparent !important; color: var(--ma-muted) !important; }
 
-        .daz-log-error {
-            color: #ed4245;
-        }
+        #media-archiver-panel.ma-collapsed #ma-body { display: none; }
 
-        .daz-note {
-            margin-top: 9px;
-        }
-
-        #discord-auto-zip-panel.daz-collapsed #daz-body {
-            display: none;
+        @media (max-width: 520px) {
+            #media-archiver-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); max-height: calc(100vh - 16px); border-radius: 13px; }
+            #ma-body { max-height: calc(100vh - 74px); }
+            .ma-choice-grid, .ma-field-grid { grid-template-columns: 1fr; }
+            .ma-choice-wide, .ma-field-wide { grid-column: auto; }
+            .ma-detail-metrics { grid-template-columns: repeat(3, 1fr); }
         }
     `;
 
     document.head.appendChild(style);
     document.body.appendChild(panel);
 
-    const phaseElement = panel.querySelector('#daz-phase');
-    const progressFill = panel.querySelector('#daz-progress-fill');
-    const foundElement = panel.querySelector('#daz-found');
-    const photoCountElement = panel.querySelector('#daz-photo-count');
-    const videoCountElement = panel.querySelector('#daz-video-count');
-    const externalGifCountElement =
-        panel.querySelector('#daz-external-gif-count');
-    const inRangeElement = panel.querySelector('#daz-in-range');
-    const excludedDateElement =
-        panel.querySelector('#daz-excluded-date');
-    const selectedCountElement = panel.querySelector('#daz-selected-count');
-    const packedElement = panel.querySelector('#daz-packed');
-    const errorElement = panel.querySelector('#daz-errors');
-    const imageList = panel.querySelector('#daz-image-list');
-    const logArea = panel.querySelector('#daz-log');
-    const startButton = panel.querySelector('#daz-start');
-    const stopButton = panel.querySelector('#daz-stop');
-    const zipButton = panel.querySelector('#daz-zip');
-    const resetButton = panel.querySelector('#daz-reset');
-    const downloadAgainButton = document.createElement('button');
-    downloadAgainButton.hidden = true;
-    const autoZipCheckbox = panel.querySelector('#daz-auto-zip');
-    const photoCheckbox = panel.querySelector('#daz-include-photos');
-    const videoCheckbox = panel.querySelector('#daz-include-videos');
-    const externalGifCheckbox =
-        panel.querySelector('#daz-include-external-gifs');
-    const scanDirectionSelect = panel.querySelector('#daz-scan-direction');
-    const finalPositionSelect =
-        panel.querySelector('#daz-final-position');
-    const dateFilterCheckbox = panel.querySelector('#daz-date-filter');
-    const dateFields = panel.querySelector('#daz-date-fields');
-    const fromDateInput = panel.querySelector('#daz-from-date');
-    const dateEndModeSelect = panel.querySelector('#daz-date-end-mode');
-    const toDateWrap = panel.querySelector('#daz-to-date-wrap');
-    const toDateInput = panel.querySelector('#daz-to-date');
-    const dateSummaryElement = panel.querySelector('#daz-date-summary');
-    const collapseButton = panel.querySelector('#daz-collapse');
+    const phaseElement = panel.querySelector('#ma-phase');
+    const progressFill = panel.querySelector('#ma-progress-fill');
+    const foundElement = panel.querySelector('#ma-found');
+    const photoCountElement = panel.querySelector('#ma-photo-count');
+    const videoCountElement = panel.querySelector('#ma-video-count');
+    const externalGifCountElement = panel.querySelector('#ma-external-gif-count');
+    const inRangeElement = panel.querySelector('#ma-in-range');
+    const excludedDateElement = panel.querySelector('#ma-excluded-date');
+    const selectedCountElement = panel.querySelector('#ma-selected-count');
+    const selectedSummaryElement = panel.querySelector('#ma-selected-summary');
+    const packedElement = panel.querySelector('#ma-packed');
+    const errorElement = panel.querySelector('#ma-errors');
+    const mediaTabCount = panel.querySelector('#ma-media-tab-count');
+    const mediaList = panel.querySelector('#ma-media-list');
+    const logArea = panel.querySelector('#ma-log');
+    const startButton = panel.querySelector('#ma-start');
+    const stopButton = panel.querySelector('#ma-stop');
+    const zipButton = panel.querySelector('#ma-zip');
+    const resetButton = panel.querySelector('#ma-reset');
+    const autoZipCheckbox = panel.querySelector('#ma-auto-zip');
+    const photoCheckbox = panel.querySelector('#ma-include-photos');
+    const videoCheckbox = panel.querySelector('#ma-include-videos');
+    const externalGifCheckbox = panel.querySelector('#ma-include-external-gifs');
+    const scanDirectionSelect = panel.querySelector('#ma-scan-direction');
+    const finalPositionSelect = panel.querySelector('#ma-final-position');
+    const dateFilterCheckbox = panel.querySelector('#ma-date-filter');
+    const dateFields = panel.querySelector('#ma-date-fields');
+    const fromDateInput = panel.querySelector('#ma-from-date');
+    const dateEndModeSelect = panel.querySelector('#ma-date-end-mode');
+    const toDateWrap = panel.querySelector('#ma-to-date-wrap');
+    const toDateInput = panel.querySelector('#ma-to-date');
+    const dateSummaryElement = panel.querySelector('#ma-date-summary');
+    const collapseButton = panel.querySelector('#ma-collapse');
+    const clearLogButton = panel.querySelector('#ma-clear-log');
+    const tabButtons = [...panel.querySelectorAll('[data-ma-tab]')];
+    const tabPanels = [...panel.querySelectorAll('[data-ma-panel]')];
+
+    function selectInterfaceTab(tabName) {
+        for (const button of tabButtons) {
+            const selected = button.dataset.maTab === tabName;
+            button.setAttribute('aria-selected', String(selected));
+        }
+
+        for (const tabPanel of tabPanels) {
+            tabPanel.hidden = tabPanel.dataset.maPanel !== tabName;
+        }
+    }
 
     function refreshDateControls() {
         const enabled = dateFilterCheckbox.checked;
-        const specificEnd =
-            enabled && dateEndModeSelect.value === 'specific';
+        const specificEnd = enabled && dateEndModeSelect.value === 'specific';
 
-        dateFields.classList.toggle('daz-disabled', !enabled);
+        dateFields.classList.toggle('ma-disabled', !enabled);
         toDateWrap.hidden = !specificEnd;
 
         const range = getDateRangeConfig();
-        dateSummaryElement.classList.toggle(
-            'daz-date-error',
-            !range.valid
-        );
-
+        dateSummaryElement.classList.toggle('ma-date-error', !range.valid);
         dateSummaryElement.textContent = !enabled
-            ? 'Date filter disabled — all scanned dates can be included.'
+            ? 'All scanned dates are included.'
             : range.valid
                 ? `Inclusive range: ${range.label}`
                 : range.error;
@@ -3485,49 +3408,58 @@
         updateCounters();
     }
 
+    for (const button of tabButtons) {
+        button.addEventListener('click', () => {
+            selectInterfaceTab(button.dataset.maTab);
+        });
+    }
+
     startButton.addEventListener('click', startAutomaticWorkflow);
     stopButton.addEventListener('click', requestStop);
     zipButton.addEventListener('click', createAndDownloadZipParts);
-    photoCheckbox.addEventListener('change', () => {
-        scheduleRender();
-        updateCounters();
-    });
-    videoCheckbox.addEventListener('change', () => {
-        scheduleRender();
-        updateCounters();
-    });
-    externalGifCheckbox.addEventListener('change', () => {
-        scheduleRender();
-        updateCounters();
-    });
+    autoZipCheckbox.addEventListener('change', updateButtons);
+
+    for (const checkbox of [
+        photoCheckbox,
+        videoCheckbox,
+        externalGifCheckbox
+    ]) {
+        checkbox.addEventListener('change', () => {
+            scheduleRender();
+            updateCounters();
+        });
+    }
+
     scanDirectionSelect.addEventListener('change', () => {
-        addLog(
-            `Scan mode selected: ${scanModeDescription(scanDirectionSelect.value)}.`
-        );
+        addLog(`Scan mode selected: ${scanModeDescription(scanDirectionSelect.value)}.`);
     });
     finalPositionSelect.addEventListener('change', () => {
-        addLog(
-            `Final chat position: ${finalPositionDescription(finalPositionSelect.value)}.`
-        );
+        addLog(`Final position: ${finalPositionDescription(finalPositionSelect.value)}.`);
     });
     dateFilterCheckbox.addEventListener('change', refreshDateControls);
     fromDateInput.addEventListener('change', refreshDateControls);
     dateEndModeSelect.addEventListener('change', refreshDateControls);
     toDateInput.addEventListener('change', refreshDateControls);
+
     resetButton.addEventListener('click', () => {
         resetCollection();
         logArea.replaceChildren();
         addLog('Collection reset.');
     });
+    clearLogButton.addEventListener('click', () => {
+        logArea.replaceChildren();
+    });
     collapseButton.addEventListener('click', () => {
-        const collapsed = panel.classList.toggle('daz-collapsed');
+        const collapsed = panel.classList.toggle('ma-collapsed');
         collapseButton.textContent = collapsed ? '+' : '−';
+        collapseButton.title = collapsed ? 'Expand panel' : 'Collapse panel';
+        collapseButton.setAttribute(
+            'aria-label',
+            collapsed ? 'Expand panel' : 'Collapse panel'
+        );
     });
 
-    window.addEventListener('beforeunload', () => {
-        abortActiveRequests();
-        releaseLastZipUrl();
-    });
+    window.addEventListener('beforeunload', abortActiveRequests);
 
     const today = new Date();
     const thirtyDaysAgo = new Date(today);
@@ -3538,7 +3470,8 @@
     dateEndModeSelect.value = 'latest';
 
     addLog(
-        'Ready. Choose filters, scan direction, and final chat position, then click START.'
+        `Ready on ${activeSiteAdapter.label}. Configure the scan, then start.`
     );
+    selectInterfaceTab('setup');
     refreshDateControls();
 })();

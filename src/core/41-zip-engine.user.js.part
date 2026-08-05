@@ -1,0 +1,252 @@
+    async function fallbackCrc32(bytes) {
+        let crc = 0xFFFFFFFF;
+        const yieldChunkSize = 16 * 1024 * 1024;
+
+        for (
+            let offset = 0;
+            offset < bytes.length;
+            offset += yieldChunkSize
+        ) {
+            const end = Math.min(
+                bytes.length,
+                offset + yieldChunkSize
+            );
+
+            for (let index = offset; index < end; index++) {
+                crc =
+                    FALLBACK_CRC32_TABLE[
+                        (crc ^ bytes[index]) & 0xFF
+                    ] ^
+                    (crc >>> 8);
+            }
+
+            // Keep Firefox responsive while checksumming large videos.
+            await sleep(0);
+        }
+
+        return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    function writeUint16(view, offset, value) {
+        view.setUint16(offset, value, true);
+    }
+
+    function writeUint32(view, offset, value) {
+        view.setUint32(offset, value >>> 0, true);
+    }
+
+    function currentDosDateTime(date = new Date()) {
+        const year = Math.max(1980, date.getFullYear());
+
+        return {
+            time:
+                (date.getHours() << 11) |
+                (date.getMinutes() << 5) |
+                Math.floor(date.getSeconds() / 2),
+            date:
+                ((year - 1980) << 9) |
+                ((date.getMonth() + 1) << 5) |
+                date.getDate()
+        };
+    }
+
+    async function buildFallbackStoredZip(
+        fileMap,
+        onProgress = null
+    ) {
+        const files = Object.entries(fileMap).map(
+            ([name, data]) => ({
+                name,
+                data:
+                    data instanceof Uint8Array
+                        ? data
+                        : new Uint8Array(data)
+            })
+        );
+
+        if (files.length > 0xFFFF) {
+            throw new Error(
+                'Built-in ZIP fallback supports at most 65,535 files per part.'
+            );
+        }
+
+        const encoder = new TextEncoder();
+        const localParts = [];
+        const centralParts = [];
+        const dos = currentDosDateTime();
+
+        let localOffset = 0;
+        let centralDirectorySize = 0;
+
+        for (let index = 0; index < files.length; index++) {
+            if (stopRequested) {
+                throw new Error('Stopped by user');
+            }
+
+            const file = files[index];
+            const filenameBytes = encoder.encode(file.name);
+            const dataLength = file.data.byteLength;
+
+            if (
+                dataLength > 0xFFFFFFFF ||
+                localOffset > 0xFFFFFFFF
+            ) {
+                throw new Error(
+                    'A ZIP part exceeded the 4 GiB ZIP32 limit.'
+                );
+            }
+
+            const crc = await fallbackCrc32(file.data);
+
+            const localHeader =
+                new Uint8Array(30 + filenameBytes.length);
+            const localView =
+                new DataView(localHeader.buffer);
+
+            writeUint32(localView, 0, 0x04034B50);
+            writeUint16(localView, 4, 20);
+            writeUint16(localView, 6, 0x0800);
+            writeUint16(localView, 8, 0);
+            writeUint16(localView, 10, dos.time);
+            writeUint16(localView, 12, dos.date);
+            writeUint32(localView, 14, crc);
+            writeUint32(localView, 18, dataLength);
+            writeUint32(localView, 22, dataLength);
+            writeUint16(
+                localView,
+                26,
+                filenameBytes.length
+            );
+            writeUint16(localView, 28, 0);
+            localHeader.set(filenameBytes, 30);
+
+            const centralHeader =
+                new Uint8Array(46 + filenameBytes.length);
+            const centralView =
+                new DataView(centralHeader.buffer);
+
+            writeUint32(centralView, 0, 0x02014B50);
+            writeUint16(centralView, 4, 20);
+            writeUint16(centralView, 6, 20);
+            writeUint16(centralView, 8, 0x0800);
+            writeUint16(centralView, 10, 0);
+            writeUint16(centralView, 12, dos.time);
+            writeUint16(centralView, 14, dos.date);
+            writeUint32(centralView, 16, crc);
+            writeUint32(centralView, 20, dataLength);
+            writeUint32(centralView, 24, dataLength);
+            writeUint16(
+                centralView,
+                28,
+                filenameBytes.length
+            );
+            writeUint16(centralView, 30, 0);
+            writeUint16(centralView, 32, 0);
+            writeUint16(centralView, 34, 0);
+            writeUint16(centralView, 36, 0);
+            writeUint32(centralView, 38, 0);
+            writeUint32(
+                centralView,
+                42,
+                localOffset
+            );
+            centralHeader.set(filenameBytes, 46);
+
+            localParts.push(localHeader, file.data);
+            centralParts.push(centralHeader);
+
+            localOffset +=
+                localHeader.byteLength +
+                dataLength;
+            centralDirectorySize +=
+                centralHeader.byteLength;
+
+            onProgress?.({
+                completed: index + 1,
+                total: files.length,
+                percent:
+                    ((index + 1) / files.length) * 100
+            });
+        }
+
+        if (
+            localOffset > 0xFFFFFFFF ||
+            centralDirectorySize > 0xFFFFFFFF
+        ) {
+            throw new Error(
+                'A ZIP part exceeded the 4 GiB ZIP32 limit.'
+            );
+        }
+
+        const endRecord = new Uint8Array(22);
+        const endView = new DataView(endRecord.buffer);
+
+        writeUint32(endView, 0, 0x06054B50);
+        writeUint16(endView, 4, 0);
+        writeUint16(endView, 6, 0);
+        writeUint16(endView, 8, files.length);
+        writeUint16(endView, 10, files.length);
+        writeUint32(
+            endView,
+            12,
+            centralDirectorySize
+        );
+        writeUint32(endView, 16, localOffset);
+        writeUint16(endView, 20, 0);
+
+        return new Blob(
+            [...localParts, ...centralParts, endRecord],
+            { type: 'application/zip' }
+        );
+    }
+
+    async function createZipBlob(
+        files,
+        onProgress = null
+    ) {
+        const library = resolveFflateLibrary();
+
+        if (library) {
+            const zippedBytes = library.zipSync(
+                files,
+                { level: 0 }
+            );
+
+            onProgress?.({
+                completed: Object.keys(files).length,
+                total: Object.keys(files).length,
+                percent: 100
+            });
+
+            return {
+                blob: new Blob(
+                    [zippedBytes],
+                    { type: 'application/zip' }
+                ),
+                backend: 'fflate'
+            };
+        }
+
+        return {
+            blob: await buildFallbackStoredZip(
+                files,
+                onProgress
+            ),
+            backend: 'built-in'
+        };
+    }
+
+    function downloadZipBlob(blob, filename) {
+        const blobUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = blobUrl;
+        anchor.download = filename;
+        anchor.style.display = 'none';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+
+        // Allow enough time for a possible browser permission prompt.
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 120_000);
+    }
+

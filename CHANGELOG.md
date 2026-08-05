@@ -1,5 +1,16 @@
 # Changelog
 
+## 6.0.0
+
+- Renamed the product from Discord Media Archiver to Media Archiver.
+- Rebuilt the interface around Setup, Media, and Activity tabs.
+- Grouped media, date, scan, archive, and action controls by workflow.
+- Removed long release-note-style text from the runtime panel.
+- Added a site-adapter registry and moved Discord-specific DOM, URL, timestamp, and host logic into the Discord adapter.
+- Added adapter and build manifests that generate Tampermonkey `@match` and `@connect` metadata.
+- Renamed the generated userscript to `media-archiver.user.js`.
+- Added adapter architecture and extension documentation.
+
 All notable user-facing changes are recorded here.
 
 ## 5.6.0

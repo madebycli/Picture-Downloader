@@ -1,46 +1,37 @@
 # Troubleshooting
 
-## “fflate did not load” or no ZIP on Firefox
+## The panel does not appear
 
-Use version 5.6 or newer. The userscript now searches multiple Tampermonkey scopes for `fflate` and falls back to a built-in ZIP writer. The fallback log says:
+The current page must match an entry in `src/adapters/manifest.json`, and the corresponding runtime adapter must accept the location. Open a supported content page rather than a settings, login, or landing page.
 
-```text
-ZIP engine: fflate is unavailable. Using the built-in Firefox-safe ZIP fallback.
-```
+## Nothing is collected
 
-The fallback is slower for large videos but does not need a CDN.
+Open the Media tab while scanning. Confirm the active page has rendered media, at least one media category is enabled, and the adapter still recognizes the site's current DOM and URLs.
+
+## Date-filtered entries are missing
+
+Dates use local browser calendar days. Entries without a resolvable adapter timestamp are excluded while the filter is enabled. Check Activity for date-boundary messages.
 
 ## The scan ends too early
 
-- Use the full two-pass mode when starting in the middle.
-- Keep the tab visible when possible.
-- Verify the chosen date range; the scanner stops after passing the selected date boundary.
-- Check the live log for “Date boundary reached” versus physical chat-boundary confirmation.
+Virtual timelines can pause at apparent boundaries. Media Archiver waits before confirming them, but a site update can require adapter timing or selector changes. Include the active adapter and Activity messages in a bug report.
 
-## The final viewport is not at the newest message
+## The final position is not exact
 
-Choose **Jump to newest after scan / ZIP**. The script applies repeated bottom positioning after Discord’s virtual list settles. A Discord web update can still require selector or timing changes.
+Choose the desired completion position in Setup. Virtualized pages may unload the original anchor or move after render; the scanner applies repeated correction and can fall back to an approximate scroll ratio.
 
-## Photos found is larger than ZIP saved
+## ZIP creation is slow
 
-The type counters show everything discovered during scrolling. Compare:
+When `fflate` is unavailable, the built-in ZIP writer is used. It is intentionally dependency-free and yields during large checksums, but can be slower. Keep the page open until completion.
 
-- Total found
-- In date range
-- Excluded by date
-- Selected for ZIP
-- ZIP saved
+## ZIP downloads are blocked
 
-`ZIP saved` should match `Selected for ZIP` when Errors is zero.
+Allow multiple downloads for the active site in the browser. Check the browser download panel and popup-blocking indicator.
 
-## External GIF link is skipped
+## A media URL is rejected
 
-External GIF previews are only available when Discord renders an animated preview in the DOM. A plain external link without a preview has no Discord proxy media file to save.
+The active adapter blocks hosts not declared in its allowlist. This is intentional. A legitimate new host requires a reviewed adapter manifest and runtime allowlist change.
 
-## ZIP parts do not all download
+## Discord-specific notes
 
-Allow multiple downloads for Discord in the browser. Check the browser download panel and popup-blocking indicator.
-
-## Memory usage is high
-
-Videos are buffered in memory before each ZIP part is built. Reduce the date range, disable videos, or process smaller sections of the channel.
+The Discord adapter can collect rendered external GIF previews only when Discord creates a proxy media element. A plain external link without a rendered preview has no proxy file to save. Discord web updates can also require selector maintenance inside `src/adapters/discord.user.js.part`.

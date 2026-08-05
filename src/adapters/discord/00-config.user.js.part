@@ -1,0 +1,147 @@
+    const DISCORD_EPOCH_MS = 1420070400000;
+
+    function createDiscordAdapter() {
+        const downloadHosts = new Set([
+            'cdn.discordapp.com',
+            'media.discordapp.net',
+            'images-ext-1.discordapp.net',
+            'images-ext-2.discordapp.net'
+        ]);
+
+        return {
+            id: 'discord',
+            label: 'Discord',
+            archivePrefix: 'discord',
+            terms: Object.freeze({
+                timeline: 'channel or thread',
+                item: 'message',
+                items: 'messages',
+                oldest: 'timeline start',
+                newest: 'timeline end'
+            }),
+            matches(currentLocation) {
+                return [
+                    'discord.com',
+                    'ptb.discord.com',
+                    'canary.discord.com'
+                ].includes(currentLocation.hostname) &&
+                    currentLocation.pathname.startsWith('/channels/');
+            },
+            scanVisibleMedia: scanDiscordVisibleMedia,
+            findScroller: findDiscordScroller,
+            visibleItemIds: discordVisibleItemIds,
+            visibleItemTimeRange: discordVisibleItemTimeRange,
+            findItemElementById: findDiscordItemElementById,
+            captureStartingAnchor: captureDiscordStartingAnchor,
+            findItemId: findDiscordItemId,
+            findItemTimestamp: findDiscordItemTimestamp,
+            timestampFromItemId: discordTimestampFromSnowflake,
+            compareItemIds(left, right) {
+                if (!left || !right) return 0;
+                try {
+                    const a = BigInt(left);
+                    const b = BigInt(right);
+                    return a === b ? 0 : a < b ? -1 : 1;
+                } catch {
+                    return String(left).localeCompare(String(right));
+                }
+            },
+            getArchiveContext() {
+                const id =
+                    location.pathname.match(
+                        /\/channels\/(?:@me|\d+)\/(\d+)/
+                    )?.[1] ||
+                    'timeline';
+
+                return { id, label: 'channel' };
+            },
+            isDownloadUrlAllowed(rawUrl) {
+                try {
+                    return downloadHosts.has(
+                        new URL(rawUrl, location.href).hostname
+                    );
+                } catch {
+                    return false;
+                }
+            },
+            openTargetHelp: 'Open a text channel or thread first.'
+        };
+    }
+
+    // Only direct Discord attachment hosts are accepted. External embeds
+    // and links such as YouTube, Vimeo, Twitch, TikTok, or normal websites
+    // are intentionally ignored.
+    function isDiscordAttachmentUrl(rawUrl, sourceElement = null) {
+        if (!rawUrl) return false;
+
+        try {
+            const url = new URL(rawUrl, location.href);
+            const validHost =
+                url.hostname === 'cdn.discordapp.com' ||
+                url.hostname === 'media.discordapp.net';
+
+            if (!validHost || !url.pathname.includes('/attachments/')) {
+                return false;
+            }
+
+            const extension = extensionFromPath(url.pathname);
+            if (MEDIA_EXTENSIONS.has(extension)) return true;
+
+            // Accept uncommon Discord-hosted video attachments when Discord
+            // itself renders them in a video player.
+            const tagName = sourceElement?.tagName?.toUpperCase?.() || '';
+            return (
+                tagName === 'VIDEO' ||
+                tagName === 'SOURCE' ||
+                Boolean(sourceElement?.closest?.('video'))
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    function mediaTypeFromUrl(rawUrl, sourceElement = null) {
+        try {
+            const extension = extensionFromPath(
+                new URL(rawUrl, location.href).pathname
+            );
+
+            if (VIDEO_EXTENSIONS.has(extension)) return 'video';
+            if (IMAGE_EXTENSIONS.has(extension)) return 'photo';
+
+            const tagName = sourceElement?.tagName?.toUpperCase?.() || '';
+            if (
+                tagName === 'VIDEO' ||
+                tagName === 'SOURCE' ||
+                sourceElement?.closest?.('video')
+            ) {
+                return 'video';
+            }
+
+            return 'photo';
+        } catch {
+            return 'photo';
+        }
+    }
+
+    function isDiscordExternalProxyUrl(rawUrl) {
+        if (!rawUrl) return false;
+
+        try {
+            const url = new URL(rawUrl, location.href);
+            const validHost =
+                url.hostname === 'images-ext-1.discordapp.net' ||
+                url.hostname === 'images-ext-2.discordapp.net';
+
+            if (!validHost || !url.pathname.startsWith('/external/')) {
+                return false;
+            }
+
+            return MEDIA_EXTENSIONS.has(
+                extensionFromPath(url.pathname)
+            );
+        } catch {
+            return false;
+        }
+    }
+
