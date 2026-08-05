@@ -2454,7 +2454,7 @@
             id: 'discord',
             label: 'Discord',
             archivePrefix: 'discord',
-            preferredScanMode: 'newest-to-oldest',
+            preferredScanMode: 'current-to-oldest',
             boundaryConfirmMs: 20_000,
             capabilities: {
                 media: true,
@@ -2463,10 +2463,8 @@
                 dateFilter: true,
                 hostPageSelection: false,
                 scanModes: [
-                    'newest-to-oldest',
                     'current-to-oldest',
-                    'current-to-newest',
-                    'full-finish-down'
+                    'current-to-newest'
                 ],
                 views: ['grid', 'list']
             },
@@ -2474,8 +2472,8 @@
                 timeline: 'channel or thread',
                 item: 'message',
                 items: 'messages',
-                oldest: 'timeline start',
-                newest: 'timeline end'
+                oldest: 'oldest-message boundary',
+                newest: 'newest-message boundary'
             }),
             matches(currentLocation) {
                 return [
@@ -2488,6 +2486,7 @@
             scanVisibleMedia: scanDiscordVisibleMedia,
             jumpScanWindow: discordJumpScanWindow,
             findScroller: findDiscordScroller,
+            findScrollerCandidates: findDiscordScrollerCandidates,
             visibleItemIds: discordVisibleItemIds,
             visibleItemTimeRange: discordVisibleItemTimeRange,
             findItemElementById: findDiscordItemElementById,
@@ -2922,6 +2921,7 @@
     }
 
     function addOrUpdateMediaEntry(rawUrl, sourceElement) {
+        if (!shouldCollectRenderedItem(sourceElement)) return false;
         if (!isDiscordAttachmentUrl(rawUrl, sourceElement)) return false;
 
         const originalUrl = normalizeDiscordAttachmentUrl(rawUrl);
@@ -2971,6 +2971,7 @@
         sourceElement,
         sourcePageUrl = null
     ) {
+        if (!shouldCollectRenderedItem(sourceElement)) return false;
         if (
             !isDiscordExternalProxyUrl(rawUrl) ||
             !isExternalGifEmbedContext(sourceElement)
@@ -3135,27 +3136,105 @@
         };
     }
 
-    function findDiscordScroller() {
-        const messageList =
+    function discordMessageListElement() {
+        return (
             document.querySelector('ol[data-list-id="chat-messages"]') ||
             document.querySelector('[data-list-id="chat-messages"]') ||
-            document.querySelector('main');
+            document.querySelector('[aria-label][role="group"] article[id*="chat-messages"]')?.parentElement ||
+            document.querySelector('main')
+        );
+    }
+
+    function discordScrollerCandidateScore(element, messageList) {
+        const range = Math.max(0, element.scrollHeight - element.clientHeight);
+        const style = getComputedStyle(element);
+        let score = Math.min(range, 2_000_000);
+
+        if (messageList && element.contains(messageList)) score += 4_000_000;
+        if (messageList && element === messageList.parentElement) score += 2_000_000;
+        if (['auto', 'scroll', 'overlay'].includes(style.overflowY)) {
+            score += 1_000_000;
+        }
+        if (element.closest?.('main')) score += 500_000;
+
+        return score;
+    }
+
+    function findDiscordScrollerCandidates() {
+        const messageList = discordMessageListElement();
+        const candidates = [];
+        const seen = new Set();
+        const add = element => {
+            if (!element || seen.has(element) || !isScrollable(element)) return;
+            seen.add(element);
+            candidates.push(element);
+        };
 
         let current = messageList;
-        while (current && current !== document.body) {
-            if (isScrollable(current)) return current;
+        while (current && current !== document.body?.parentElement) {
+            add(current);
+            if (current === document.body) break;
             current = current.parentElement;
         }
 
-        // Fallback: largest visible scroll container in the main area.
-        const candidates = [...document.querySelectorAll('main div, main section')]
-            .filter(isScrollable)
-            .sort((a, b) =>
-                (b.scrollHeight - b.clientHeight) -
-                (a.scrollHeight - a.clientHeight)
-            );
+        for (const candidate of document.querySelectorAll(
+            'main div, main section, main ol, main [role="log"], main [role="group"]'
+        )) {
+            if (
+                messageList &&
+                candidate !== messageList &&
+                !candidate.contains(messageList)
+            ) {
+                continue;
+            }
+            add(candidate);
+        }
 
-        return candidates[0] || null;
+        if (
+            document.scrollingElement &&
+            (!messageList || document.scrollingElement.contains(messageList))
+        ) {
+            add(document.scrollingElement);
+        }
+
+        return candidates.sort((left, right) =>
+            discordScrollerCandidateScore(right, messageList) -
+            discordScrollerCandidateScore(left, messageList)
+        );
+    }
+
+    function findDiscordScroller() {
+        const candidates = findDiscordScrollerCandidates();
+        const selectedIndex = candidates.findIndex(canDriveScroller);
+
+        if (selectedIndex < 0) {
+            diagnostics.error(
+                'DISCORD_SCROLLER_NOT_WRITABLE',
+                'Discord timeline candidates were found, but none accepted a reversible programmatic scroll probe.',
+                null,
+                { candidateCount: candidates.length, continued: false },
+                {
+                    category: 'scan',
+                    userMessage: 'Discord’s message timeline could not be moved in this browser runtime. Reload the channel and try again. Code: DISCORD_SCROLLER_NOT_WRITABLE'
+                }
+            );
+            return null;
+        }
+
+        if (selectedIndex > 0) {
+            diagnostics.warn(
+                'DISCORD_SCROLLER_FALLBACK_USED',
+                'The first Discord timeline candidate was not writable; a verified fallback candidate was selected.',
+                {
+                    candidateCount: candidates.length,
+                    selectedIndex,
+                    continued: true
+                },
+                { category: 'scan' }
+            );
+        }
+
+        return candidates[selectedIndex];
     }
 
     function findDiscordItemElementById(itemId) {
@@ -3377,13 +3456,45 @@
             scanVisiblePage();
         }
 
+        const after = scrollPosition(scroller);
+        const scrollPositionChanged =
+            Math.abs(after.top - before.top) >= 1 ||
+            Math.abs(after.height - before.height) >= 3;
+        const visibleWindowChanged = beforeIds.some(id =>
+            !afterEdgeIds.includes(id)
+        ) || afterEdgeIds.some(id => !beforeIds.includes(id));
+        const movementVerified =
+            progressed || scrollPositionChanged || visibleWindowChanged;
+        const requestedEdgeReached = direction === 'older'
+            ? after.top <= 8
+            : after.height - (after.top + after.client) <= 8;
+
+        if (!movementVerified && !requestedEdgeReached) {
+            diagnostics.warn(
+                'DISCORD_SCROLL_NO_PROGRESS',
+                'A Discord scan step did not change the writable scroll position or visible message window.',
+                {
+                    direction,
+                    before,
+                    after,
+                    visibleItemCount: afterEdgeIds.length,
+                    continued: true
+                },
+                {
+                    category: 'scan',
+                    userMessage: 'Discord did not move during one scan step. The scanner will retry or stop at the safety boundary. Code: DISCORD_SCROLL_NO_PROGRESS'
+                }
+            );
+        }
+
         return {
             overlapId,
             overlapVerified,
             recovered,
             progressed,
+            movementVerified,
             before,
-            after: scrollPosition(scroller),
+            after,
             beforeBoundaryId,
             afterBoundaryId
         };
@@ -4773,11 +4884,56 @@
     }
 
     function isScrollable(element) {
-        if (!(element instanceof HTMLElement)) return false;
-        if (element.scrollHeight <= element.clientHeight + 80) return false;
+        if (!element || typeof element !== 'object') return false;
+        if (typeof element.scrollTop !== 'number') return false;
 
-        const style = getComputedStyle(element);
-        return ['auto', 'scroll', 'overlay'].includes(style.overflowY);
+        const height = Number(element.scrollHeight);
+        const client = Number(element.clientHeight);
+        if (!Number.isFinite(height) || !Number.isFinite(client)) return false;
+        if (height <= client + 80) return false;
+
+        const rect = element.getBoundingClientRect?.();
+        if (rect && (rect.width < 40 || rect.height < 80)) return false;
+
+        return true;
+    }
+
+    function canDriveScroller(element) {
+        if (!isScrollable(element)) return false;
+
+        const original = Number(element.scrollTop) || 0;
+        const maximum = Math.max(
+            0,
+            Number(element.scrollHeight) - Number(element.clientHeight)
+        );
+        if (maximum < 2) return false;
+
+        const probeDistance = Math.min(
+            64,
+            Math.max(8, Math.floor(Number(element.clientHeight) * 0.02))
+        );
+        const target = original < maximum / 2
+            ? Math.min(maximum, original + probeDistance)
+            : Math.max(0, original - probeDistance);
+
+        if (Math.abs(target - original) < 1) return false;
+
+        let moved = false;
+        try {
+            element.scrollTop = target;
+            moved = Math.abs((Number(element.scrollTop) || 0) - original) >= 1;
+        } catch {
+            moved = false;
+        }
+
+        try {
+            element.scrollTop = original;
+        } catch {
+            // A failed restore means this is not a safe scanner target.
+            return false;
+        }
+
+        return moved;
     }
 
     function scrollPosition(scroller) {
@@ -4935,11 +5091,11 @@
     function finalPositionDescription(value) {
         switch (value) {
             case 'scan-end':
-                return 'Stay at scan end';
+                return 'Stay where the scan finished';
             case 'start':
-                return 'Return to starting position';
+                return 'Return to the original message window';
             default:
-                return 'Jump to timeline end after scan / ZIP';
+                return 'Move to the newest messages after scan / ZIP';
         }
     }
 
@@ -4953,9 +5109,9 @@
         }
 
         if (option === 'start') {
-            setPhase('RETURNING TO START POSITION');
+            setPhase('RETURNING TO ORIGINAL MESSAGE WINDOW');
             addLog(
-                'Returning to the position where the scan started.'
+                'Returning to the message window where the scan started.'
             );
 
             const exact = await restoreStartingAnchor(
@@ -4965,16 +5121,16 @@
 
             addLog(
                 exact
-                    ? 'Starting position restored.'
-                    : `Starting position restored approximately because ${activeSiteAdapter.label} unloaded the original ${adapterTerm('item', 'item')}.`,
+                    ? 'Original message window restored.'
+                    : `Original message window could not be restored exactly because ${activeSiteAdapter.label} unloaded the anchor ${adapterTerm('item', 'item')}. An approximate position was applied.`,
                 exact ? 'success' : 'warn'
             );
             return;
         }
 
-        setPhase('RETURNING TO TIMELINE END');
+        setPhase('MOVING TO NEWEST MESSAGES');
         addLog(
-            'Returning to the timeline end and waiting for ${activeSiteAdapter.label} virtual timeline to settle.'
+            `Moving toward the newest messages and waiting for the ${activeSiteAdapter.label} virtual timeline to settle.`
         );
 
         const reachedBottom =
@@ -4982,15 +5138,15 @@
 
         addLog(
             reachedBottom
-                ? 'Final position is now at the timeline end.'
-                : `${activeSiteAdapter.label} moved the virtual timeline again; the strongest end-position correction was applied.`,
+                ? 'Newest-message boundary verified.'
+                : `${activeSiteAdapter.label} moved the virtual timeline again; the strongest newest-message correction was applied but arrival was not verified.`,
             reachedBottom ? 'success' : 'warn'
         );
     }
 
     async function moveToNewest(scroller) {
-        setPhase('SCAN: moving to timeline end');
-        addLog('Moving to the timeline end first.');
+        setPhase('SCAN: moving toward newest messages');
+        addLog('Moving toward the newest loaded messages first.');
         await forceScrollToNewest(scroller, 5_000);
     }
 
@@ -5113,7 +5269,7 @@
         };
 
         addLog(
-            `Possible timeline start reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed older items.`
+            `Possible oldest-message boundary reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed older messages.`
         );
 
         while (!stopRequested) {
@@ -5137,7 +5293,7 @@
 
             if (changed) {
                 addLog(
-                    `${activeSiteAdapter.label} loaded more content; scanning continues (${mediaEntries.size} media files found).`,
+                    `${activeSiteAdapter.label} loaded older messages; scanning continues (${mediaEntries.size} media files found).`,
                     'success'
                 );
                 return false;
@@ -5146,7 +5302,7 @@
             const elapsed = performance.now() - startedAt;
             const remaining = Math.max(0, confirmMs - elapsed);
             setPhase(
-                `SCAN: confirming real timeline start · ${Math.ceil(remaining / 1000)} s left`
+                `SCAN: confirming oldest-message boundary · ${Math.ceil(remaining / 1000)} s left`
             );
 
             if (remaining <= 0) {
@@ -5160,11 +5316,11 @@
 
     async function autoScrollToOldest(scroller) {
         const usesJumpScanner = typeof activeSiteAdapter?.jumpScanWindow === 'function';
-        setPhase('SCAN: newest → oldest');
+        setPhase('SCAN: moving toward older messages');
         addLog(
             usesJumpScanner
-                ? 'Fast edge-jump scan started. Each loaded edge is scanned with an overlap-anchor safety pass.'
-                : 'Fast scan started. A delayed confirmation runs at the possible timeline start.'
+                ? 'Fast older-message edge scan started. Each loaded edge is scanned with an overlap-anchor safety pass.'
+                : 'Older-message scan started. A delayed confirmation runs at the possible oldest-message boundary.'
         );
 
         let iterations = 0;
@@ -5186,7 +5342,7 @@
             }
 
             if (iterations % 25 === 0) {
-                addLog(`Scan running: ${mediaEntries.size} media files found.`);
+                addLog(`Older-message scan running: ${mediaEntries.size} media files found.`);
             }
 
             if (after.top <= 5) {
@@ -5195,7 +5351,7 @@
                 if (reallyAtTop) {
                     lastScanBoundaryReason = 'timeline-start';
                     addLog(
-                        `No older items appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Timeline start confirmed.`,
+                        `No older messages appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Oldest-message boundary confirmed.`,
                         'success'
                     );
                     return true;
@@ -5236,14 +5392,14 @@
         };
 
         addLog(
-            `Possible timeline-end boundary reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed newer items or expansion controls.`
+            `Possible newest-message boundary reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed newer messages or expansion controls.`
         );
 
         while (!stopRequested) {
             const expanded = await expandActiveRenderedContent(scroller, 'newer');
             if (expanded > 0) {
                 addLog(
-                    `${activeSiteAdapter.label} expanded ${expanded} rendered “more” control${expanded === 1 ? '' : 's'}; downward scanning continues.`,
+                    `${activeSiteAdapter.label} expanded ${expanded} rendered “more” control${expanded === 1 ? '' : 's'}; newer-message scanning continues.`,
                     'success'
                 );
                 return false;
@@ -5271,7 +5427,7 @@
 
             if (changed) {
                 addLog(
-                    `${activeSiteAdapter.label} loaded newer content; downward scanning continues (${mediaEntries.size} media files found).`,
+                    `${activeSiteAdapter.label} loaded newer messages; scanning continues (${mediaEntries.size} media files found).`,
                     'success'
                 );
                 return false;
@@ -5281,7 +5437,7 @@
             const remaining = Math.max(0, confirmMs - elapsed);
 
             setPhase(
-                `SCAN: confirming timeline-end boundary · ${Math.ceil(remaining / 1000)} s left`
+                `SCAN: confirming newest-message boundary · ${Math.ceil(remaining / 1000)} s left`
             );
 
             if (remaining <= 0) {
@@ -5295,11 +5451,11 @@
 
     async function autoScrollToNewest(scroller) {
         const usesJumpScanner = typeof activeSiteAdapter?.jumpScanWindow === 'function';
-        setPhase('SCAN: current → newest');
+        setPhase('SCAN: moving toward newer messages');
         addLog(
             usesJumpScanner
-                ? 'Downward edge-jump scan started with overlap verification.'
-                : 'Downward scan started. Expansion controls are activated when supported.'
+                ? 'Fast newer-message edge scan started with overlap verification.'
+                : 'Newer-message scan started. Expansion controls are activated when supported.'
         );
 
         let iterations = 0;
@@ -5325,7 +5481,7 @@
 
             if (iterations % 25 === 0) {
                 addLog(
-                    `Downward scan running: ${mediaEntries.size} media files found.`
+                    `Newer-message scan running: ${mediaEntries.size} media files found.`
                 );
             }
 
@@ -5336,7 +5492,7 @@
                 if (reallyAtBottom) {
                     lastScanBoundaryReason = 'timeline-end';
                     addLog(
-                        `No newer items or expansion controls appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Timeline end confirmed.`,
+                        `No newer messages or expansion controls appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Newest-message boundary confirmed.`,
                         'success'
                     );
                     return true;
@@ -5350,16 +5506,224 @@
     function scanModeDescription(mode) {
         switch (mode) {
             case 'current-to-oldest':
-                return 'Current position → start';
+                return 'Current position → older messages';
             case 'current-to-newest':
-                return 'Current position → end';
+                return 'Current position → newer messages';
             case 'full-finish-down':
-                return 'Full timeline: current → start → end';
+                return 'Automatic whole-channel scan';
             default:
-                return 'End → start (jump to end first)';
+                return 'Automatic latest-message seek → older messages';
         }
     }
 
+    // ---------- Date-interval navigation ----------
+
+    let scanCollectionPolicy = Object.freeze({
+        enabled: true,
+        startMs: Number.NEGATIVE_INFINITY,
+        endExclusiveMs: Number.POSITIVE_INFINITY
+    });
+
+    function setScanCollectionPolicy({ enabled = true, range = null } = {}) {
+        scanCollectionPolicy = Object.freeze({
+            enabled: Boolean(enabled),
+            startMs: range?.enabled && range?.valid
+                ? range.startMs
+                : Number.NEGATIVE_INFINITY,
+            endExclusiveMs: range?.enabled && range?.valid
+                ? range.endExclusiveMs
+                : Number.POSITIVE_INFINITY
+        });
+    }
+
+    function shouldCollectRenderedItem(sourceElement) {
+        if (!scanCollectionPolicy.enabled) return false;
+        if (
+            scanCollectionPolicy.startMs === Number.NEGATIVE_INFINITY &&
+            scanCollectionPolicy.endExclusiveMs === Number.POSITIVE_INFINITY
+        ) {
+            return true;
+        }
+
+        const itemId = findItemId(sourceElement);
+        const rawTimestamp =
+            findItemTimestamp(sourceElement) ||
+            timestampFromItemId(itemId);
+        const timestamp = Date.parse(rawTimestamp || '');
+
+        return Number.isFinite(timestamp) &&
+            timestamp >= scanCollectionPolicy.startMs &&
+            timestamp < scanCollectionPolicy.endExclusiveMs;
+    }
+
+    function dateIntervalTargetLabel(milliseconds) {
+        return new Date(milliseconds).toLocaleDateString('en-GB', {
+            year: 'numeric',
+            month: 'short',
+            day: '2-digit'
+        });
+    }
+
+    function dateSeekReached(visible, targetMs, direction) {
+        if (!visible) return false;
+        return direction === 'older'
+            ? visible.minMs <= targetMs
+            : visible.maxMs >= targetMs;
+    }
+
+    function dateSeekProgressed(previous, current, direction) {
+        if (!previous || !current) return Boolean(current);
+        return direction === 'older'
+            ? current.minMs < previous.minMs
+            : current.maxMs > previous.maxMs;
+    }
+
+    async function seekDateBoundary(scroller, targetMs, direction) {
+        const label = dateIntervalTargetLabel(targetMs);
+        setPhase(`SEEK: ${direction} messages → ${label}`);
+        addLog(
+            `Fast seek started toward ${direction} messages. Media collection is paused until the ${label} boundary is reached.`
+        );
+
+        let previousRange = visibleItemTimeRange();
+        if (dateSeekReached(previousRange, targetMs, direction)) {
+            return { reached: true, iterations: 0 };
+        }
+
+        let noProgressRounds = 0;
+        for (let iteration = 1; iteration <= 20_000 && !stopRequested; iteration++) {
+            const before = scrollPosition(scroller);
+            scroller.scrollTop = direction === 'older'
+                ? 0
+                : scroller.scrollHeight;
+            scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+            await sleep(iteration < 8 ? 190 : 280);
+            const currentRange = visibleItemTimeRange();
+
+            if (dateSeekReached(currentRange, targetMs, direction)) {
+                setPhase(`SEEK COMPLETE: ${label}`);
+                addLog(
+                    `Date boundary located near ${label}. Safe overlap scanning starts now.`,
+                    'success'
+                );
+                return { reached: true, iterations: iteration };
+            }
+
+            const after = scrollPosition(scroller);
+            const moved =
+                Math.abs(after.top - before.top) >= 2 ||
+                Math.abs(after.height - before.height) >= 3 ||
+                dateSeekProgressed(previousRange, currentRange, direction);
+
+            noProgressRounds = moved ? 0 : noProgressRounds + 1;
+            previousRange = currentRange || previousRange;
+
+            if (iteration % 20 === 0 && currentRange) {
+                const currentLabel = dateIntervalTargetLabel(
+                    direction === 'older'
+                        ? currentRange.minMs
+                        : currentRange.maxMs
+                );
+                setPhase(`SEEK: ${direction} messages · ${currentLabel}`);
+            }
+
+            if (noProgressRounds >= 7) {
+                const error = new Error(
+                    `Discord did not move toward ${direction} messages while seeking ${label}.`
+                );
+                error.code = 'DATE_SEEK_NO_PROGRESS';
+                throw error;
+            }
+        }
+
+        if (stopRequested) return { reached: false, stopped: true };
+        const error = new Error('The date seek reached its safety iteration limit.');
+        error.code = 'DATE_SEEK_ITERATION_LIMIT';
+        throw error;
+    }
+
+    function createDateIntervalPlan(range, visible) {
+        if (!visible) {
+            const error = new Error('No machine-readable message timestamps are visible.');
+            error.code = 'DATE_SEEK_TIMESTAMPS_MISSING';
+            throw error;
+        }
+
+        const centerMs = (visible.minMs + visible.maxMs) / 2;
+        if (!Number.isFinite(range.endExclusiveMs)) {
+            return {
+                targetMs: range.startMs,
+                seekDirection: centerMs > range.startMs ? 'older' : 'newer',
+                scanDirection: 'newer',
+                targetBoundary: 'From date'
+            };
+        }
+
+        const endTargetMs = range.endExclusiveMs - 1;
+        if (centerMs > endTargetMs) {
+            return {
+                targetMs: endTargetMs,
+                seekDirection: 'older',
+                scanDirection: 'older',
+                targetBoundary: 'To date'
+            };
+        }
+        if (centerMs < range.startMs) {
+            return {
+                targetMs: range.startMs,
+                seekDirection: 'newer',
+                scanDirection: 'newer',
+                targetBoundary: 'From date'
+            };
+        }
+
+        const distanceToStart = Math.abs(centerMs - range.startMs);
+        const distanceToEnd = Math.abs(endTargetMs - centerMs);
+        if (distanceToEnd < distanceToStart) {
+            return {
+                targetMs: endTargetMs,
+                seekDirection: 'newer',
+                scanDirection: 'older',
+                targetBoundary: 'To date'
+            };
+        }
+
+        return {
+            targetMs: range.startMs,
+            seekDirection: 'older',
+            scanDirection: 'newer',
+            targetBoundary: 'From date'
+        };
+    }
+
+    async function runDateIntervalScan(scroller, range) {
+        setScanCollectionPolicy({ enabled: false });
+        const visible = visibleItemTimeRange();
+        const plan = createDateIntervalPlan(range, visible);
+        const targetLabel = dateIntervalTargetLabel(plan.targetMs);
+
+        addLog(
+            `Automatic date plan: seek ${plan.seekDirection} messages to the ${plan.targetBoundary} near ${targetLabel}, then scan ${plan.scanDirection} messages across the requested interval.`
+        );
+
+        const seekResult = await seekDateBoundary(
+            scroller,
+            plan.targetMs,
+            plan.seekDirection
+        );
+        if (!seekResult.reached) return false;
+
+        setScanCollectionPolicy({ enabled: true, range });
+        lastScanBoundaryReason = '';
+
+        const reached = plan.scanDirection === 'older'
+            ? await autoScrollToOldest(scroller)
+            : await autoScrollToNewest(scroller);
+
+        setScanCollectionPolicy({ enabled: true });
+        return reached;
+    }
     function abortActiveRequests() {
         runtime.abortAllRequests();
         activeRequests.clear();
@@ -6867,6 +7231,200 @@
             dateEndModeSelect.value !== 'specific';
     }
 
+    // ---------- Date-aware workflow override ----------
+
+    async function startAutomaticWorkflow() {
+        if (running) return;
+
+        resetCollection();
+        stopRequested = false;
+        running = true;
+        scanning = true;
+        packing = false;
+        reviewArchiveConfirmed = false;
+        const afterScanMode = syncWorkflowMode();
+        try {
+            workflowState.transition(globalThis.MediaArchiverWorkflowState.phases.SCANNING);
+        } catch {
+            // Diagnostic compatibility state only.
+        }
+        updateButtons();
+
+        const dateRange = getDateRangeConfig();
+        const scanMode = dateRange.enabled
+            ? 'date-interval'
+            : scanDirectionSelect.value;
+
+        if (!dateRange.valid) {
+            running = false;
+            scanning = false;
+            setPhase('DATE INTERVAL ERROR');
+            addLog(dateRange.error, 'error');
+            updateButtons();
+            return;
+        }
+
+        diagnostics.startSession({
+            adapterId: activeSiteAdapter.id,
+            pageType: activeSiteAdapter.getArchiveContext()?.label || 'supported-page',
+            scanMode,
+            afterScanMode,
+            dateRange: dateRange.label
+        });
+        liveMetrics.startSession({ phase: 'scanning' });
+
+        lastScanBoundaryReason = '';
+        setPhase('STARTING');
+        addLog(
+            dateRange.enabled
+                ? `Date-interval scan started on ${activeSiteAdapter.label}: ${dateRange.label}. Direction and seek pacing are automatic.`
+                : `Scan started on ${activeSiteAdapter.label}. Mode: ${scanModeDescription(scanMode)}.`
+        );
+
+        await sleep(250);
+        let scroller = null;
+        let startingAnchor = null;
+
+        try {
+            scroller = findTimelineScroller();
+            if (!scroller) {
+                const error = new Error(
+                    `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found.`
+                );
+                error.code = 'ADAPTER_TIMELINE_NOT_FOUND';
+                throw error;
+            }
+
+            startingAnchor = captureStartingAnchor(scroller);
+            let reachedBoundary = false;
+            let completedBoundaryLabel = '';
+
+            if (dateRange.enabled) {
+                reachedBoundary = await runDateIntervalScan(scroller, dateRange);
+                completedBoundaryLabel = scanBoundaryDescription(
+                    lastScanBoundaryReason
+                );
+            } else {
+                setScanCollectionPolicy({ enabled: true });
+                scanVisiblePage();
+
+                if (scanMode === 'newest-to-oldest') {
+                    await moveToNewest(scroller);
+                    if (stopRequested) {
+                        finishStoppedScan();
+                        return;
+                    }
+                    reachedBoundary = await autoScrollToOldest(scroller);
+                } else if (scanMode === 'current-to-oldest') {
+                    reachedBoundary = await autoScrollToOldest(scroller);
+                } else if (scanMode === 'current-to-newest') {
+                    reachedBoundary = await autoScrollToNewest(scroller);
+                } else if (scanMode === 'full-finish-down') {
+                    const reachedOlderBoundary = await autoScrollToOldest(scroller);
+                    if (stopRequested) {
+                        finishStoppedScan();
+                        return;
+                    }
+                    if (reachedOlderBoundary) {
+                        lastScanBoundaryReason = '';
+                        reachedBoundary = await autoScrollToNewest(scroller);
+                    }
+                }
+                completedBoundaryLabel = scanBoundaryDescription(
+                    lastScanBoundaryReason
+                );
+            }
+
+            scanning = false;
+            setScanCollectionPolicy({ enabled: true });
+
+            if (stopRequested) {
+                finishStoppedScan();
+                return;
+            }
+
+            running = false;
+            updateCounters();
+            updateButtons();
+
+            if (reachedBoundary) {
+                setPhase(`SCAN FINISHED: ${mediaEntries.size} items`);
+                addLog(
+                    `Scan completed at the ${completedBoundaryLabel}: ${mediaEntries.size} unique items found.`,
+                    'success'
+                );
+            } else {
+                setPhase(`SCAN ENDED: ${mediaEntries.size} items`);
+                addLog(
+                    'The scan stopped before the selected boundary could be verified.',
+                    'warn'
+                );
+            }
+
+            const statsAfterScan = selectionStatistics();
+            addLog(
+                `Selection summary: ${statsAfterScan.total} canonical items, ${statsAfterScan.eligible} eligible, ${statsAfterScan.selected} selected.`
+            );
+
+            await applyFinalTimelinePosition(
+                scroller,
+                finalPositionSelect.value,
+                startingAnchor
+            );
+
+            const selectedAfterScan = selectedMediaEntries();
+            if (afterScanMode === 'quick') {
+                try {
+                    workflowState.afterScan();
+                } catch {
+                    // Diagnostic compatibility state only.
+                }
+                if (selectedAfterScan.length > 0) {
+                    await createAndDownloadZipParts();
+                } else {
+                    liveMetrics.stopSession({ phase: 'completed' });
+                    setPhase('SCAN FINISHED: NOTHING ELIGIBLE');
+                    addLog('The scan finished, but no eligible items matched the interval and media choices.', 'warn');
+                }
+                return;
+            }
+
+            try {
+                workflowState.afterScan();
+            } catch {
+                // Diagnostic compatibility state only.
+            }
+            liveMetrics.stopSession({ phase: 'review-ready' });
+            setPhase(`REVIEW READY: ${statsAfterScan.selected} selected`);
+            addLog(
+                'Review is ready. No original files have been requested.',
+                'success'
+            );
+            openLibrary();
+        } catch (error) {
+            setScanCollectionPolicy({ enabled: true });
+            scanning = false;
+            running = false;
+            packing = false;
+            liveMetrics.stopSession({ phase: 'error', errors: 1 });
+            setPhase('SCAN ERROR');
+            diagnostics.error(
+                error.code || 'SCAN_WORKFLOW_FAILED',
+                'The scan workflow failed.',
+                error,
+                { adapterId: activeSiteAdapter.id, scanMode },
+                {
+                    category: 'scan',
+                    userMessage: error.message
+                }
+            );
+            addLog(
+                `${error.message} Code: ${error.code || 'SCAN_WORKFLOW_FAILED'}`,
+                'error'
+            );
+            updateButtons();
+        }
+    }
     let libraryRenderTimer = null;
     let libraryViewItems = [];
     let libraryFocusedKey = null;
@@ -7534,7 +8092,7 @@
             </section>
 
             <nav class="ma-tabs" aria-label="Media Archiver sections">
-                <button type="button" data-ma-tab="setup" aria-selected="true">Setup</button>
+                <button type="button" data-ma-tab="setup" aria-selected="true">Scan</button>
                 <button type="button" data-ma-tab="media" aria-selected="false">
                     Media <span id="ma-media-tab-count">0</span>
                 </button>
@@ -7546,22 +8104,22 @@
                     <section class="ma-group">
                         <div class="ma-group-heading">
                             <div>
-                                <h2>What to save</h2>
-                                <p>Choose the media categories included in the archive.</p>
+                                <h2>Media types</h2>
+                                <p>Choose the simple media categories included in the archive.</p>
                             </div>
                         </div>
                         <div class="ma-choice-grid">
                             <label class="ma-choice">
                                 <input id="ma-include-photos" type="checkbox" checked>
-                                <span><strong>Photos & native GIFs</strong><small>Image attachments</small></span>
+                                <span><strong>Images</strong><small>Photos and static image attachments</small></span>
                             </label>
                             <label class="ma-choice">
                                 <input id="ma-include-videos" type="checkbox" checked>
-                                <span><strong>Videos</strong><small>Video attachments</small></span>
+                                <span><strong>Videos</strong><small>Rendered video attachments and players</small></span>
                             </label>
                             <label class="ma-choice ma-choice-wide">
                                 <input id="ma-include-external-gifs" type="checkbox" checked>
-                                <span><strong>Rendered GIF previews</strong><small>Animated previews supplied by the active site</small></span>
+                                <span><strong>GIFs and animated previews</strong><small>Native GIF files and rendered animated previews</small></span>
                             </label>
                         </div>
                     </section>
@@ -7569,13 +8127,13 @@
                     <section class="ma-group">
                         <div class="ma-group-heading ma-heading-with-control">
                             <div>
-                                <h2>Date range</h2>
-                                <p>Filter by each item's source timestamp.</p>
+                                <h2>Date interval</h2>
+                                <p>Choose the calendar interval that the automatic navigator should scan.</p>
                             </div>
                             <label class="ma-switch">
                                 <input id="ma-date-filter" type="checkbox">
                                 <span aria-hidden="true"></span>
-                                <b>Use filter</b>
+                                <b>Use interval</b>
                             </label>
                         </div>
 
@@ -7585,9 +8143,9 @@
                                 <input id="ma-from-date" type="date">
                             </label>
                             <label>
-                                <span>Range end</span>
+                                <span>Interval end</span>
                                 <select id="ma-date-end-mode">
-                                    <option value="latest">Latest available</option>
+                                    <option value="latest">Newest available message</option>
                                     <option value="specific">Specific date</option>
                                 </select>
                             </label>
@@ -7602,26 +8160,26 @@
                     <section class="ma-group">
                         <div class="ma-group-heading">
                             <div>
-                                <h2>Scan behavior</h2>
-                                <p>Control where the scan starts, ends, and leaves the page.</p>
+                                <h2>Scan plan</h2>
+                                <p>Describe movement by message chronology, not screen direction.</p>
                             </div>
                         </div>
                         <div class="ma-field-grid">
                             <label class="ma-field-wide">
-                                <span>Direction and starting point</span>
+                                <span>From the current message window</span>
                                 <select id="ma-scan-direction">
-                                    <option value="newest-to-oldest">End → start (jump to end first)</option>
-                                    <option value="current-to-oldest">Current position → start</option>
-                                    <option value="current-to-newest">Current position → end</option>
-                                    <option value="full-finish-down">Full timeline: current → start → end</option>
+                                    <option value="newest-to-oldest">Automatic latest-message seek → older messages</option>
+                                    <option value="current-to-oldest">Current position → older messages</option>
+                                    <option value="current-to-newest">Current position → newer messages</option>
+                                    <option value="full-finish-down">Automatic whole-channel scan</option>
                                 </select>
                             </label>
                             <label class="ma-field-wide">
                                 <span>Position after completion</span>
                                 <select id="ma-final-position">
-                                    <option value="newest" selected>Jump to timeline end</option>
-                                    <option value="scan-end">Stay at scan end</option>
-                                    <option value="start">Return to starting position</option>
+                                    <option value="scan-end" selected>Stay where the scan finished</option>
+                                    <option value="newest">Move to newest messages</option>
+                                    <option value="start">Return to original message window</option>
                                 </select>
                             </label>
                         </div>
@@ -7640,10 +8198,10 @@
 
                 <section data-ma-panel="media" hidden>
                     <div class="ma-detail-metrics">
-                        <div><span>Photos</span><strong id="ma-photo-count">0</strong></div>
+                        <div><span>Images</span><strong id="ma-photo-count">0</strong></div>
                         <div><span>Videos</span><strong id="ma-video-count">0</strong></div>
                         <div><span>GIF previews</span><strong id="ma-external-gif-count">0</strong></div>
-                        <div><span>In range</span><strong id="ma-in-range">0</strong></div>
+                        <div><span>In interval</span><strong id="ma-in-range">0</strong></div>
                         <div><span>Date excluded</span><strong id="ma-excluded-date">0</strong></div>
                     </div>
                     <div class="ma-list-heading">
@@ -8668,9 +9226,9 @@
         const range = getDateRangeConfig();
         dateSummaryElement.classList.toggle('ma-date-error', !range.valid);
         dateSummaryElement.textContent = !enabled
-            ? 'All scanned dates are included.'
+            ? 'Date interval is off. The current-position chronology control is used.'
             : range.valid
-                ? `Inclusive range: ${range.label}`
+                ? `Automatic interval: ${range.label}`
                 : range.error;
 
         scheduleRender();
@@ -8872,6 +9430,168 @@
     }
 
     applyAdapterCapabilitiesToUi();
+    // ---------- Compact four-tab interface ----------
+
+    const setupTabButton = panel.querySelector('[data-ma-tab="setup"]');
+    const setupTabPanel = panel.querySelector('[data-ma-panel="setup"]');
+    const mediaTabButton = panel.querySelector('[data-ma-tab="media"]');
+    const mediaTabPanel = panel.querySelector('[data-ma-panel="media"]');
+    const activityTabButton = panel.querySelector('[data-ma-tab="activity"]');
+
+    if (setupTabButton) setupTabButton.textContent = 'Scan';
+
+    const archiveTabButton = document.createElement('button');
+    archiveTabButton.type = 'button';
+    archiveTabButton.dataset.maTab = 'archive';
+    archiveTabButton.setAttribute('aria-selected', 'false');
+    archiveTabButton.textContent = 'Archive';
+    activityTabButton?.before(archiveTabButton);
+
+    const archiveTabPanel = document.createElement('section');
+    archiveTabPanel.dataset.maPanel = 'archive';
+    archiveTabPanel.hidden = true;
+    activityTabButton && panel
+        .querySelector('[data-ma-panel="activity"]')
+        ?.before(archiveTabPanel);
+
+    tabButtons.splice(
+        Math.max(0, tabButtons.indexOf(activityTabButton)),
+        0,
+        archiveTabButton
+    );
+    tabPanels.push(archiveTabPanel);
+    archiveTabButton.addEventListener('click', () => selectInterfaceTab('archive'));
+
+    const mediaChoiceGroup = photoCheckbox?.closest('.ma-group');
+    if (mediaChoiceGroup && mediaTabPanel) {
+        mediaTabPanel.prepend(mediaChoiceGroup);
+        const heading = mediaChoiceGroup.querySelector('h2');
+        const description = mediaChoiceGroup.querySelector('p');
+        if (heading) heading.textContent = 'Media types';
+        if (description) description.textContent = 'Choose what the interval scan may collect.';
+    }
+
+    const photoChoice = photoCheckbox?.closest('.ma-choice');
+    const videoChoice = videoCheckbox?.closest('.ma-choice');
+    const gifChoice = externalGifCheckbox?.closest('.ma-choice');
+    if (photoChoice) {
+        photoChoice.querySelector('strong').textContent = 'Images';
+        photoChoice.querySelector('small').textContent = 'Photos and image attachments';
+    }
+    if (gifChoice) {
+        gifChoice.querySelector('strong').textContent = 'GIFs & animated previews';
+        gifChoice.querySelector('small').textContent = 'Native GIFs and rendered animation previews';
+    }
+    if (videoChoice) {
+        videoChoice.querySelector('strong').textContent = 'Videos';
+        videoChoice.querySelector('small').textContent = 'Rendered video attachments';
+    }
+
+    const dateGroup = dateFilterCheckbox?.closest('.ma-group');
+    if (dateGroup) {
+        const heading = dateGroup.querySelector('h2');
+        const description = dateGroup.querySelector('p');
+        const switchLabel = dateGroup.querySelector('.ma-switch b');
+        if (heading) heading.textContent = 'Date interval';
+        if (description) description.textContent = 'Seek first, then collect only inside the requested calendar interval.';
+        if (switchLabel) switchLabel.textContent = 'Use interval';
+    }
+
+    const scanBehaviorGroup = scanDirectionSelect?.closest('.ma-group');
+    const scanDirectionLabel = scanDirectionSelect?.closest('label');
+    const finalPositionLabel = finalPositionSelect?.closest('label');
+    if (scanBehaviorGroup) {
+        const heading = scanBehaviorGroup.querySelector('h2');
+        const description = scanBehaviorGroup.querySelector('p');
+        if (heading) heading.textContent = 'Current-position scan';
+        if (description) description.textContent = 'Used only when Date interval is off.';
+    }
+    if (scanDirectionLabel?.querySelector('span')) {
+        scanDirectionLabel.querySelector('span').textContent = 'Chronology';
+    }
+
+    const archiveMainGroup = document.createElement('section');
+    archiveMainGroup.className = 'ma-group';
+    archiveMainGroup.innerHTML = `
+        <div class="ma-group-heading">
+            <div>
+                <h2>Archive workflow</h2>
+                <p>Choose whether to review first and where Discord remains afterward.</p>
+            </div>
+        </div>
+        <div class="ma-archive-primary"></div>
+        <details class="ma-advanced-disclosure">
+            <summary>Position after completion</summary>
+            <div class="ma-disclosure-body ma-field-grid"></div>
+        </details>
+    `;
+    archiveTabPanel.appendChild(archiveMainGroup);
+
+    const compactAutoArchiveGroup = autoZipCheckbox?.closest('.ma-group');
+    if (compactAutoArchiveGroup) {
+        const archiveChoiceContent = compactAutoArchiveGroup.querySelector(
+            '.ma-after-scan-options, .ma-option-row'
+        );
+        if (archiveChoiceContent) {
+            archiveMainGroup
+                .querySelector('.ma-archive-primary')
+                .appendChild(archiveChoiceContent);
+        }
+        compactAutoArchiveGroup.remove();
+    }
+    if (finalPositionLabel) {
+        archiveMainGroup
+            .querySelector('.ma-disclosure-body')
+            .appendChild(finalPositionLabel);
+    }
+
+    const compactStyle = document.createElement('style');
+    compactStyle.textContent = `
+        #media-archiver-panel .ma-tabs { grid-template-columns: repeat(4, 1fr); }
+        #media-archiver-panel .ma-tab-content { overflow: hidden; }
+        #media-archiver-panel [data-ma-panel="setup"],
+        #media-archiver-panel [data-ma-panel="archive"] { min-height: 0; }
+        #media-archiver-panel .ma-advanced-disclosure {
+            margin-top: 10px;
+            border: 1px solid var(--ma-border);
+            border-radius: 9px;
+            background: rgba(0,0,0,.14);
+        }
+        #media-archiver-panel .ma-advanced-disclosure summary {
+            padding: 10px;
+            cursor: pointer;
+            color: #cfd7df;
+            font-size: 11px;
+            font-weight: 750;
+        }
+        #media-archiver-panel .ma-disclosure-body { padding: 0 10px 10px; }
+        #media-archiver-panel .ma-archive-primary .ma-option-row {
+            padding: 9px;
+            border: 1px solid var(--ma-border);
+            border-radius: 9px;
+            background: rgba(0,0,0,.14);
+        }
+        #media-archiver-panel .ma-date-mode-active .ma-current-direction { display: none; }
+        #media-archiver-panel .ma-switch > span { pointer-events: none; }
+    `;
+    document.head.appendChild(compactStyle);
+
+    scanDirectionLabel?.classList.add('ma-current-direction');
+
+    function refreshCompactScanMode() {
+        const dateMode = Boolean(dateFilterCheckbox?.checked);
+        scanBehaviorGroup?.classList.toggle('ma-date-mode-active', dateMode);
+        if (scanDirectionLabel) scanDirectionLabel.hidden = dateMode;
+        if (startButton && !running) {
+            startButton.textContent = dateMode
+                ? (autoZipCheckbox.checked ? 'Scan interval & create ZIPs' : 'Scan interval')
+                : (autoZipCheckbox.checked ? 'Scan & create ZIPs' : 'Scan for review');
+        }
+    }
+
+    dateFilterCheckbox?.addEventListener('change', refreshCompactScanMode);
+    autoZipCheckbox?.addEventListener('change', refreshCompactScanMode);
+    refreshCompactScanMode();
     function applyProviderPreferredScanMode({ forDateFilter = false } = {}) {
         const preferred = forDateFilter
             ? activeSiteAdapter.preferredDateScanMode || activeSiteAdapter.preferredScanMode

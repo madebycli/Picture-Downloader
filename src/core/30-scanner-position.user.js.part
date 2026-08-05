@@ -1,9 +1,54 @@
     function isScrollable(element) {
-        if (!(element instanceof HTMLElement)) return false;
-        if (element.scrollHeight <= element.clientHeight + 80) return false;
+        if (!element || typeof element !== 'object') return false;
+        if (typeof element.scrollTop !== 'number') return false;
 
-        const style = getComputedStyle(element);
-        return ['auto', 'scroll', 'overlay'].includes(style.overflowY);
+        const height = Number(element.scrollHeight);
+        const client = Number(element.clientHeight);
+        if (!Number.isFinite(height) || !Number.isFinite(client)) return false;
+        if (height <= client + 80) return false;
+
+        const rect = element.getBoundingClientRect?.();
+        if (rect && (rect.width < 40 || rect.height < 80)) return false;
+
+        return true;
+    }
+
+    function canDriveScroller(element) {
+        if (!isScrollable(element)) return false;
+
+        const original = Number(element.scrollTop) || 0;
+        const maximum = Math.max(
+            0,
+            Number(element.scrollHeight) - Number(element.clientHeight)
+        );
+        if (maximum < 2) return false;
+
+        const probeDistance = Math.min(
+            64,
+            Math.max(8, Math.floor(Number(element.clientHeight) * 0.02))
+        );
+        const target = original < maximum / 2
+            ? Math.min(maximum, original + probeDistance)
+            : Math.max(0, original - probeDistance);
+
+        if (Math.abs(target - original) < 1) return false;
+
+        let moved = false;
+        try {
+            element.scrollTop = target;
+            moved = Math.abs((Number(element.scrollTop) || 0) - original) >= 1;
+        } catch {
+            moved = false;
+        }
+
+        try {
+            element.scrollTop = original;
+        } catch {
+            // A failed restore means this is not a safe scanner target.
+            return false;
+        }
+
+        return moved;
     }
 
     function scrollPosition(scroller) {
@@ -161,11 +206,11 @@
     function finalPositionDescription(value) {
         switch (value) {
             case 'scan-end':
-                return 'Stay at scan end';
+                return 'Stay where the scan finished';
             case 'start':
-                return 'Return to starting position';
+                return 'Return to the original message window';
             default:
-                return 'Jump to timeline end after scan / ZIP';
+                return 'Move to the newest messages after scan / ZIP';
         }
     }
 
@@ -179,9 +224,9 @@
         }
 
         if (option === 'start') {
-            setPhase('RETURNING TO START POSITION');
+            setPhase('RETURNING TO ORIGINAL MESSAGE WINDOW');
             addLog(
-                'Returning to the position where the scan started.'
+                'Returning to the message window where the scan started.'
             );
 
             const exact = await restoreStartingAnchor(
@@ -191,16 +236,16 @@
 
             addLog(
                 exact
-                    ? 'Starting position restored.'
-                    : `Starting position restored approximately because ${activeSiteAdapter.label} unloaded the original ${adapterTerm('item', 'item')}.`,
+                    ? 'Original message window restored.'
+                    : `Original message window could not be restored exactly because ${activeSiteAdapter.label} unloaded the anchor ${adapterTerm('item', 'item')}. An approximate position was applied.`,
                 exact ? 'success' : 'warn'
             );
             return;
         }
 
-        setPhase('RETURNING TO TIMELINE END');
+        setPhase('MOVING TO NEWEST MESSAGES');
         addLog(
-            'Returning to the timeline end and waiting for ${activeSiteAdapter.label} virtual timeline to settle.'
+            `Moving toward the newest messages and waiting for the ${activeSiteAdapter.label} virtual timeline to settle.`
         );
 
         const reachedBottom =
@@ -208,15 +253,15 @@
 
         addLog(
             reachedBottom
-                ? 'Final position is now at the timeline end.'
-                : `${activeSiteAdapter.label} moved the virtual timeline again; the strongest end-position correction was applied.`,
+                ? 'Newest-message boundary verified.'
+                : `${activeSiteAdapter.label} moved the virtual timeline again; the strongest newest-message correction was applied but arrival was not verified.`,
             reachedBottom ? 'success' : 'warn'
         );
     }
 
     async function moveToNewest(scroller) {
-        setPhase('SCAN: moving to timeline end');
-        addLog('Moving to the timeline end first.');
+        setPhase('SCAN: moving toward newest messages');
+        addLog('Moving toward the newest loaded messages first.');
         await forceScrollToNewest(scroller, 5_000);
     }
 

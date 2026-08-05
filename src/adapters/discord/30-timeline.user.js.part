@@ -27,27 +27,105 @@
         };
     }
 
-    function findDiscordScroller() {
-        const messageList =
+    function discordMessageListElement() {
+        return (
             document.querySelector('ol[data-list-id="chat-messages"]') ||
             document.querySelector('[data-list-id="chat-messages"]') ||
-            document.querySelector('main');
+            document.querySelector('[aria-label][role="group"] article[id*="chat-messages"]')?.parentElement ||
+            document.querySelector('main')
+        );
+    }
+
+    function discordScrollerCandidateScore(element, messageList) {
+        const range = Math.max(0, element.scrollHeight - element.clientHeight);
+        const style = getComputedStyle(element);
+        let score = Math.min(range, 2_000_000);
+
+        if (messageList && element.contains(messageList)) score += 4_000_000;
+        if (messageList && element === messageList.parentElement) score += 2_000_000;
+        if (['auto', 'scroll', 'overlay'].includes(style.overflowY)) {
+            score += 1_000_000;
+        }
+        if (element.closest?.('main')) score += 500_000;
+
+        return score;
+    }
+
+    function findDiscordScrollerCandidates() {
+        const messageList = discordMessageListElement();
+        const candidates = [];
+        const seen = new Set();
+        const add = element => {
+            if (!element || seen.has(element) || !isScrollable(element)) return;
+            seen.add(element);
+            candidates.push(element);
+        };
 
         let current = messageList;
-        while (current && current !== document.body) {
-            if (isScrollable(current)) return current;
+        while (current && current !== document.body?.parentElement) {
+            add(current);
+            if (current === document.body) break;
             current = current.parentElement;
         }
 
-        // Fallback: largest visible scroll container in the main area.
-        const candidates = [...document.querySelectorAll('main div, main section')]
-            .filter(isScrollable)
-            .sort((a, b) =>
-                (b.scrollHeight - b.clientHeight) -
-                (a.scrollHeight - a.clientHeight)
-            );
+        for (const candidate of document.querySelectorAll(
+            'main div, main section, main ol, main [role="log"], main [role="group"]'
+        )) {
+            if (
+                messageList &&
+                candidate !== messageList &&
+                !candidate.contains(messageList)
+            ) {
+                continue;
+            }
+            add(candidate);
+        }
 
-        return candidates[0] || null;
+        if (
+            document.scrollingElement &&
+            (!messageList || document.scrollingElement.contains(messageList))
+        ) {
+            add(document.scrollingElement);
+        }
+
+        return candidates.sort((left, right) =>
+            discordScrollerCandidateScore(right, messageList) -
+            discordScrollerCandidateScore(left, messageList)
+        );
+    }
+
+    function findDiscordScroller() {
+        const candidates = findDiscordScrollerCandidates();
+        const selectedIndex = candidates.findIndex(canDriveScroller);
+
+        if (selectedIndex < 0) {
+            diagnostics.error(
+                'DISCORD_SCROLLER_NOT_WRITABLE',
+                'Discord timeline candidates were found, but none accepted a reversible programmatic scroll probe.',
+                null,
+                { candidateCount: candidates.length, continued: false },
+                {
+                    category: 'scan',
+                    userMessage: 'Discord’s message timeline could not be moved in this browser runtime. Reload the channel and try again. Code: DISCORD_SCROLLER_NOT_WRITABLE'
+                }
+            );
+            return null;
+        }
+
+        if (selectedIndex > 0) {
+            diagnostics.warn(
+                'DISCORD_SCROLLER_FALLBACK_USED',
+                'The first Discord timeline candidate was not writable; a verified fallback candidate was selected.',
+                {
+                    candidateCount: candidates.length,
+                    selectedIndex,
+                    continued: true
+                },
+                { category: 'scan' }
+            );
+        }
+
+        return candidates[selectedIndex];
     }
 
     function findDiscordItemElementById(itemId) {
@@ -269,13 +347,45 @@
             scanVisiblePage();
         }
 
+        const after = scrollPosition(scroller);
+        const scrollPositionChanged =
+            Math.abs(after.top - before.top) >= 1 ||
+            Math.abs(after.height - before.height) >= 3;
+        const visibleWindowChanged = beforeIds.some(id =>
+            !afterEdgeIds.includes(id)
+        ) || afterEdgeIds.some(id => !beforeIds.includes(id));
+        const movementVerified =
+            progressed || scrollPositionChanged || visibleWindowChanged;
+        const requestedEdgeReached = direction === 'older'
+            ? after.top <= 8
+            : after.height - (after.top + after.client) <= 8;
+
+        if (!movementVerified && !requestedEdgeReached) {
+            diagnostics.warn(
+                'DISCORD_SCROLL_NO_PROGRESS',
+                'A Discord scan step did not change the writable scroll position or visible message window.',
+                {
+                    direction,
+                    before,
+                    after,
+                    visibleItemCount: afterEdgeIds.length,
+                    continued: true
+                },
+                {
+                    category: 'scan',
+                    userMessage: 'Discord did not move during one scan step. The scanner will retry or stop at the safety boundary. Code: DISCORD_SCROLL_NO_PROGRESS'
+                }
+            );
+        }
+
         return {
             overlapId,
             overlapVerified,
             recovered,
             progressed,
+            movementVerified,
             before,
-            after: scrollPosition(scroller),
+            after,
             beforeBoundaryId,
             afterBoundaryId
         };

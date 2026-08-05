@@ -5,13 +5,14 @@ import { readFile } from 'node:fs/promises';
 const root = new URL('../', import.meta.url);
 const read = path => readFile(new URL(path, root), 'utf8');
 
-test('Discord uses loaded-edge jumps instead of viewport-sized scanner steps', async () => {
+test('Discord uses verified loaded-edge jumps from the current message window', async () => {
     const config = await read('src/adapters/discord/00-config.user.js.part');
     const timeline = await read('src/adapters/discord/30-timeline.user.js.part');
     const boundaries = await read('src/core/31-scanner-boundaries.user.js.part');
 
     assert.match(config, /jumpScanWindow:\s*discordJumpScanWindow/);
-    assert.match(config, /preferredScanMode:\s*'newest-to-oldest'/);
+    assert.match(config, /preferredScanMode:\s*'current-to-oldest'/);
+    assert.match(config, /scanModes:\s*\[\s*'current-to-oldest',\s*'current-to-newest'\s*\]/s);
     assert.match(timeline, /function setDiscordLoadedEdge/);
     assert.match(timeline, /scroller\.scrollTop = direction === 'older'\s*\? 0\s*:\s*scroller\.scrollHeight/s);
     assert.match(timeline, /async function discordJumpScanWindow/);

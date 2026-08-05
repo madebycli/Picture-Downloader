@@ -59,9 +59,9 @@
         const range = getDateRangeConfig();
         dateSummaryElement.classList.toggle('ma-date-error', !range.valid);
         dateSummaryElement.textContent = !enabled
-            ? 'All scanned dates are included.'
+            ? 'Date interval is off. The current-position chronology control is used.'
             : range.valid
-                ? `Inclusive range: ${range.label}`
+                ? `Automatic interval: ${range.label}`
                 : range.error;
 
         scheduleRender();

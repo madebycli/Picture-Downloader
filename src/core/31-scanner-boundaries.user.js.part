@@ -97,7 +97,7 @@
         };
 
         addLog(
-            `Possible timeline start reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed older items.`
+            `Possible oldest-message boundary reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed older messages.`
         );
 
         while (!stopRequested) {
@@ -121,7 +121,7 @@
 
             if (changed) {
                 addLog(
-                    `${activeSiteAdapter.label} loaded more content; scanning continues (${mediaEntries.size} media files found).`,
+                    `${activeSiteAdapter.label} loaded older messages; scanning continues (${mediaEntries.size} media files found).`,
                     'success'
                 );
                 return false;
@@ -130,7 +130,7 @@
             const elapsed = performance.now() - startedAt;
             const remaining = Math.max(0, confirmMs - elapsed);
             setPhase(
-                `SCAN: confirming real timeline start · ${Math.ceil(remaining / 1000)} s left`
+                `SCAN: confirming oldest-message boundary · ${Math.ceil(remaining / 1000)} s left`
             );
 
             if (remaining <= 0) {
@@ -144,11 +144,11 @@
 
     async function autoScrollToOldest(scroller) {
         const usesJumpScanner = typeof activeSiteAdapter?.jumpScanWindow === 'function';
-        setPhase('SCAN: newest → oldest');
+        setPhase('SCAN: moving toward older messages');
         addLog(
             usesJumpScanner
-                ? 'Fast edge-jump scan started. Each loaded edge is scanned with an overlap-anchor safety pass.'
-                : 'Fast scan started. A delayed confirmation runs at the possible timeline start.'
+                ? 'Fast older-message edge scan started. Each loaded edge is scanned with an overlap-anchor safety pass.'
+                : 'Older-message scan started. A delayed confirmation runs at the possible oldest-message boundary.'
         );
 
         let iterations = 0;
@@ -170,7 +170,7 @@
             }
 
             if (iterations % 25 === 0) {
-                addLog(`Scan running: ${mediaEntries.size} media files found.`);
+                addLog(`Older-message scan running: ${mediaEntries.size} media files found.`);
             }
 
             if (after.top <= 5) {
@@ -179,7 +179,7 @@
                 if (reallyAtTop) {
                     lastScanBoundaryReason = 'timeline-start';
                     addLog(
-                        `No older items appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Timeline start confirmed.`,
+                        `No older messages appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Oldest-message boundary confirmed.`,
                         'success'
                     );
                     return true;
@@ -220,14 +220,14 @@
         };
 
         addLog(
-            `Possible timeline-end boundary reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed newer items or expansion controls.`
+            `Possible newest-message boundary reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed newer messages or expansion controls.`
         );
 
         while (!stopRequested) {
             const expanded = await expandActiveRenderedContent(scroller, 'newer');
             if (expanded > 0) {
                 addLog(
-                    `${activeSiteAdapter.label} expanded ${expanded} rendered “more” control${expanded === 1 ? '' : 's'}; downward scanning continues.`,
+                    `${activeSiteAdapter.label} expanded ${expanded} rendered “more” control${expanded === 1 ? '' : 's'}; newer-message scanning continues.`,
                     'success'
                 );
                 return false;
@@ -255,7 +255,7 @@
 
             if (changed) {
                 addLog(
-                    `${activeSiteAdapter.label} loaded newer content; downward scanning continues (${mediaEntries.size} media files found).`,
+                    `${activeSiteAdapter.label} loaded newer messages; scanning continues (${mediaEntries.size} media files found).`,
                     'success'
                 );
                 return false;
@@ -265,7 +265,7 @@
             const remaining = Math.max(0, confirmMs - elapsed);
 
             setPhase(
-                `SCAN: confirming timeline-end boundary · ${Math.ceil(remaining / 1000)} s left`
+                `SCAN: confirming newest-message boundary · ${Math.ceil(remaining / 1000)} s left`
             );
 
             if (remaining <= 0) {
@@ -279,11 +279,11 @@
 
     async function autoScrollToNewest(scroller) {
         const usesJumpScanner = typeof activeSiteAdapter?.jumpScanWindow === 'function';
-        setPhase('SCAN: current → newest');
+        setPhase('SCAN: moving toward newer messages');
         addLog(
             usesJumpScanner
-                ? 'Downward edge-jump scan started with overlap verification.'
-                : 'Downward scan started. Expansion controls are activated when supported.'
+                ? 'Fast newer-message edge scan started with overlap verification.'
+                : 'Newer-message scan started. Expansion controls are activated when supported.'
         );
 
         let iterations = 0;
@@ -309,7 +309,7 @@
 
             if (iterations % 25 === 0) {
                 addLog(
-                    `Downward scan running: ${mediaEntries.size} media files found.`
+                    `Newer-message scan running: ${mediaEntries.size} media files found.`
                 );
             }
 
@@ -320,7 +320,7 @@
                 if (reallyAtBottom) {
                     lastScanBoundaryReason = 'timeline-end';
                     addLog(
-                        `No newer items or expansion controls appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Timeline end confirmed.`,
+                        `No newer messages or expansion controls appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Newest-message boundary confirmed.`,
                         'success'
                     );
                     return true;
@@ -334,13 +334,13 @@
     function scanModeDescription(mode) {
         switch (mode) {
             case 'current-to-oldest':
-                return 'Current position → start';
+                return 'Current position → older messages';
             case 'current-to-newest':
-                return 'Current position → end';
+                return 'Current position → newer messages';
             case 'full-finish-down':
-                return 'Full timeline: current → start → end';
+                return 'Automatic whole-channel scan';
             default:
-                return 'End → start (jump to end first)';
+                return 'Automatic latest-message seek → older messages';
         }
     }
 
