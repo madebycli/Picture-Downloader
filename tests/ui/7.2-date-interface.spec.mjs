@@ -108,7 +108,8 @@ test('compact panel exposes four tabs and hides chronology in date mode', async 
     await expect(page.locator('[data-ma-tab="setup"]')).toHaveText('Scan');
     await expect(page.locator('[data-ma-tab="archive"]')).toHaveText('Archive');
 
-    await page.locator('#ma-date-filter').check();
+    await page.locator('label.ma-switch').click();
+    await expect(page.locator('#ma-date-filter')).toBeChecked();
     await expect(page.locator('#ma-scan-direction').closest('label')).toBeHidden();
     await expect(page.locator('#ma-start')).toContainText('interval');
 
@@ -121,8 +122,11 @@ test('date interval seeks without collecting and archives only the requested mon
     test.setTimeout(45_000);
     await openFixture(page);
 
-    await page.locator('#ma-auto-zip').uncheck();
-    await page.locator('#ma-date-filter').check();
+    await page.locator('[data-ma-tab="archive"]').click();
+    await page.locator('#ma-review-before').check();
+    await page.locator('[data-ma-tab="setup"]').click();
+    await page.locator('label.ma-switch').click();
+    await expect(page.locator('#ma-date-filter')).toBeChecked();
     await page.locator('#ma-from-date').fill('2026-05-01');
     await page.locator('#ma-date-end-mode').selectOption('specific');
     await page.locator('#ma-to-date').fill('2026-05-31');

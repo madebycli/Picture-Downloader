@@ -112,7 +112,9 @@ async function openDiscordFixture(page, { count = 3 } = {}) {
 test('Review mode makes no original request before Archive selected', async ({ page }) => {
     await openDiscordFixture(page);
 
+    await page.locator('[data-ma-tab="archive"]').click();
     await page.locator('#ma-review-before').check();
+    await page.locator('[data-ma-tab="setup"]').click();
     await page.locator('#ma-scan-direction').selectOption('current-to-newest');
     await page.locator('#ma-start').click();
     await expect(page.locator('#ma-found')).toHaveText('3');
@@ -146,7 +148,9 @@ test('Review mode makes no original request before Archive selected', async ({ p
 test('Library is keyboard accessible and selection does not rebuild all cards', async ({ page }) => {
     await openDiscordFixture(page);
 
+    await page.locator('[data-ma-tab="archive"]').click();
     await page.locator('#ma-review-before').check();
+    await page.locator('[data-ma-tab="setup"]').click();
     await page.locator('#ma-start').click();
     await expect(page.locator('#ma-found')).toHaveText('3');
     await page.locator('#ma-stop').click();
@@ -182,7 +186,9 @@ test('1,100-item Library stays scrollable, bounded and click-toggleable', async 
     test.setTimeout(60_000);
     await openDiscordFixture(page, { count: 1_100 });
 
+    await page.locator('[data-ma-tab="archive"]').click();
     await page.locator('#ma-review-before').check();
+    await page.locator('[data-ma-tab="setup"]').click();
     await page.locator('#ma-scan-direction').selectOption('current-to-newest');
     await page.locator('#ma-start').click();
     await expect(page.locator('#ma-found')).toHaveText('1100', { timeout: 20_000 });

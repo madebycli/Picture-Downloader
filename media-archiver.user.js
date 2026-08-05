@@ -9527,11 +9527,17 @@
     `;
     archiveTabPanel.appendChild(archiveMainGroup);
 
-    const autoArchiveGroup = autoZipCheckbox?.closest('.ma-group');
-    if (autoArchiveGroup) {
-        const row = autoArchiveGroup.querySelector('.ma-option-row');
-        if (row) archiveMainGroup.querySelector('.ma-archive-primary').appendChild(row);
-        autoArchiveGroup.remove();
+    const compactAutoArchiveGroup = autoZipCheckbox?.closest('.ma-group');
+    if (compactAutoArchiveGroup) {
+        const archiveChoiceContent = compactAutoArchiveGroup.querySelector(
+            '.ma-after-scan-options, .ma-option-row'
+        );
+        if (archiveChoiceContent) {
+            archiveMainGroup
+                .querySelector('.ma-archive-primary')
+                .appendChild(archiveChoiceContent);
+        }
+        compactAutoArchiveGroup.remove();
     }
     if (finalPositionLabel) {
         archiveMainGroup
@@ -9566,6 +9572,7 @@
             background: rgba(0,0,0,.14);
         }
         #media-archiver-panel .ma-date-mode-active .ma-current-direction { display: none; }
+        #media-archiver-panel .ma-switch > span { pointer-events: none; }
     `;
     document.head.appendChild(compactStyle);
 
