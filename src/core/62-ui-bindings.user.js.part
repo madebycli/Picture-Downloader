@@ -86,7 +86,9 @@
     ]) {
         checkbox.addEventListener('change', () => {
             scheduleRender();
+            scheduleLibraryRender();
             updateCounters();
+            renderNamingPreview();
         });
     }
 
@@ -104,6 +106,7 @@
     resetButton.addEventListener('click', () => {
         resetCollection();
         logArea.replaceChildren();
+        diagnostics.clear();
         addLog('Collection reset.');
     });
     clearLogButton.addEventListener('click', () => {
@@ -134,4 +137,3 @@
     );
     selectInterfaceTab('setup');
     refreshDateControls();
-})();
