@@ -4,8 +4,11 @@ on:
   push:
     branches: [main]
     paths:
-      - "src/parts/**"
+      - "src/core/**"
+      - "src/adapters/**"
+      - "src/build-manifest.json"
       - "scripts/assemble-userscript.mjs"
+      - "scripts/check-userscript.mjs"
       - "package.json"
       - ".github/workflows/publish-userscript.yml"
   workflow_dispatch:
@@ -30,13 +33,13 @@ jobs:
       - run: npm test
       - name: Commit assembled userscript
         run: |
-          if [ -z "$(git status --porcelain -- discord-media-archiver.user.js)" ]; then
+          if [ -z "$(git status --porcelain -- media-archiver.user.js)" ]; then
             echo "Generated userscript is already current."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add discord-media-archiver.user.js
+          git add media-archiver.user.js
           git commit -m "build: assemble userscript"
           git pull --rebase origin main
           git push origin HEAD:main
