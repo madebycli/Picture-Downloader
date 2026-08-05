@@ -50,22 +50,22 @@
                     <section class="ma-group">
                         <div class="ma-group-heading">
                             <div>
-                                <h2>What to save</h2>
-                                <p>Choose the media categories included in the archive.</p>
+                                <h2>Media types</h2>
+                                <p>Choose the simple media categories included in the archive.</p>
                             </div>
                         </div>
                         <div class="ma-choice-grid">
                             <label class="ma-choice">
                                 <input id="ma-include-photos" type="checkbox" checked>
-                                <span><strong>Photos & native GIFs</strong><small>Image attachments</small></span>
+                                <span><strong>Images</strong><small>Photos and static image attachments</small></span>
                             </label>
                             <label class="ma-choice">
                                 <input id="ma-include-videos" type="checkbox" checked>
-                                <span><strong>Videos</strong><small>Video attachments</small></span>
+                                <span><strong>Videos</strong><small>Rendered video attachments and players</small></span>
                             </label>
                             <label class="ma-choice ma-choice-wide">
                                 <input id="ma-include-external-gifs" type="checkbox" checked>
-                                <span><strong>Rendered GIF previews</strong><small>Animated previews supplied by the active site</small></span>
+                                <span><strong>GIFs and animated previews</strong><small>Native GIF files and rendered animated previews</small></span>
                             </label>
                         </div>
                     </section>
@@ -73,13 +73,13 @@
                     <section class="ma-group">
                         <div class="ma-group-heading ma-heading-with-control">
                             <div>
-                                <h2>Date range</h2>
-                                <p>Filter by each item's source timestamp.</p>
+                                <h2>Date interval</h2>
+                                <p>Choose the calendar interval that the automatic navigator should scan.</p>
                             </div>
                             <label class="ma-switch">
                                 <input id="ma-date-filter" type="checkbox">
                                 <span aria-hidden="true"></span>
-                                <b>Use filter</b>
+                                <b>Use interval</b>
                             </label>
                         </div>
 
@@ -89,9 +89,9 @@
                                 <input id="ma-from-date" type="date">
                             </label>
                             <label>
-                                <span>Range end</span>
+                                <span>Interval end</span>
                                 <select id="ma-date-end-mode">
-                                    <option value="latest">Latest available</option>
+                                    <option value="latest">Newest available message</option>
                                     <option value="specific">Specific date</option>
                                 </select>
                             </label>
@@ -106,26 +106,26 @@
                     <section class="ma-group">
                         <div class="ma-group-heading">
                             <div>
-                                <h2>Scan behavior</h2>
-                                <p>Control where the scan starts, ends, and leaves the page.</p>
+                                <h2>Scan plan</h2>
+                                <p>Describe movement by message chronology, not screen direction.</p>
                             </div>
                         </div>
                         <div class="ma-field-grid">
                             <label class="ma-field-wide">
-                                <span>Direction and starting point</span>
+                                <span>From the current message window</span>
                                 <select id="ma-scan-direction">
-                                    <option value="newest-to-oldest">End → start (jump to end first)</option>
-                                    <option value="current-to-oldest">Current position → start</option>
-                                    <option value="current-to-newest">Current position → end</option>
-                                    <option value="full-finish-down">Full timeline: current → start → end</option>
+                                    <option value="newest-to-oldest">Automatic latest-message seek → older messages</option>
+                                    <option value="current-to-oldest">Current position → older messages</option>
+                                    <option value="current-to-newest">Current position → newer messages</option>
+                                    <option value="full-finish-down">Automatic whole-channel scan</option>
                                 </select>
                             </label>
                             <label class="ma-field-wide">
                                 <span>Position after completion</span>
                                 <select id="ma-final-position">
-                                    <option value="newest" selected>Jump to timeline end</option>
-                                    <option value="scan-end">Stay at scan end</option>
-                                    <option value="start">Return to starting position</option>
+                                    <option value="scan-end" selected>Stay where the scan finished</option>
+                                    <option value="newest">Move to newest messages</option>
+                                    <option value="start">Return to original message window</option>
                                 </select>
                             </label>
                         </div>
@@ -144,10 +144,10 @@
 
                 <section data-ma-panel="media" hidden>
                     <div class="ma-detail-metrics">
-                        <div><span>Photos</span><strong id="ma-photo-count">0</strong></div>
+                        <div><span>Images</span><strong id="ma-photo-count">0</strong></div>
                         <div><span>Videos</span><strong id="ma-video-count">0</strong></div>
                         <div><span>GIF previews</span><strong id="ma-external-gif-count">0</strong></div>
-                        <div><span>In range</span><strong id="ma-in-range">0</strong></div>
+                        <div><span>In interval</span><strong id="ma-in-range">0</strong></div>
                         <div><span>Date excluded</span><strong id="ma-excluded-date">0</strong></div>
                     </div>
                     <div class="ma-list-heading">
