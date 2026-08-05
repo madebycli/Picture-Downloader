@@ -1,8 +1,8 @@
 {
-  "name": "media-archiver-userscript",
-  "version": "6.0.0",
+  "name": "media-archiver",
+  "version": "7.0.0",
   "private": true,
-  "description": "Build and validation tooling for the modular Media Archiver product.",
+  "description": "Build and validation tooling for the shared Media Archiver userscript and browser extensions.",
   "scripts": {
     "build": "npm run build:userscript && npm run build:extension:chromium && npm run build:extension:firefox",
     "build:userscript": "node scripts/assemble-userscript.mjs",
