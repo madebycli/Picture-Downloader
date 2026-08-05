@@ -1,6 +1,6 @@
 {
   "name": "media-archiver",
-  "version": "7.2.0",
+  "version": "7.3.0",
   "private": true,
   "description": "Build and validation tooling for the shared Media Archiver userscript and browser extensions.",
   "scripts": {

@@ -18,8 +18,12 @@ test('baseline metadata preserves the audited 6.0 main build independently from 
 
     assert.equal(baseline.auditedMainCommit, 'e2799fe310cfd6cb6dc9d1482780bc3d64b8cbeb');
     assert.equal(baseline.version, '6.0.0');
-    assert.equal(packageJson.version, '7.2.0');
+    assert.equal(packageJson.version, '7.3.0');
     assert.notEqual(packageJson.version, baseline.version);
+    const bootstrap = await read('src/core/00-bootstrap.user.js.part');
+    assert.match(bootstrap, /@noframes/);
+    assert.match(bootstrap, /data-media-archiver-mounted/);
+    assert.match(bootstrap, /window\.top === window\.self/);
     assert.match(baseline.buildOutput, /17 modules and 1 adapter/);
     assert.equal(baseline.automatedResult, 'npm test passed');
 });

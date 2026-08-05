@@ -1,5 +1,17 @@
 # Changelog
 
+## 7.3.0 — 2026-08-05
+
+### Fixed
+
+- Tampermonkey now mounts exactly one Media Archiver interface per top-level document.
+- Repeated userscript injection no longer creates stacked duplicate panels when switching to Media or another tab.
+- Child-frame execution is blocked both by userscript metadata and by a runtime top-level-document guard.
+
+### Tests
+
+- Added Chromium and Firefox regression coverage for repeated injection, tab switching, root identity, and Discord child frames.
+
 ## 7.2.0 — 2026-08-05
 
 ### Highlights
