@@ -1,0 +1,63 @@
+    function findPinterestScroller() {
+        const root = document.scrollingElement || document.documentElement;
+        if (root && root.scrollHeight > root.clientHeight + 80) return root;
+
+        const candidates = [...document.querySelectorAll('main, main div, [role="main"]')]
+            .filter(isScrollable)
+            .sort((a, b) =>
+                (b.scrollHeight - b.clientHeight) -
+                (a.scrollHeight - a.clientHeight)
+            );
+        return candidates[0] || null;
+    }
+
+    function pinterestVisibleItemIds() {
+        const ids = new Set();
+        for (const anchor of document.querySelectorAll('a[href*="/pin/"]')) {
+            const id = pinterestPinId(anchor);
+            if (!id) continue;
+            const rect = anchor.getBoundingClientRect();
+            if (rect.bottom >= 0 && rect.top <= window.innerHeight) ids.add(id);
+        }
+        return [...ids];
+    }
+
+    function findPinterestItemElementById(itemId) {
+        if (!itemId) return null;
+        for (const anchor of document.querySelectorAll(`a[href*="/pin/${itemId}/"]`)) {
+            return anchor.closest('[data-test-pin-id], [data-pin-id], article, div') || anchor;
+        }
+        return null;
+    }
+
+    function capturePinterestStartingAnchor(scroller) {
+        const scrollerRect = scroller === document.scrollingElement
+            ? { top: 0, bottom: window.innerHeight }
+            : scroller.getBoundingClientRect();
+        let best = null;
+
+        for (const anchor of document.querySelectorAll('a[href*="/pin/"]')) {
+            const itemId = pinterestPinId(anchor);
+            if (!itemId) continue;
+            const rect = anchor.getBoundingClientRect();
+            if (rect.bottom < scrollerRect.top || rect.top > scrollerRect.bottom) continue;
+            const distance = Math.abs(rect.top - scrollerRect.top);
+            if (!best || distance < best.distance) {
+                best = {
+                    itemId,
+                    offset: rect.top - scrollerRect.top,
+                    distance
+                };
+            }
+        }
+
+        const position = scrollPosition(scroller);
+        return {
+            itemId: best?.itemId || null,
+            offset: best?.offset || 0,
+            scrollRatio: position.height > position.client
+                ? position.top / (position.height - position.client)
+                : 0
+        };
+    }
+

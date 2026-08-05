@@ -1,0 +1,160 @@
+    function pinterestPageType(currentLocation = location) {
+        const path = currentLocation.pathname.replace(/\/+$/, '') || '/';
+        if (path === '/' || path.startsWith('/homefeed')) return null;
+        if (/^\/pin\/\d+/i.test(path)) return 'pin-detail';
+        if (/^\/search\/pins/i.test(path)) return 'search-results';
+        if (/^\/[^/]+\/(?:_created|_saved)$/i.test(path)) return 'profile-grid';
+        if (/^\/[^/]+\/[^/]+$/i.test(path)) return 'board';
+        if (/^\/[^/]+$/i.test(path) && !/^\/(?:login|logout|settings|business|ideas|today)$/i.test(path)) {
+            return 'profile-grid';
+        }
+        return null;
+    }
+
+    function pinterestPinId(element) {
+        let current = element;
+        for (let depth = 0; current && depth < 10; depth++, current = current.parentElement) {
+            const direct = current.getAttribute?.('data-test-pin-id') ||
+                current.getAttribute?.('data-pin-id');
+            if (/^\d+$/.test(direct || '')) return direct;
+            const href = current.matches?.('a[href]')
+                ? current.getAttribute('href')
+                : current.querySelector?.('a[href*="/pin/"]')?.getAttribute('href');
+            const match = String(href || '').match(/\/pin\/(\d+)/i);
+            if (match) return match[1];
+        }
+        return null;
+    }
+
+    function pinterestSrcsetCandidates(value) {
+        return String(value || '')
+            .split(',')
+            .map(part => part.trim())
+            .map(part => {
+                const match = part.match(/^(\S+)\s+(\d+(?:\.\d+)?)(w|x)$/i);
+                return match
+                    ? { url: match[1], score: Number(match[2]) * (match[3].toLowerCase() === 'x' ? 10_000 : 1) }
+                    : null;
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.score - a.score);
+    }
+
+    function pinterestBestRenderedUrl(element) {
+        const candidates = [];
+        const add = (url, score) => {
+            if (!url) return;
+            try {
+                const parsed = new URL(url, location.href);
+                if (!['i.pinimg.com', 'v1.pinimg.com', 'v.pinimg.com'].includes(parsed.hostname)) return;
+                candidates.push({ url: parsed.href, score });
+            } catch {
+                // Ignore malformed rendered attributes.
+            }
+        };
+
+        if (element?.tagName?.toUpperCase?.() === 'VIDEO') {
+            add(element.currentSrc, 1_000_000);
+            add(element.src, 900_000);
+            for (const source of element.querySelectorAll?.('source[src]') || []) {
+                add(source.src || source.getAttribute('src'), 800_000);
+            }
+        } else {
+            add(element?.currentSrc, 1_000_000);
+            for (const source of element?.closest?.('picture')?.querySelectorAll?.('source[srcset]') || []) {
+                for (const candidate of pinterestSrcsetCandidates(source.getAttribute('srcset'))) {
+                    add(candidate.url, 600_000 + candidate.score);
+                }
+            }
+            for (const candidate of pinterestSrcsetCandidates(element?.getAttribute?.('srcset'))) {
+                add(candidate.url, 500_000 + candidate.score);
+            }
+            add(element?.src, 100_000);
+            add(element?.getAttribute?.('src'), 90_000);
+        }
+
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates[0]?.url || null;
+    }
+
+    function pinterestCanonicalMediaKey(rawUrl, pinId = null) {
+        const url = new URL(rawUrl, location.href);
+        return `pinterest:${pinId || 'unknown'}:${url.hostname.toLowerCase()}${url.pathname}`.toLowerCase();
+    }
+
+    function pinterestFilename(rawUrl) {
+        try {
+            const url = new URL(rawUrl, location.href);
+            return sanitizeFilename(decodeURIComponent(url.pathname.split('/').pop() || 'pinterest-media.jpg'));
+        } catch {
+            return 'pinterest-media.jpg';
+        }
+    }
+
+    function createPinterestAdapter() {
+        const downloadHosts = new Set(['i.pinimg.com', 'v1.pinimg.com', 'v.pinimg.com']);
+        return {
+            id: 'pinterest',
+            label: 'Pinterest',
+            archivePrefix: 'pinterest',
+            capabilities: {
+                media: true,
+                textRecords: false,
+                virtualTimeline: true,
+                dateFilter: false,
+                hostPageSelection: false,
+                scanModes: [
+                    'newest-to-oldest',
+                    'current-to-oldest',
+                    'current-to-newest',
+                    'full-finish-down'
+                ],
+                views: ['grid', 'list']
+            },
+            terms: Object.freeze({
+                timeline: 'pin grid',
+                item: 'pin',
+                items: 'pins',
+                oldest: 'grid start',
+                newest: 'grid end'
+            }),
+            matches(currentLocation) {
+                return /(^|\.)pinterest\.com$/i.test(currentLocation.hostname) &&
+                    Boolean(pinterestPageType(currentLocation));
+            },
+            scanVisibleMedia: scanPinterestVisibleMedia,
+            findScroller: findPinterestScroller,
+            visibleItemIds: pinterestVisibleItemIds,
+            visibleItemTimeRange: () => null,
+            findItemElementById: findPinterestItemElementById,
+            captureStartingAnchor: capturePinterestStartingAnchor,
+            findItemId: pinterestPinId,
+            findItemTimestamp: () => null,
+            compareItemIds(left, right) {
+                try {
+                    const a = BigInt(left);
+                    const b = BigInt(right);
+                    return a === b ? 0 : a < b ? -1 : 1;
+                } catch {
+                    return String(left || '').localeCompare(String(right || ''));
+                }
+            },
+            getArchiveContext() {
+                const pageType = pinterestPageType() || 'pins';
+                const parts = location.pathname.split('/').filter(Boolean);
+                return {
+                    id: sanitizeFilename(parts.slice(0, 2).join('-') || pageType),
+                    label: pageType
+                };
+            },
+            isDownloadUrlAllowed(rawUrl) {
+                try {
+                    return downloadHosts.has(new URL(rawUrl, location.href).hostname);
+                } catch {
+                    return false;
+                }
+            },
+            openTargetHelp: 'Open a pin detail, board, visible profile grid, or pin search results page.'
+        };
+    }
+
