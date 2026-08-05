@@ -21,7 +21,9 @@ jobs:
           node-version: 22
           cache: npm
       - name: Apply 7.3.1 scroll patch
-        run: node scripts/prepare-7.3.1-scroll.mjs
+        run: |
+          node scripts/prepare-7.3.1-scroll.mjs
+          node scripts/fix-7.3.1-scroll-test.mjs
       - name: Install tooling
         run: npm install
       - name: Run complete validation
