@@ -1,59 +1,49 @@
 # Changelog
 
-## 6.0.0
+## 7.0.0 — 2026-08-05
 
-- Renamed the product from Discord Media Archiver to Media Archiver.
-- Rebuilt the interface around Setup, Media, and Activity tabs.
-- Grouped media, date, scan, archive, and action controls by workflow.
-- Removed long release-note-style text from the runtime panel.
-- Added a site-adapter registry and moved Discord-specific DOM, URL, timestamp, and host logic into the Discord adapter.
-- Added adapter and build manifests that generate Tampermonkey `@match` and `@connect` metadata.
-- Renamed the generated userscript to `media-archiver.user.js`.
-- Added adapter architecture and extension documentation.
+### Added
 
-All notable user-facing changes are recorded here.
+- Three first-class builds from one shared source: universal userscript, Chromium extension, and Firefox extension.
+- Runtime contract for binary transport, cancellation, saving, clipboard, settings, platform metadata, and UI control.
+- General ArchiveItem model for binary media, rendered comments, and generated documents.
+- Quick archive and Review before archive workflows.
+- Near-fullscreen Library with grid/list, search, sort, filters, select-all/none/invert, file-manager modifier selection, keyboard navigation, focus trapping, and reduced-motion behavior.
+- Collision-safe shared naming presets, advanced templates, live preview, Windows-safe sanitization, and immutable final name plans.
+- Structured Activity/Developer diagnostics, stable codes, sanitized copy/Markdown export, and privacy redaction.
+- 750 ms live-stat heartbeat with DOM-visible one-second staleness regression coverage.
+- Pinterest rendered-media adapter for pin detail, boards, visible profile grids, and pin search results.
+- Reddit post-comment-thread adapter with selected-only JSON/Markdown/CSV export and independent rendered comment media.
+- Deterministic extension packaging, generated host permissions, toolbar actions, content/background messaging, and reproducibility checks.
+- Sanitized adapter fixtures, unit suites, and Chromium/Firefox Playwright UI tests.
 
-## 5.6.0
+### Changed
 
-- Added Firefox/Tampermonkey-safe ZIP library discovery.
-- Added a built-in ZIP32 STORE fallback when `fflate` is unavailable.
-- ZIP creation no longer aborts solely because the external CDN dependency failed.
+- Manual selection is now independent from eligibility. Final archive inclusion is canonical, eligible, and manually selected.
+- Final archive names are planned before downloads and reused across preview, retries, manifests, generated documents, workers, and ZIP parts.
+- Binary transport is isolated behind runtime bridges; shared modules no longer call Tampermonkey or extension globals directly.
+- Activity remains concise while technical detail moves to searchable Developer logs.
 
-## 5.5.0
+### Preserved
 
-- Added final chat-position choices.
-- Improved forced return to the newest message after scanning or ZIP creation.
-- Clarified Total found, In date range, Excluded by date, Selected for ZIP, and ZIP saved counters.
+- Discord channels/threads, photos/native GIFs, broad video containers, rendered external GIF previews, date ranges, all scan directions, delayed virtual-boundary confirmation, manual stop, completion-position choices, ZIP splitting, optional `fflate`, and the built-in ZIP fallback.
 
-## 5.4.0
+### Security
 
-- Added external GIF-preview detection for Discord-rendered Klipy, Tenor, and Giphy embeds.
-- Added a separate external-GIF-preview filter and counter.
-- Added source kind and source page fields to manifests.
+- No token/cookie/Authorization extraction, no authenticated private API enumeration, no account actions, no third-party linked-page scraping, and no remote executable JavaScript in extension packages.
 
-## 5.3.0
+## 6.0.0 — 2026-08-05
 
-- Added inclusive date-range filtering.
-- Added From date, fixed To date, and Latest available modes.
-- Added date-boundary scan stopping and date tokens in ZIP names.
+### Changed
 
-## 5.2.0
+- Renamed the product to **Media Archiver** and moved Discord-specific behavior behind a site adapter.
+- Split the monolithic userscript into manifest-driven core and adapter source modules.
+- Added generated Tampermonkey `@match` and `@connect` metadata from the adapter manifest.
+- Reworked the interface into persistent status plus Setup, Media, and Activity tabs.
+- Added four scan directions, local-date filtering, review-before-ZIP behavior, final-position restoration, numbered ZIP parts, CSV manifests, retries, bounded concurrency, optional `fflate`, and a built-in ZIP32 fallback.
+- Preserved Discord attachment media, native GIFs, broad uploaded-video container support, and rendered external GIF previews.
 
-- Expanded Discord-hosted video-format support.
-- Added fallback classification for uncommon files rendered in a video element.
-- Clarified that native GIFs use the photo/GIF filter.
+### Security
 
-## 5.1.0
-
-- Added selectable scan directions and current-position starts.
-- Added upward, downward, and full two-pass scan modes.
-
-## 5.0.0
-
-- Added separate photo and video selection.
-- Added original-quality video downloads and adaptive ZIP grouping.
-- Converted the user interface and logs to English.
-
-## Earlier development
-
-Earlier iterations introduced automatic scrolling, original attachment normalization, ZIP parts, numbered filenames, live logs, and per-item status indicators.
+- Added runtime URL allowlisting aligned with adapter permissions.
+- Added invariant checks rejecting Discord token extraction, authenticated Discord API access, credentials, and site coupling in core modules.
