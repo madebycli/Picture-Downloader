@@ -138,7 +138,7 @@ test('selected comments export in preserved hierarchy as JSON Markdown and CSV',
     const markdown = prepared.finalItems[1].payload.generatedText;
     assert.match(markdown, /\*\*fixture-author\*\*/);
     assert.match(markdown, /  - \*\*fixture-author\*\*/);
-    assert.match(markdown, /\[removed\]/);
+    assert.match(markdown, /\\\[removed\\\]/);
 
     const csv = prepared.finalItems[2].payload.generatedText;
     assert.match(csv, /"comment_id","parent_id","depth"/);
