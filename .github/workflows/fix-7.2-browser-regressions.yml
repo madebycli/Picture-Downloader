@@ -30,7 +30,22 @@ jobs:
       - name: Install Chromium and Firefox
         run: npx playwright install --with-deps chromium firefox
       - name: Run Chromium and Firefox UI tests
-        run: npx playwright test --project=chromium --project=firefox
+        id: ui
+        continue-on-error: true
+        run: npx playwright test --project=chromium --project=firefox 2>&1 | tee playwright-7.2.log
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fix-7.2-browser-evidence
+          path: |
+            playwright-7.2.log
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+      - name: Stop on browser failure
+        if: steps.ui.outcome != 'success'
+        run: exit 1
       - name: Commit verified fixes
         run: |
           git config user.name "github-actions[bot]"
