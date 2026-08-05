@@ -1,5 +1,95 @@
+    function adapterBoundaryConfirmMs() {
+        const configured = Number(activeSiteAdapter?.boundaryConfirmMs);
+        return Number.isFinite(configured) && configured >= 1_000
+            ? configured
+            : REAL_TOP_CONFIRM_MS;
+    }
+
+    async function expandActiveRenderedContent(scroller, direction) {
+        const expand = activeSiteAdapter?.expandRenderedContent;
+        if (typeof expand !== 'function' || stopRequested) return 0;
+
+        try {
+            const expanded = Number(await expand({ scroller, direction })) || 0;
+            if (expanded > 0 && !stopRequested) {
+                await sleep(300);
+                scanVisiblePage();
+                await sleep(300);
+                scanVisiblePage();
+            }
+            return expanded;
+        } catch (error) {
+            diagnostics.warn(
+                'ADAPTER_EXPANSION_FAILED',
+                'A rendered-content expansion control could not be activated.',
+                { adapterId: activeSiteAdapter?.id, direction },
+                {
+                    category: 'adapter',
+                    userMessage: `${activeSiteAdapter?.label || 'The site'} could not expand one rendered “more” control. Scanning continues.`
+                }
+            );
+            return 0;
+        }
+    }
+
+    async function advanceScanWindow(scroller, direction, iteration) {
+        const expanded = await expandActiveRenderedContent(scroller, direction);
+        if (stopRequested) return { expanded, overlapVerified: true };
+
+        if (typeof activeSiteAdapter?.jumpScanWindow === 'function') {
+            const result = await activeSiteAdapter.jumpScanWindow({
+                scroller,
+                direction,
+                iteration
+            }) || {};
+
+            scanVisiblePage();
+            await sleep(120);
+            scanVisiblePage();
+
+            if (result.overlapVerified === false) {
+                diagnostics.warn(
+                    'SCAN_OVERLAP_NOT_VERIFIED',
+                    'The previous virtual-timeline edge was not visible after a jump.',
+                    {
+                        adapterId: activeSiteAdapter.id,
+                        direction,
+                        overlapId: result.overlapId || null,
+                        iteration,
+                        continued: true
+                    },
+                    {
+                        category: 'scan',
+                        userMessage: 'A fast jump temporarily hid the previous overlap anchor. A recovery scan was attempted and scanning continues.'
+                    }
+                );
+            }
+
+            return { ...result, expanded };
+        }
+
+        const before = scrollPosition(scroller);
+        const step = Math.max(Math.floor(before.client * 0.78), 520);
+        scroller.scrollTop = direction === 'older'
+            ? Math.max(0, before.top - step)
+            : Math.min(scroller.scrollHeight, before.top + step);
+        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+        await sleep(SCAN_DELAY_MS);
+        scanVisiblePage();
+        await sleep(120);
+        scanVisiblePage();
+
+        return {
+            expanded,
+            overlapVerified: true,
+            before,
+            after: scrollPosition(scroller)
+        };
+    }
+
     async function confirmRealTimelineStart(scroller) {
         const startedAt = performance.now();
+        const confirmMs = adapterBoundaryConfirmMs();
         const baseline = {
             oldestId: oldestVisibleItemId(),
             mediaCount: mediaEntries.size,
@@ -7,10 +97,11 @@
         };
 
         addLog(
-            'Possible timeline start reached. Waiting 20 seconds for delayed older items.'
+            `Possible timeline start reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed older items.`
         );
 
         while (!stopRequested) {
+            await expandActiveRenderedContent(scroller, 'older');
             scroller.scrollTop = 0;
             scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
             await sleep(TOP_PROBE_INTERVAL_MS);
@@ -37,7 +128,7 @@
             }
 
             const elapsed = performance.now() - startedAt;
-            const remaining = Math.max(0, REAL_TOP_CONFIRM_MS - elapsed);
+            const remaining = Math.max(0, confirmMs - elapsed);
             setPhase(
                 `SCAN: confirming real timeline start · ${Math.ceil(remaining / 1000)} s left`
             );
@@ -52,28 +143,21 @@
     }
 
     async function autoScrollToOldest(scroller) {
+        const usesJumpScanner = typeof activeSiteAdapter?.jumpScanWindow === 'function';
         setPhase('SCAN: newest → oldest');
-        addLog('Fast scan started. A 20-second confirmation runs at the possible timeline start.');
+        addLog(
+            usesJumpScanner
+                ? 'Fast edge-jump scan started. Each loaded edge is scanned with an overlap-anchor safety pass.'
+                : 'Fast scan started. A delayed confirmation runs at the possible timeline start.'
+        );
 
         let iterations = 0;
 
         while (!stopRequested && iterations < 20_000) {
             iterations++;
             scanVisiblePage();
-
-            const before = scrollPosition(scroller);
-            const step = Math.max(Math.floor(before.client * 0.78), 520);
-
-            scroller.scrollTop = Math.max(0, before.top - step);
-            await sleep(SCAN_DELAY_MS);
-            scanVisiblePage();
-
-            // A second short scan catches media inserted shortly after the item
-            // without slowing the whole run too much.
-            await sleep(120);
-            scanVisiblePage();
-
-            const after = scrollPosition(scroller);
+            const result = await advanceScanWindow(scroller, 'older', iterations);
+            const after = result.after || scrollPosition(scroller);
             const dateBoundary = selectedDateBoundaryReached('older');
 
             if (dateBoundary) {
@@ -95,7 +179,7 @@
                 if (reallyAtTop) {
                     lastScanBoundaryReason = 'timeline-start';
                     addLog(
-                        'No older items appeared for 20 seconds. Timeline start confirmed.',
+                        `No older items appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Timeline start confirmed.`,
                         'success'
                     );
                     return true;
@@ -128,6 +212,7 @@
 
     async function confirmRealTimelineEnd(scroller) {
         const startedAt = performance.now();
+        const confirmMs = adapterBoundaryConfirmMs();
         const baseline = {
             newestId: newestVisibleItemId(),
             mediaCount: mediaEntries.size,
@@ -135,10 +220,19 @@
         };
 
         addLog(
-            'Possible timeline-end boundary reached. Waiting 20 seconds for delayed newer items.'
+            `Possible timeline-end boundary reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed newer items or expansion controls.`
         );
 
         while (!stopRequested) {
+            const expanded = await expandActiveRenderedContent(scroller, 'newer');
+            if (expanded > 0) {
+                addLog(
+                    `${activeSiteAdapter.label} expanded ${expanded} rendered “more” control${expanded === 1 ? '' : 's'}; downward scanning continues.`,
+                    'success'
+                );
+                return false;
+            }
+
             scroller.scrollTop = scroller.scrollHeight;
             scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
             await sleep(TOP_PROBE_INTERVAL_MS);
@@ -168,10 +262,7 @@
             }
 
             const elapsed = performance.now() - startedAt;
-            const remaining = Math.max(
-                0,
-                REAL_BOTTOM_CONFIRM_MS - elapsed
-            );
+            const remaining = Math.max(0, confirmMs - elapsed);
 
             setPhase(
                 `SCAN: confirming timeline-end boundary · ${Math.ceil(remaining / 1000)} s left`
@@ -187,9 +278,12 @@
     }
 
     async function autoScrollToNewest(scroller) {
+        const usesJumpScanner = typeof activeSiteAdapter?.jumpScanWindow === 'function';
         setPhase('SCAN: current → newest');
         addLog(
-            'Downward scan started. A 20-second confirmation runs at the possible timeline-end boundary.'
+            usesJumpScanner
+                ? 'Downward edge-jump scan started with overlap verification.'
+                : 'Downward scan started. Expansion controls are activated when supported.'
         );
 
         let iterations = 0;
@@ -197,25 +291,8 @@
         while (!stopRequested && iterations < 20_000) {
             iterations++;
             scanVisiblePage();
-
-            const before = scrollPosition(scroller);
-            const step = Math.max(
-                Math.floor(before.client * 0.78),
-                520
-            );
-
-            scroller.scrollTop = Math.min(
-                scroller.scrollHeight,
-                before.top + step
-            );
-
-            await sleep(SCAN_DELAY_MS);
-            scanVisiblePage();
-
-            await sleep(120);
-            scanVisiblePage();
-
-            const after = scrollPosition(scroller);
+            const result = await advanceScanWindow(scroller, 'newer', iterations);
+            const after = result.after || scrollPosition(scroller);
             const dateBoundary = selectedDateBoundaryReached('newer');
 
             if (dateBoundary) {
@@ -243,7 +320,7 @@
                 if (reallyAtBottom) {
                     lastScanBoundaryReason = 'timeline-end';
                     addLog(
-                        'No newer items appeared for 20 seconds. Timeline end confirmed.',
+                        `No newer items or expansion controls appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Timeline end confirmed.`,
                         'success'
                     );
                     return true;
