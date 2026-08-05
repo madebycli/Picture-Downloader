@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<body>
+  <main data-test-page-type="post-comments" data-post-id="t3_fixturepost">
+    <article data-testid="comment" id="t1_fixtureparent" data-comment-id="t1_fixtureparent" data-parent-id="t3_fixturepost" data-depth="0">
+      <a data-testid="comment_author_link" href="/user/fixture-author/">fixture-author</a>
+      <time datetime="2026-08-05T07:00:00.000Z"></time>
+      <div data-testid="comment-body"><p>Fixture parent comment text.</p></div>
+      <span data-testid="comment-score">12 points</span>
+      <a data-testid="comment-permalink" href="/r/fixture/comments/fixturepost/title/fixtureparent/">Permalink</a>
+      <article data-testid="comment" id="t1_fixturechild" data-comment-id="t1_fixturechild" data-parent-id="t1_fixtureparent" data-depth="1">
+        <a data-testid="comment_author_link" href="/user/fixture-child/">fixture-child</a>
+        <time datetime="2026-08-05T07:01:00.000Z"></time>
+        <div data-testid="comment-body"><p>Fixture child comment with rendered media.</p><img src="https://preview.redd.it/fixture-image.png?width=640&amp;format=png&amp;auto=webp&amp;s=redacted" alt=""></div>
+        <span data-testid="comment-score">3 points</span>
+        <a data-testid="comment-permalink" href="/r/fixture/comments/fixturepost/title/fixturechild/">Permalink</a>
+      </article>
+    </article>
+    <article data-testid="comment" id="t1_fixturedeleted" data-comment-id="t1_fixturedeleted" data-parent-id="t3_fixturepost" data-depth="0" data-collapsed="true">
+      <span data-testid="comment-author">[deleted]</span>
+      <div data-testid="comment-body"><p>[removed]</p></div>
+      <span data-testid="comment-score">Score hidden</span>
+    </article>
+  </main>
+</body>
+</html>

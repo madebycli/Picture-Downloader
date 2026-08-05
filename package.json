@@ -7,8 +7,9 @@
     "build": "node scripts/assemble-userscript.mjs",
     "check:syntax": "node --check media-archiver.user.js",
     "check:invariants": "node scripts/check-userscript.mjs",
-    "test": "npm run build && npm run check:syntax && npm run check:invariants && npm run check:unsupported",
-    "check:unsupported": "node scripts/smoke-unsupported-page.mjs"
+    "check:unsupported": "node scripts/smoke-unsupported-page.mjs",
+    "test:baseline": "node --test tests/baseline.test.mjs",
+    "test": "npm run build && npm run check:syntax && npm run check:invariants && npm run check:unsupported && npm run test:baseline"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,41 @@
+{
+  "discord": {
+    "pageType": "channel-or-thread",
+    "expectedMedia": 3,
+    "expectedKinds": ["photo", "video", "external-gif"],
+    "expectedUniqueCanonicalItems": 3
+  },
+  "pinterestBoard": {
+    "pageType": "board",
+    "renderedCards": 3,
+    "expectedUniquePins": 2,
+    "expectedMedia": 2,
+    "expectedDuplicateDiscoveriesMerged": 1
+  },
+  "pinterestPinDetail": {
+    "pageType": "pin-detail",
+    "expectedUniquePins": 1,
+    "expectedMedia": 1,
+    "preferredRenderedSourceContains": "/originals/"
+  },
+  "redditComments": {
+    "pageType": "post-comments",
+    "expectedComments": 3,
+    "expectedRootComments": 2,
+    "expectedNestedComments": 1,
+    "expectedRenderedCommentMedia": 1,
+    "expectedDeletedComments": 1
+  },
+  "namingRegression": {
+    "input": ["one.jpg", "one.jpeg", "one.png"],
+    "forbidden": ["000001.jpg", "000001.jpeg", "000001.png"],
+    "required": ["000001.jpg", "000002.jpeg", "000003.png"]
+  },
+  "reviewWorkflow": {
+    "initiallySelected": "all eligible canonical items",
+    "preConfirmationOriginalRequests": 0,
+    "finalInclusion": "canonical && eligible && manuallySelected",
+    "cancelStartsDownload": false,
+    "manualStopCanReviewPartialCollection": true
+  }
+}

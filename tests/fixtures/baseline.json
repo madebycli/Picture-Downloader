@@ -1,0 +1,28 @@
+{
+  "auditedMainCommit": "e2799fe310cfd6cb6dc9d1482780bc3d64b8cbeb",
+  "baselineTriggerCommit": "197a17ce9669420d0da54e0277628d09b2f3b2ce",
+  "version": "6.0.0",
+  "generatedUserscriptBlob": "d15b652653bbc1795e3b3b6d7feb6f4ca8294f64",
+  "buildOutput": "Assembled 17 modules and 1 adapter(s) into media-archiver.user.js.",
+  "automatedResult": "npm test passed",
+  "warnings": [
+    "GitHub Actions warns that Node.js 20 actions are deprecated and forced onto Node.js 24.",
+    "actions/setup-node emitted the upstream punycode deprecation warning."
+  ],
+  "manualBrowserTestsNotRun": [
+    "Firefox + Tampermonkey with fflate blocked",
+    "Chromium + Tampermonkey with fflate available",
+    "Packaged Firefox extension",
+    "Packaged Chromium extension",
+    "50+ MB single-video transport",
+    "300+ MB combined transfer and memory behavior"
+  ],
+  "knownRegressions": {
+    "visibleStatistics": "Current 6.0 has no fixed active-work heartbeat and real users observed roughly ten-second visible counter delays.",
+    "duplicateStem": {
+      "input": ["one.jpg", "one.jpeg", "one.png"],
+      "forbidden": ["000001.jpg", "000001.jpeg", "000001.png"],
+      "required": ["000001.jpg", "000002.jpeg", "000003.png"]
+    }
+  }
+}
