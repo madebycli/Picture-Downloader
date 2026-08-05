@@ -44,7 +44,7 @@
     },
     {
       "id": "reddit-comments",
-      "label": "Reddit comments",
+      "label": "Reddit comment media",
       "matches": [
         "https://www.reddit.com/r/*/comments/*",
         "https://reddit.com/r/*/comments/*",
@@ -54,7 +54,21 @@
         "i.redd.it",
         "preview.redd.it",
         "external-preview.redd.it",
-        "v.redd.it"
+        "v.redd.it",
+        "packaged-media.redd.it",
+        "i.redditmedia.com",
+        "reddit-uploaded-media.s3-accelerate.amazonaws.com",
+        "i.imgur.com",
+        "*.giphy.com",
+        "media.tenor.com",
+        "*.streamable.com",
+        "*.redgifs.com",
+        "*.gfycat.com",
+        "cdn.discordapp.com",
+        "media.discordapp.net",
+        "pbs.twimg.com",
+        "video.twimg.com",
+        "*.tumblr.com"
       ],
       "modules": [
         "src/adapters/reddit-comments/00-config.user.js.part",

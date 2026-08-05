@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { TextEncoder } from 'node:util';
 import { readFile } from 'node:fs/promises';
 
 const root = new URL('../', import.meta.url);
@@ -40,51 +39,6 @@ async function loadRedditConfig(pathname = '/r/fixture/comments/post123/title/')
     return context;
 }
 
-async function loadCommentExport() {
-    const context = vm.createContext({
-        Map,
-        Set,
-        Object,
-        Array,
-        String,
-        Number,
-        Boolean,
-        Date,
-        JSON,
-        TextEncoder
-    });
-    vm.runInContext(
-        await read('src/shared/comment-export.user.js.part'),
-        context,
-        { filename: 'comment-export' }
-    );
-    return context.MediaArchiverCommentExport;
-}
-
-function comment(key, parent, depth, body, extra = {}) {
-    return {
-        key: `reddit-comment:${key}`,
-        kind: 'comment',
-        adapterId: 'reddit-comments',
-        sourceId: key,
-        parentSourceId: parent,
-        timestamp: extra.timestamp || '2026-08-05T07:00:00.000Z',
-        discoveryIndex: extra.discoveryIndex || 0,
-        manuallySelected: extra.manuallySelected !== false,
-        payload: {
-            author: extra.author || 'fixture-author',
-            bodyText: body,
-            bodyHtmlSanitized: `<p>${body}</p>`,
-            depth,
-            scoreText: extra.scoreText || '1 point',
-            permalink: `https://www.reddit.com/r/fixture/comments/post/title/${key.replace('t1_', '')}/`,
-            deleted: Boolean(extra.deleted),
-            collapsed: Boolean(extra.collapsed),
-            edited: Boolean(extra.edited)
-        }
-    };
-}
-
 test('Reddit adapter activates only on post-detail comment threads', async () => {
     const context = await loadRedditConfig();
     const pageType = (hostname, pathname) => vm.runInContext(
@@ -101,61 +55,51 @@ test('Reddit adapter activates only on post-detail comment threads', async () =>
     assert.equal(pageType('www.reddit.com', '/r/fixture/hot/'), null);
 });
 
-test('selected comments export in preserved hierarchy as JSON Markdown and CSV', async () => {
-    const exporter = await loadCommentExport();
-    const selected = [
-        comment('t1_parent', 't3_post', 0, 'Parent text', { discoveryIndex: 1 }),
-        comment('t1_child', 't1_parent', 1, 'Child text', { discoveryIndex: 2, edited: true }),
-        comment('t1_deleted', 't3_post', 0, '[removed]', { discoveryIndex: 3, author: '[deleted]', deleted: true, collapsed: true })
-    ];
-    const prepared = exporter.prepareArchiveItems(selected, {
-        postId: 't3_post',
-        postLabel: 'fixture · title',
-        postPermalink: 'https://www.reddit.com/r/fixture/comments/post/title/'
-    });
+test('Reddit comment adapter exposes media only and never creates comment records', async () => {
+    const source = [
+        await read('src/adapters/reddit-comments/00-config.user.js.part'),
+        await read('src/adapters/reddit-comments/10-comments.user.js.part'),
+        await read('src/adapters/reddit-comments/20-media.user.js.part')
+    ].join('\n');
 
-    assert.equal(prepared.selectedCommentCount, 3);
-    assert.equal(prepared.selectedBinaryCount, 0);
-    assert.deepEqual(Array.from(
-        prepared.finalItems,
-        item => item.payload.fixedArchiveName
-    ), [
-        'comments.json',
-        'comments.md',
-        'comments.csv'
-    ]);
-
-    const json = JSON.parse(prepared.finalItems[0].payload.generatedText);
-    assert.deepEqual(json.comments.map(record => record.id), [
-        't1_parent',
-        't1_child',
-        't1_deleted'
-    ]);
-    assert.equal(json.comments[1].depth, 1);
-    assert.equal(json.comments[2].deleted, true);
-    assert.equal(json.comments[2].collapsed, true);
-
-    const markdown = prepared.finalItems[1].payload.generatedText;
-    assert.match(markdown, /\*\*fixture-author\*\*/);
-    assert.match(markdown, /  - \*\*fixture-author\*\*/);
-    assert.match(markdown, /\\\[removed\\\]/);
-
-    const csv = prepared.finalItems[2].payload.generatedText;
-    assert.match(csv, /"comment_id","parent_id","depth"/);
-    assert.match(csv, /"t1_child","t1_parent","1"/);
+    assert.match(source, /textRecords:\s*false/);
+    assert.doesNotMatch(source, /kind:\s*['"]comment['"]/);
+    assert.doesNotMatch(source, /comments\.(?:json|md|csv)/);
+    assert.match(source, /kind:\s*'media'/);
+    assert.match(source, /scanRedditRenderedThread\(\)[\s\S]*scanRedditRenderedCommentMedia\(\)/);
 });
 
-test('only manually selected comment records are passed to generated exports', async () => {
-    const exporter = await loadCommentExport();
-    const candidates = [
-        comment('t1_selected', 't3_post', 0, 'Keep me'),
-        comment('t1_deselected', 't3_post', 0, 'Do not export', { manuallySelected: false })
-    ];
-    const selected = candidates.filter(item => item.manuallySelected);
-    const prepared = exporter.prepareArchiveItems(selected, { postId: 't3_post' });
-    const json = JSON.parse(prepared.finalItems[0].payload.generatedText);
-    assert.deepEqual(json.comments.map(record => record.id), ['t1_selected']);
-    assert.doesNotMatch(prepared.finalItems[1].payload.generatedText, /Do not export/);
+test('Reddit media collector covers rendered photos GIFs videos picture sources and direct links', async () => {
+    const source = await read('src/adapters/reddit-comments/20-media.user.js.part');
+    for (const marker of [
+        'img[src]',
+        'img[srcset]',
+        'picture',
+        'video[src]',
+        'video source[src]',
+        'a[href]',
+        "mediaType === 'external-gif'",
+        "'reddit-comment-video'",
+        "'reddit-comment-photo'"
+    ]) {
+        assert.ok(source.includes(marker), `missing Reddit media marker ${marker}`);
+    }
+    assert.match(source, /reddit-media:\$\{canonicalPath\}/);
+    assert.doesNotMatch(source, /reddit-media:\$\{commentId\}/);
+});
+
+test('Reddit external host matcher supports approved wildcard CDNs', async () => {
+    const context = await loadRedditConfig();
+    const allowed = hostname => vm.runInContext(
+        `redditCommentMediaHostAllowed(${JSON.stringify(hostname)})`,
+        context
+    );
+
+    assert.equal(allowed('i.redd.it'), true);
+    assert.equal(allowed('media3.giphy.com'), true);
+    assert.equal(allowed('files.redgifs.com'), true);
+    assert.equal(allowed('cdn-cf-east.streamable.com'), true);
+    assert.equal(allowed('example.com'), false);
 });
 
 test('Reddit implementation uses rendered DOM only and performs no account actions or API enumeration', async () => {
@@ -165,37 +109,33 @@ test('Reddit implementation uses rendered DOM only and performs no account actio
         await read('src/adapters/reddit-comments/20-media.user.js.part'),
         await read('src/adapters/reddit-comments/30-thread.user.js.part')
     ].join('\n');
+
     assert.match(source, /querySelectorAll/);
     assert.doesNotMatch(source, /fetch\(|XMLHttpRequest|\/api\/|graphql|Authorization/i);
     assert.doesNotMatch(
         source,
         /\.(?:click|submit)\s*\(|\b(?:upvote|downvote|follow|joinCommunity|submitPost|postMessage)\b/i
     );
-    assert.match(source, /kind: 'comment'/);
-    assert.match(source, /kind: 'media'/);
 });
 
-test('comment exports are generated locally and only media enters binary transport', async () => {
-    const archive = await read('src/core/42-archive-workflow.user.js.part');
-    assert.match(archive, /entry\.kind === 'generated-document'/);
-    assert.match(archive, /entry\.payload\.generatedBytes/);
-    assert.match(archive, /else if \(entry\.kind === 'media'\)[\s\S]*requestArrayBuffer\(entry\.url\)/);
-    const generatedBranch = archive.match(/if \(entry\.kind === 'generated-document'\)[\s\S]*?else if \(entry\.kind === 'media'\)/)?.[0] || '';
-    assert.doesNotMatch(generatedBranch.split('else if')[0], /requestArrayBuffer/);
-});
-
-test('Reddit hosts are minimal and thread matches remain narrow', async () => {
+test('Reddit host permissions cover native and common rendered external media CDNs', async () => {
     const manifest = JSON.parse(await read('src/adapters/manifest.json'));
     const adapter = manifest.adapters.find(item => item.id === 'reddit-comments');
+
     assert.deepEqual(adapter.matches, [
         'https://www.reddit.com/r/*/comments/*',
         'https://reddit.com/r/*/comments/*',
         'https://old.reddit.com/r/*/comments/*'
     ]);
-    assert.deepEqual(adapter.connect, [
+    for (const host of [
         'i.redd.it',
-        'preview.redd.it',
-        'external-preview.redd.it',
-        'v.redd.it'
-    ]);
+        'v.redd.it',
+        'i.imgur.com',
+        '*.giphy.com',
+        'media.tenor.com',
+        '*.streamable.com',
+        '*.redgifs.com'
+    ]) {
+        assert.ok(adapter.connect.includes(host), `missing Reddit media host ${host}`);
+    }
 });

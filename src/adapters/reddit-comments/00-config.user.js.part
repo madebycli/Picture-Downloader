@@ -1,3 +1,42 @@
+    const REDDIT_COMMENT_MEDIA_HOST_PATTERNS = Object.freeze([
+        'i.redd.it',
+        'preview.redd.it',
+        'external-preview.redd.it',
+        'v.redd.it',
+        'packaged-media.redd.it',
+        'i.redditmedia.com',
+        'reddit-uploaded-media.s3-accelerate.amazonaws.com',
+        'i.imgur.com',
+        '*.giphy.com',
+        'media.tenor.com',
+        '*.streamable.com',
+        '*.redgifs.com',
+        '*.gfycat.com',
+        'cdn.discordapp.com',
+        'media.discordapp.net',
+        'pbs.twimg.com',
+        'video.twimg.com',
+        '*.tumblr.com'
+    ]);
+
+    function redditHostMatchesPattern(hostname, pattern) {
+        const normalizedHost = String(hostname || '').toLowerCase();
+        const normalizedPattern = String(pattern || '').toLowerCase();
+        if (!normalizedHost || !normalizedPattern) return false;
+        if (!normalizedPattern.startsWith('*.')) {
+            return normalizedHost === normalizedPattern;
+        }
+        const suffix = normalizedPattern.slice(1);
+        return normalizedHost.endsWith(suffix) &&
+            normalizedHost.length > suffix.length;
+    }
+
+    function redditCommentMediaHostAllowed(hostname) {
+        return REDDIT_COMMENT_MEDIA_HOST_PATTERNS.some(pattern =>
+            redditHostMatchesPattern(hostname, pattern)
+        );
+    }
+
     function redditCommentThreadPageType(currentLocation = location) {
         const allowedHost = /^(?:www\.|old\.)?reddit\.com$/i.test(currentLocation.hostname);
         if (!allowedHost) return null;
@@ -7,14 +46,18 @@
             : null;
     }
 
-    function redditCommentNode(element) {
-        return element?.closest?.([
+    function redditCommentSelector() {
+        return [
             'shreddit-comment',
             '[data-testid="comment"]',
             '[data-comment-id]',
             '[id^="t1_"]',
             '.thing.comment[data-fullname^="t1_"]'
-        ].join(',')) || null;
+        ].join(',');
+    }
+
+    function redditCommentNode(element) {
+        return element?.closest?.(redditCommentSelector()) || null;
     }
 
     function redditCommentId(element) {
@@ -34,45 +77,6 @@
         return match ? `t1_${match[1]}` : null;
     }
 
-    function redditParentId(element) {
-        const node = redditCommentNode(element) || element;
-        const direct = node?.getAttribute?.('parentid') ||
-            node?.getAttribute?.('data-parent-id') ||
-            node?.getAttribute?.('data-parent-fullname');
-        if (direct) return String(direct).startsWith('t') ? String(direct) : `t1_${direct}`;
-
-        let parent = node?.parentElement;
-        while (parent) {
-            const parentComment = parent.matches?.([
-                'shreddit-comment',
-                '[data-testid="comment"]',
-                '[data-comment-id]',
-                '[id^="t1_"]',
-                '.thing.comment[data-fullname^="t1_"]'
-            ].join(',')) ? parent : null;
-            if (parentComment) return redditCommentId(parentComment);
-            parent = parent.parentElement;
-        }
-
-        const postId = location.pathname.match(/\/comments\/([a-z0-9]+)/i)?.[1];
-        return postId ? `t3_${postId}` : null;
-    }
-
-    function redditCommentDepth(element) {
-        const node = redditCommentNode(element) || element;
-        for (const attribute of ['depth', 'data-depth']) {
-            const value = Number(node?.getAttribute?.(attribute));
-            if (Number.isFinite(value) && value >= 0) return value;
-        }
-        let depth = 0;
-        let parent = node?.parentElement;
-        while (parent) {
-            if (parent.matches?.('shreddit-comment, [data-testid="comment"], [data-comment-id], [id^="t1_"], .thing.comment')) depth++;
-            parent = parent.parentElement;
-        }
-        return depth;
-    }
-
     function redditCommentBodyNode(element) {
         const node = redditCommentNode(element) || element;
         return node?.querySelector?.([
@@ -82,24 +86,6 @@
             '.usertext-body .md',
             ':scope > .entry .md'
         ].join(',')) || null;
-    }
-
-    function sanitizeRenderedCommentHtml(bodyNode) {
-        if (!bodyNode?.cloneNode) return null;
-        const clone = bodyNode.cloneNode(true);
-        clone.querySelectorAll?.('script, style, iframe, form, input, button, textarea, select, object, embed')
-            .forEach(node => node.remove());
-        clone.querySelectorAll?.('*').forEach(node => {
-            for (const attribute of [...node.attributes]) {
-                if (/^on/i.test(attribute.name) || attribute.name === 'style') {
-                    node.removeAttribute(attribute.name);
-                }
-                if ((attribute.name === 'href' || attribute.name === 'src') && /^javascript:/i.test(attribute.value)) {
-                    node.removeAttribute(attribute.name);
-                }
-            }
-        });
-        return clone.innerHTML || null;
     }
 
     function redditCommentTimestamp(element) {
@@ -113,21 +99,6 @@
         return Number.isFinite(milliseconds)
             ? new Date(milliseconds < 10_000_000_000 ? milliseconds * 1000 : milliseconds).toISOString()
             : null;
-    }
-
-    function redditRenderedAuthor(element) {
-        const node = redditCommentNode(element) || element;
-        return node?.getAttribute?.('author') ||
-            node?.querySelector?.('[data-testid="comment_author_link"], a[href*="/user/"], a.author')?.textContent?.trim() ||
-            node?.querySelector?.('[data-testid="comment-author"], .author')?.textContent?.trim() ||
-            '[unavailable]';
-    }
-
-    function redditScoreText(element) {
-        const node = redditCommentNode(element) || element;
-        return node?.getAttribute?.('score') ||
-            node?.querySelector?.('[data-testid="comment-score"], [slot="score"], .score')?.textContent?.trim() ||
-            null;
     }
 
     function redditCommentPermalink(element) {
@@ -146,19 +117,13 @@
     }
 
     function createRedditCommentsAdapter() {
-        const downloadHosts = new Set([
-            'i.redd.it',
-            'preview.redd.it',
-            'external-preview.redd.it',
-            'v.redd.it'
-        ]);
         return {
             id: 'reddit-comments',
-            label: 'Reddit comments',
+            label: 'Reddit comment media',
             archivePrefix: 'reddit',
             capabilities: {
                 media: true,
-                textRecords: true,
+                textRecords: false,
                 virtualTimeline: true,
                 dateFilter: true,
                 hostPageSelection: false,
@@ -172,8 +137,8 @@
             },
             terms: Object.freeze({
                 timeline: 'comment thread',
-                item: 'comment',
-                items: 'comments',
+                item: 'comment media item',
+                items: 'comment media items',
                 oldest: 'thread start',
                 newest: 'thread end'
             }),
@@ -198,7 +163,7 @@
                 const slug = match?.[3] || 'comments';
                 return {
                     id: sanitizeFilename(`${subreddit}-${postId}`),
-                    label: sanitizeFilename(`${subreddit}-${slug}`),
+                    label: sanitizeFilename(`${subreddit}-${slug}-comment-media`),
                     postId: `t3_${postId}`,
                     postLabel: `${subreddit} · ${slug.replace(/_/g, ' ')}`,
                     postPermalink: `${location.origin}/r/${subreddit}/comments/${postId}/${slug}/`
@@ -206,12 +171,14 @@
             },
             isDownloadUrlAllowed(rawUrl) {
                 try {
-                    return downloadHosts.has(new URL(rawUrl, location.href).hostname);
+                    const url = new URL(rawUrl, location.href);
+                    return url.protocol === 'https:' &&
+                        redditCommentMediaHostAllowed(url.hostname);
                 } catch {
                     return false;
                 }
             },
-            openTargetHelp: 'Open a Reddit post detail page with its comment thread.'
+            openTargetHelp: 'Open a Reddit post detail page and scan media rendered inside its comments.'
         };
     }
 

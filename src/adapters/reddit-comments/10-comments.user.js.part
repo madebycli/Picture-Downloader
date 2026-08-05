@@ -1,95 +1,18 @@
     function redditCommentElements() {
-        return [...document.querySelectorAll([
-            'shreddit-comment',
-            '[data-testid="comment"]',
-            '[data-comment-id]',
-            '[id^="t1_"]',
-            '.thing.comment[data-fullname^="t1_"]'
-        ].join(','))].filter((element, index, elements) =>
-            redditCommentId(element) &&
-            elements.findIndex(candidate => redditCommentId(candidate) === redditCommentId(element)) === index
-        );
-    }
-
-    function addOrUpdateRedditComment(element) {
-        const commentId = redditCommentId(element);
-        if (!commentId) return false;
-        const key = `reddit-comment:${commentId}`;
-        const bodyNode = redditCommentBodyNode(element);
-        const bodyText = bodyNode?.textContent?.replace(/\s+/g, ' ')?.trim() || '';
-        const author = redditRenderedAuthor(element);
-        const existing = mediaEntries.get(key);
-        const timestamp = redditCommentTimestamp(element);
-        const parentId = redditParentId(element);
-        const collapsed = element.getAttribute?.('collapsed') != null ||
-            element.getAttribute?.('data-collapsed') === 'true' ||
-            element.getAttribute?.('aria-expanded') === 'false';
-        const edited = element.getAttribute?.('edited') != null ||
-            Boolean(element.querySelector?.('[aria-label*="edited" i], [data-testid*="edited" i], .edited-timestamp'));
-        const deleted = /^\[(?:deleted|removed)\]$/i.test(author) ||
-            /^\[(?:deleted|removed)\]$/i.test(bodyText);
-        const payload = {
-            commentId,
-            parentId,
-            depth: redditCommentDepth(element),
-            author,
-            bodyText,
-            bodyHtmlSanitized: sanitizeRenderedCommentHtml(bodyNode),
-            timestamp,
-            scoreText: redditScoreText(element),
-            permalink: redditCommentPermalink(element),
-            deleted,
-            collapsed,
-            edited,
-            sourceLabel: activeSiteAdapter?.getArchiveContext?.().label || 'reddit-comments'
-        };
-
-        if (existing) {
-            recordCanonicalDuplicate(existing, 'reddit-comment-rerender');
-            existing.parentSourceId = parentId || existing.parentSourceId;
-            existing.timestamp = timestamp || existing.timestamp;
-            existing.payload = { ...existing.payload, ...payload };
-            return false;
+        const selector = redditCommentSelector();
+        const unique = new Map();
+        for (const element of document.querySelectorAll(selector)) {
+            const commentId = redditCommentId(element);
+            if (commentId && !unique.has(commentId)) {
+                unique.set(commentId, element);
+            }
         }
-
-        const item = {
-            key,
-            kind: 'comment',
-            adapterId: 'reddit-comments',
-            canonical: true,
-            canonicalKey: key,
-            duplicateCount: 0,
-            eligibility: { adapter: true, type: true, date: true },
-            manuallySelected: true,
-            sourceId: commentId,
-            parentSourceId: parentId,
-            itemId: commentId,
-            timestamp,
-            firstSeen: firstSeenCounter++,
-            discoveryIndex: firstSeenCounter - 1,
-            status: STATUS.COLLECTED,
-            error: '',
-            size: 0,
-            filename: `${commentId}.comment`,
-            mediaType: 'comment',
-            sourceKind: 'reddit-rendered-comment',
-            sourcePageUrl: payload.permalink,
-            url: null,
-            previewUrl: null,
-            payload
-        };
-        mediaEntries.set(key, item);
-        ensureSelectionForEntries([item]);
-        liveMetrics.record('found', 1);
-        scheduleRender();
-        return true;
+        return [...unique.values()];
     }
 
+    // Comment text is intentionally not represented as an ArchiveItem.
+    // The Reddit adapter uses comments only as DOM containers and timeline anchors.
     function scanRedditRenderedComments() {
-        let added = 0;
-        for (const element of redditCommentElements()) {
-            if (addOrUpdateRedditComment(element)) added++;
-        }
-        return added;
+        return 0;
     }
 
