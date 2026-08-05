@@ -76,15 +76,25 @@ src/
 ├── build-manifest.json
 ├── adapters/
 │   ├── manifest.json
-│   └── discord.user.js.part
+│   └── discord/
+│       ├── 00-config.user.js.part
+│       ├── 10-embeds.user.js.part
+│       ├── 20-items.user.js.part
+│       ├── 30-timeline.user.js.part
+│       └── 90-register.user.js.part
 └── core/
     ├── 00-bootstrap.user.js.part
     ├── 10-activate-adapter.user.js.part
     ├── 20-selection.user.js.part
-    ├── 30-scanner.user.js.part
-    ├── 40-archive.user.js.part
+    ├── 30-scanner-position.user.js.part
+    ├── 31-scanner-boundaries.user.js.part
+    ├── 40-download-manifest.user.js.part
+    ├── 41-zip-engine.user.js.part
+    ├── 42-archive-workflow.user.js.part
     ├── 50-workflow.user.js.part
-    └── 60-ui.user.js.part
+    ├── 60-ui-markup.user.js.part
+    ├── 61-ui-style.user.js.part
+    └── 62-ui-bindings.user.js.part
 ```
 
 The generated root file is a release artifact. Make source changes in `src/core/` or `src/adapters/`, then run `npm test`.
