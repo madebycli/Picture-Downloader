@@ -9622,61 +9622,186 @@
     const virusTotalService = globalThis.MediaArchiverVirusTotal.createService(runtime);
     let virusTotalSettingsReady;
 
-    const virusTotalGroup = document.createElement('section');
-    virusTotalGroup.className = 'ma-group';
+    const virusTotalGroup = document.createElement('details');
+    virusTotalGroup.className = 'ma-vt-beta-disclosure';
     virusTotalGroup.id = 'ma-virustotal-settings';
     virusTotalGroup.innerHTML = `
-        <div class="ma-group-heading">
-            <div>
-                <h2>VirusTotal check</h2>
-                <p>Optionally check confirmed files after download and before they enter a ZIP.</p>
-            </div>
-        </div>
-        <div class="ma-field-grid">
-            <label class="ma-field-wide">
-                <span>Scan mode</span>
-                <select id="ma-vt-mode">
-                    <option value="off">Off</option>
-                    <option value="hash-only">SHA-256 report lookup only</option>
-                    <option value="upload-unknown">Lookup, then upload unknown files</option>
-                </select>
-            </label>
-            <label>
-                <span>Block threshold</span>
-                <select id="ma-vt-threshold">
-                    <option value="malicious">Malicious only</option>
-                    <option value="suspicious">Suspicious or malicious</option>
-                </select>
-            </label>
-            <label>
-                <span>Unknown/error result</span>
-                <select id="ma-vt-unknown-policy">
-                    <option value="allow">Allow into ZIP</option>
-                    <option value="block">Block from ZIP</option>
-                </select>
-            </label>
-        </div>
-        <div class="ma-button-row">
-            <button id="ma-vt-set-key" class="ma-secondary" type="button">Set API key</button>
-            <button id="ma-vt-clear-key" class="ma-text-button" type="button">Clear key</button>
-            <span id="ma-vt-key-status" class="ma-inline-status">No API key stored.</span>
-        </div>
-        <label id="ma-vt-upload-consent-row" class="ma-option-row" hidden>
-            <span>
-                <strong>I consent to uploading unknown files to VirusTotal</strong>
-                <small>Standard VirusTotal uploads may be shared with security partners. This consent applies only to the current page session.</small>
+        <summary>
+            <span class="ma-vt-summary-title">
+                <strong>VirusTotal</strong>
+                <span class="ma-vt-beta-badge">BETA</span>
             </span>
-            <input id="ma-vt-upload-consent" type="checkbox">
-        </label>
-        <div id="ma-vt-note" class="ma-inline-status">
-            VirusTotal is disabled by default. API requests are rate-limited and the API key is stored only in this browser profile.
+            <span id="ma-vt-summary-status" class="ma-vt-summary-status">Off</span>
+        </summary>
+        <div class="ma-vt-beta-body">
+            <p class="ma-vt-beta-intro">
+                Experimental, opt-in checks after an original file is downloaded and before it enters a ZIP. VirusTotal remains off unless you explicitly enable it here.
+            </p>
+
+            <section class="ma-vt-setting-card">
+                <div>
+                    <strong>Check mode</strong>
+                    <small>Choose whether hashes or unknown files may be sent.</small>
+                </div>
+                <label class="ma-field-block">
+                    <span>Mode</span>
+                    <select id="ma-vt-mode">
+                        <option value="off">Off</option>
+                        <option value="hash-only">SHA-256 report lookup only</option>
+                        <option value="upload-unknown">Lookup, then upload unknown files</option>
+                    </select>
+                </label>
+            </section>
+
+            <section class="ma-vt-setting-card">
+                <div>
+                    <strong>API access</strong>
+                    <small>The key is stored only in this browser profile and is never added to logs or archives.</small>
+                </div>
+                <div class="ma-button-row">
+                    <button id="ma-vt-set-key" class="ma-secondary" type="button">Set API key</button>
+                    <button id="ma-vt-clear-key" class="ma-text-button" type="button">Clear key</button>
+                </div>
+                <span id="ma-vt-key-status" class="ma-inline-status">No API key stored.</span>
+            </section>
+
+            <section class="ma-vt-setting-card">
+                <div>
+                    <strong>Blocking rule</strong>
+                    <small>Control which VirusTotal verdict prevents a file from entering the ZIP.</small>
+                </div>
+                <label class="ma-field-block">
+                    <span>Block threshold</span>
+                    <select id="ma-vt-threshold">
+                        <option value="malicious">Malicious only</option>
+                        <option value="suspicious">Suspicious or malicious</option>
+                    </select>
+                </label>
+            </section>
+
+            <section class="ma-vt-setting-card">
+                <div>
+                    <strong>Unknown or failed checks</strong>
+                    <small>Choose what happens when VirusTotal has no report or a request fails.</small>
+                </div>
+                <label class="ma-field-block">
+                    <span>Result policy</span>
+                    <select id="ma-vt-unknown-policy">
+                        <option value="allow">Allow into ZIP</option>
+                        <option value="block">Block from ZIP</option>
+                    </select>
+                </label>
+            </section>
+
+            <label id="ma-vt-upload-consent-row" class="ma-vt-setting-card ma-vt-consent-card" hidden>
+                <span>
+                    <strong>Upload consent for this session</strong>
+                    <small>Unknown files may be shared with VirusTotal security partners. Consent resets when this page closes.</small>
+                </span>
+                <input id="ma-vt-upload-consent" type="checkbox">
+            </label>
+
+            <div id="ma-vt-note" class="ma-inline-status">
+                VirusTotal is disabled. No hashes or files are sent.
+            </div>
         </div>
     `;
 
-    const setupPanel = panel.querySelector('[data-ma-panel="setup"]');
-    const autoArchiveGroup = setupPanel?.querySelector('.ma-compact-group');
-    if (autoArchiveGroup) autoArchiveGroup.before(virusTotalGroup);
-    else setupPanel?.appendChild(virusTotalGroup);
+    const virusTotalArchivePanel =
+        panel.querySelector('[data-ma-panel="archive"]') ||
+        panel.querySelector('[data-ma-panel="setup"]');
+    virusTotalArchivePanel?.appendChild(virusTotalGroup);
+
+    const virusTotalStyle = document.createElement('style');
+    virusTotalStyle.textContent = `
+        #media-archiver-panel .ma-vt-beta-disclosure {
+            margin: 10px 0 0;
+            border: 1px solid rgba(112, 119, 255, .32);
+            border-radius: 11px;
+            background: linear-gradient(135deg, rgba(88, 101, 242, .12), rgba(0, 0, 0, .18));
+            overflow: hidden;
+        }
+        #media-archiver-panel .ma-vt-beta-disclosure > summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            min-height: 44px;
+            padding: 0 12px;
+            cursor: pointer;
+            list-style: none;
+            user-select: none;
+        }
+        #media-archiver-panel .ma-vt-beta-disclosure > summary::-webkit-details-marker {
+            display: none;
+        }
+        #media-archiver-panel .ma-vt-summary-title {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            color: #f2f4ff;
+        }
+        #media-archiver-panel .ma-vt-beta-badge {
+            display: inline-flex;
+            align-items: center;
+            min-height: 18px;
+            padding: 0 7px;
+            border: 1px solid rgba(173, 178, 255, .6);
+            border-radius: 999px;
+            background: rgba(88, 101, 242, .28);
+            color: #dfe2ff;
+            font-size: 9px;
+            font-weight: 850;
+            letter-spacing: .08em;
+        }
+        #media-archiver-panel .ma-vt-summary-status {
+            color: #aeb7c2;
+            font-size: 10px;
+            font-weight: 750;
+        }
+        #media-archiver-panel .ma-vt-beta-disclosure[open] .ma-vt-summary-status {
+            color: #d8dcff;
+        }
+        #media-archiver-panel .ma-vt-beta-body {
+            display: grid;
+            gap: 9px;
+            padding: 0 10px 10px;
+        }
+        #media-archiver-panel .ma-vt-beta-intro {
+            margin: 0;
+            padding: 9px 10px;
+            border-top: 1px solid rgba(112, 119, 255, .2);
+            color: #aeb7c2;
+            font-size: 10px;
+            line-height: 1.45;
+        }
+        #media-archiver-panel .ma-vt-setting-card {
+            display: grid;
+            gap: 8px;
+            padding: 10px;
+            border: 1px solid var(--ma-border);
+            border-radius: 9px;
+            background: rgba(0, 0, 0, .16);
+        }
+        #media-archiver-panel .ma-vt-setting-card > div:first-child {
+            display: grid;
+            gap: 2px;
+        }
+        #media-archiver-panel .ma-vt-setting-card strong {
+            color: #e7eaf0;
+            font-size: 11px;
+        }
+        #media-archiver-panel .ma-vt-setting-card small {
+            color: #8f99a5;
+            font-size: 9px;
+            line-height: 1.35;
+        }
+        #media-archiver-panel .ma-vt-consent-card {
+            grid-template-columns: 1fr auto;
+            align-items: center;
+        }
+    `;
+    document.head.appendChild(virusTotalStyle);
 
     const virusTotalModeSelect = virusTotalGroup.querySelector('#ma-vt-mode');
     const virusTotalThresholdSelect = virusTotalGroup.querySelector('#ma-vt-threshold');
@@ -9687,12 +9812,18 @@
     const virusTotalUploadConsentRow = virusTotalGroup.querySelector('#ma-vt-upload-consent-row');
     const virusTotalUploadConsentCheckbox = virusTotalGroup.querySelector('#ma-vt-upload-consent');
     const virusTotalNote = virusTotalGroup.querySelector('#ma-vt-note');
+    const virusTotalSummaryStatus = virusTotalGroup.querySelector('#ma-vt-summary-status');
 
     function refreshVirusTotalControls() {
         const mode = virusTotalModeSelect.value;
         virusTotalUploadConsentRow.hidden = mode !== 'upload-unknown';
         virusTotalThresholdSelect.disabled = mode === 'off';
         virusTotalUnknownPolicySelect.disabled = mode === 'off';
+        virusTotalSummaryStatus.textContent = mode === 'off'
+            ? 'Off'
+            : mode === 'hash-only'
+                ? 'Hash lookup'
+                : 'Upload unknown';
         virusTotalNote.textContent = mode === 'off'
             ? 'VirusTotal is disabled. No hashes or files are sent.'
             : mode === 'hash-only'
@@ -9705,7 +9836,10 @@
         virusTotalKeyStatus.textContent = key
             ? 'API key stored locally.'
             : 'No API key stored.';
-        virusTotalKeyStatus.classList.toggle('ma-date-error', !key && virusTotalModeSelect.value !== 'off');
+        virusTotalKeyStatus.classList.toggle(
+            'ma-date-error',
+            !key && virusTotalModeSelect.value !== 'off'
+        );
         return Boolean(key);
     }
 
@@ -9720,20 +9854,33 @@
     }
 
     async function initializeVirusTotalSettings() {
-        const [mode, threshold, unknownPolicy] = await Promise.all([
+        const [mode, threshold, unknownPolicy, betaResetDone] = await Promise.all([
             runtime.getSetting('virustotal.mode', 'off'),
             runtime.getSetting('virustotal.blockThreshold', 'malicious'),
-            runtime.getSetting('virustotal.unknownPolicy', 'allow')
+            runtime.getSetting('virustotal.unknownPolicy', 'allow'),
+            runtime.getSetting('virustotal.v72BetaReset', false)
         ]);
-        virusTotalModeSelect.value = ['off', 'hash-only', 'upload-unknown'].includes(mode)
+
+        const effectiveMode = betaResetDone &&
+            ['off', 'hash-only', 'upload-unknown'].includes(mode)
             ? mode
             : 'off';
+
+        if (!betaResetDone) {
+            await Promise.all([
+                runtime.setSetting('virustotal.mode', 'off'),
+                runtime.setSetting('virustotal.v72BetaReset', true)
+            ]);
+        }
+
+        virusTotalModeSelect.value = effectiveMode;
         virusTotalThresholdSelect.value = threshold === 'suspicious'
             ? 'suspicious'
             : 'malicious';
         virusTotalUnknownPolicySelect.value = unknownPolicy === 'block'
             ? 'block'
             : 'allow';
+        virusTotalUploadConsentCheckbox.checked = false;
         refreshVirusTotalControls();
         await updateVirusTotalKeyStatus();
     }
@@ -9747,6 +9894,7 @@
             { category: 'virustotal' }
         );
         virusTotalModeSelect.value = 'off';
+        virusTotalUploadConsentCheckbox.checked = false;
         refreshVirusTotalControls();
     });
 
@@ -9757,7 +9905,10 @@
     ]) {
         select.addEventListener('change', () => {
             persistVirusTotalPreferences().catch(error => {
-                addLog(`VirusTotal settings could not be saved. Code: ${error.code || 'VIRUSTOTAL_SETTINGS_FAILED'}`, 'error');
+                addLog(
+                    `VirusTotal settings could not be saved. Code: ${error.code || 'VIRUSTOTAL_SETTINGS_FAILED'}`,
+                    'error'
+                );
             });
         });
     }
