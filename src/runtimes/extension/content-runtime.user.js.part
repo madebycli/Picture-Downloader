@@ -1,0 +1,138 @@
+    const extensionApi = globalThis.browser || globalThis.chrome;
+    const extensionRequestIds = new Set();
+    let extensionRequestSequence = 0;
+
+    function extensionSendMessage(message) {
+        if (!extensionApi?.runtime?.sendMessage) {
+            return Promise.reject(new Error('Extension messaging is unavailable.'));
+        }
+
+        try {
+            const result = extensionApi.runtime.sendMessage(message);
+            if (result && typeof result.then === 'function') return result;
+        } catch {
+            // Chromium callback form is handled below.
+        }
+
+        return new Promise((resolve, reject) => {
+            extensionApi.runtime.sendMessage(message, response => {
+                const lastError = extensionApi.runtime.lastError;
+                if (lastError) reject(new Error(lastError.message));
+                else resolve(response);
+            });
+        });
+    }
+
+    const extensionRuntimeImplementation = {
+        async fetchBinary(url, options = {}) {
+            if (!activeSiteAdapter?.isDownloadUrlAllowed(url)) {
+                const error = new Error('The active site adapter blocked this download URL.');
+                error.code = 'NETWORK_HOST_REJECTED';
+                error.retryable = false;
+                throw error;
+            }
+
+            const requestId = options.requestId || `extension-${++extensionRequestSequence}`;
+            extensionRequestIds.add(requestId);
+            try {
+                const response = await extensionSendMessage({
+                    type: 'media-archiver:fetch-binary',
+                    requestId,
+                    url,
+                    timeoutMs: options.timeoutMs || 120_000,
+                    accept: options.accept || 'video/*,image/*,*/*;q=0.8'
+                });
+                if (!response?.ok) {
+                    const error = new Error(response?.message || 'Extension fetch failed.');
+                    error.code = response?.code || 'NETWORK_RETRY_EXHAUSTED';
+                    error.status = response?.status || 0;
+                    error.retryable = Boolean(response?.retryable);
+                    throw error;
+                }
+                return response.buffer;
+            } finally {
+                extensionRequestIds.delete(requestId);
+            }
+        },
+        async abortRequest(requestId) {
+            extensionRequestIds.delete(requestId);
+            const response = await extensionSendMessage({
+                type: 'media-archiver:abort-request',
+                requestId
+            });
+            return Boolean(response?.aborted);
+        },
+        async abortAllRequests() {
+            extensionRequestIds.clear();
+            await extensionSendMessage({ type: 'media-archiver:abort-all' });
+        },
+        async saveBlob(blob, filename) {
+            const blobUrl = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = blobUrl;
+            anchor.download = filename;
+            anchor.style.display = 'none';
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 120_000);
+            return filename;
+        },
+        async copyText(text) {
+            const value = String(text ?? '');
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(value);
+                return true;
+            }
+            const textarea = document.createElement('textarea');
+            textarea.value = value;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            const copied = document.execCommand?.('copy') === true;
+            textarea.remove();
+            if (!copied) {
+                const error = new Error('Clipboard access failed.');
+                error.code = 'RUNTIME_CLIPBOARD_FAILED';
+                throw error;
+            }
+            return true;
+        },
+        async getSetting(key, fallback) {
+            const result = await extensionApi.storage.local.get({ [key]: fallback });
+            return result[key];
+        },
+        async setSetting(key, value) {
+            await extensionApi.storage.local.set({ [key]: value });
+            return value;
+        },
+        getPlatformInfo() {
+            return Object.freeze({
+                runtimeTarget: 'extension',
+                browserPlatform: navigator.userAgentData?.platform || navigator.platform || 'unknown',
+                language: navigator.language || 'unknown'
+            });
+        },
+        openUi() {
+            if (typeof openLibrary === 'function' && mediaEntries.size) openLibrary();
+            else document.getElementById('media-archiver-panel')?.classList.remove('ma-collapsed');
+        },
+        closeUi() {
+            if (typeof closeLibrary === 'function') closeLibrary();
+            document.getElementById('media-archiver-panel')?.classList.add('ma-collapsed');
+        }
+    };
+
+    const runtime = globalThis.MediaArchiverRuntimeContract
+        .createRuntimeFacade(extensionRuntimeImplementation);
+
+    extensionApi?.runtime?.onMessage?.addListener(message => {
+        if (message?.type === 'media-archiver:open-ui') {
+            extensionRuntimeImplementation.openUi();
+            return Promise.resolve({ opened: true });
+        }
+        return undefined;
+    });
+
