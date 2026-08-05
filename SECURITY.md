@@ -14,7 +14,20 @@ Media Archiver runs with elevated browser download permissions. The trust bounda
 
 ## Rendered-content rule
 
-Adapters collect only media represented in the current rendered page. The Reddit adapter uses comments solely as DOM containers and timeline anchors. It does not export comment text, expand replies automatically, or request feed/API data.
+Adapters collect only media represented in the current rendered page. Discord navigation changes only the position of its existing rendered virtual timeline. Reddit comments are DOM containers and navigation anchors; comment text is not archived.
+
+The Reddit adapter may activate a narrowly reviewed set of already rendered expansion controls whose accessible text matches comment-loading actions such as **View more comments**, **Load more comments**, **More replies**, or **Continue this thread**. Expansion is subject to all of these rules:
+
+- the control must be visible, enabled, and located inside the rendered comment/main area;
+- login, signup, award, share, report, save, follow, join, vote, upvote, and downvote controls are rejected;
+- at most eight controls are attempted in one pass;
+- the same DOM element is not retried for at least eight seconds;
+- no `fetch`, `XMLHttpRequest`, GraphQL, private API, token, cookie, or Authorization path is used;
+- expansion only runs while scanning downward through a supported post-detail comment thread.
+
+## Discord jump-scanner boundary
+
+The Discord adapter may set the existing channel scroller directly to its currently loaded start or end. It records the previous edge message ID, waits for the rendered list to settle, and scans again. If Discord virtualizes the previous edge away, the adapter makes a bounded recovery move into the expected overlap and rescans before returning to the edge. This changes navigation speed only; canonical URL deduplication and adapter URL allowlisting remain unchanged.
 
 ## Permission model
 
@@ -39,16 +52,9 @@ Modes:
 
 Standard VirusTotal uploads may be shared with VirusTotal security partners. This is stated beside the consent control and in release documentation. The consent value is not persisted between page sessions.
 
-The API key must never appear in:
+The API key must never appear in Activity or Developer logs, sanitized issue reports, exception messages, ZIP manifests, service result objects, GitHub Actions logs, or release artifacts.
 
-- Activity or Developer logs;
-- sanitized issue reports;
-- exception messages;
-- ZIP manifests;
-- VirusTotal result objects;
-- GitHub Actions logs or release artifacts.
-
-Public-API requests are serialized and cached by SHA-256. Files over the supported 650 MB upload maximum fail with a stable local error before an upload request is attempted. A configured malicious/suspicious verdict blocks the file before it enters a ZIP. Unknown and service-error results follow the explicit allow-or-block setting.
+Public-API requests are serialized and cached by SHA-256. Files over the supported 650 MB upload maximum fail locally before an upload request is attempted. A configured malicious/suspicious verdict blocks the file before it enters a ZIP. Unknown and service-error results follow the explicit allow-or-block setting.
 
 VirusTotal cannot inspect a file before Media Archiver possesses its bytes. Therefore the order is intentionally:
 
@@ -61,16 +67,7 @@ No original request occurs merely because the Library was opened, closed, or can
 
 ## Diagnostics privacy
 
-The structured diagnostics store redacts or omits:
-
-- query strings and fragments;
-- signed CDN parameters;
-- cookies, Authorization values, API keys, tokens, and secrets;
-- private message/comment text;
-- usernames and private source labels;
-- local filesystem paths;
-- unnecessary extension IDs;
-- full sensitive URLs when host/path classification is sufficient.
+The structured diagnostics store redacts or omits query strings, fragments, signed CDN parameters, cookies, Authorization values, API keys, tokens, secrets, private message/comment text, usernames, private source labels, local paths, unnecessary extension IDs, and full sensitive URLs when classification is sufficient.
 
 Downloaded Markdown reports include a redaction notice and should still be reviewed before publishing.
 
