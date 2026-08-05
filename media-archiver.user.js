@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Media Archiver
 // @namespace    https://github.com/madebycli/Picture-Downloader
-// @version      7.1.0
+// @version      7.2.0
 // @description  Collect rendered media from supported web apps and save filtered files as numbered ZIP parts.
 // @homepageURL  https://github.com/madebycli/Picture-Downloader
 // @supportURL   https://github.com/madebycli/Picture-Downloader/issues
@@ -48,7 +48,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '7.1.0';
+    const VERSION = '7.2.0';
     const APP_NAME = 'Media Archiver';
     const SCAN_DELAY_MS = 650;
     const REAL_TOP_CONFIRM_MS = 20_000;
@@ -744,10 +744,14 @@
                 if (shiftKey) {
                     return applyRange(viewItems, key, { additive });
                 }
-                if (checkmark || additive) {
-                    return toggle(key);
-                }
-                return selectOnly(key);
+
+                // File-manager range modifiers remain available, but the
+                // primary interaction is deliberately simple: every normal
+                // card or checkmark click toggles the clicked item in place.
+                // This avoids the surprising former behavior where a plain
+                // click cleared the complete selection first.
+                void checkmark;
+                return toggle(key);
             }
 
             function removeMissing(validKeys) {
@@ -810,7 +814,6 @@
             writable: false
         });
     })();
-
     (() => {
         const PRESETS = Object.freeze({
             NUMBERED: 'numbered',
@@ -2451,6 +2454,8 @@
             id: 'discord',
             label: 'Discord',
             archivePrefix: 'discord',
+            preferredScanMode: 'newest-to-oldest',
+            boundaryConfirmMs: 20_000,
             capabilities: {
                 media: true,
                 textRecords: false,
@@ -2481,6 +2486,7 @@
                     currentLocation.pathname.startsWith('/channels/');
             },
             scanVisibleMedia: scanDiscordVisibleMedia,
+            jumpScanWindow: discordJumpScanWindow,
             findScroller: findDiscordScroller,
             visibleItemIds: discordVisibleItemIds,
             visibleItemTimeRange: discordVisibleItemTimeRange,
@@ -3252,6 +3258,136 @@
         return [...ids];
     }
 
+    function discordBoundaryItemId(direction, ids = discordVisibleItemIds()) {
+        let boundary = null;
+        for (const id of ids) {
+            if (
+                boundary === null ||
+                (direction === 'older'
+                    ? compareItemIds(id, boundary) < 0
+                    : compareItemIds(id, boundary) > 0)
+            ) {
+                boundary = id;
+            }
+        }
+        return boundary;
+    }
+
+    function dispatchDiscordTimelineScroll(scroller) {
+        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    }
+
+    function setDiscordLoadedEdge(scroller, direction) {
+        scroller.scrollTop = direction === 'older'
+            ? 0
+            : scroller.scrollHeight;
+        dispatchDiscordTimelineScroll(scroller);
+    }
+
+    async function discordJumpScanWindow({ scroller, direction }) {
+        const before = scrollPosition(scroller);
+        const beforeIds = discordVisibleItemIds();
+        const overlapId = discordBoundaryItemId(direction, beforeIds);
+        const beforeMediaCount = mediaEntries.size;
+        const beforeBoundaryId = overlapId;
+        let previousHeight = before.height;
+        let stableRounds = 0;
+
+        // This mirrors dragging Discord's scrollbar thumb directly to the
+        // currently loaded edge and releasing it. Re-applying the edge during
+        // the settle window lets Discord prepend/append a much larger virtual
+        // page than a viewport-sized wheel step would reveal.
+        setDiscordLoadedEdge(scroller, direction);
+
+        for (let round = 0; round < 6 && !stopRequested; round++) {
+            await sleep(round === 0 ? 620 : 320);
+            scanVisiblePage();
+
+            const current = scrollPosition(scroller);
+            const heightChanged = Math.abs(current.height - previousHeight) >= 3;
+            const edgeDistance = direction === 'older'
+                ? current.top
+                : current.height - (current.top + current.client);
+
+            stableRounds = !heightChanged && edgeDistance <= 8
+                ? stableRounds + 1
+                : 0;
+            previousHeight = current.height;
+
+            if (round < 3 || edgeDistance > 8) {
+                setDiscordLoadedEdge(scroller, direction);
+            }
+
+            if (stableRounds >= 2 && round >= 2) break;
+        }
+
+        scanVisiblePage();
+        const afterEdgeIds = discordVisibleItemIds();
+        const afterBoundaryId = discordBoundaryItemId(direction, afterEdgeIds);
+        const progressed = Boolean(
+            beforeBoundaryId &&
+            afterBoundaryId &&
+            (direction === 'older'
+                ? compareItemIds(afterBoundaryId, beforeBoundaryId) < 0
+                : compareItemIds(afterBoundaryId, beforeBoundaryId) > 0)
+        ) || mediaEntries.size > beforeMediaCount;
+
+        let overlapVerified = !overlapId || Boolean(
+            findDiscordItemElementById(overlapId) ||
+            afterEdgeIds.includes(overlapId)
+        );
+        let recovered = false;
+
+        if (!overlapVerified && overlapId && !stopRequested) {
+            // Discord may virtualize the previous edge out immediately after a
+            // large jump. Move back by half/one viewport, scan that overlap,
+            // then return to the loaded edge. This is the safety pass that
+            // prevents a fast jump from silently leaving an unscanned gap.
+            for (let pass = 0; pass < 2 && !stopRequested; pass++) {
+                const current = scrollPosition(scroller);
+                const recoveryDistance = Math.max(
+                    420,
+                    Math.floor(current.client * (0.55 + pass * 0.45))
+                );
+                scroller.scrollTop = direction === 'older'
+                    ? Math.min(
+                        Math.max(0, current.height - current.client),
+                        recoveryDistance
+                    )
+                    : Math.max(
+                        0,
+                        current.height - current.client - recoveryDistance
+                    );
+                dispatchDiscordTimelineScroll(scroller);
+                await sleep(360);
+                scanVisiblePage();
+
+                overlapVerified = Boolean(
+                    findDiscordItemElementById(overlapId) ||
+                    discordVisibleItemIds().includes(overlapId)
+                );
+                if (overlapVerified) {
+                    recovered = true;
+                    break;
+                }
+            }
+
+            setDiscordLoadedEdge(scroller, direction);
+            await sleep(260);
+            scanVisiblePage();
+        }
+
+        return {
+            overlapId,
+            overlapVerified,
+            recovered,
+            progressed,
+            before,
+            after: scrollPosition(scroller),
+            beforeBoundaryId,
+            afterBoundaryId
+        };
+    }
 
     registerSiteAdapter(createDiscordAdapter());
     function pinterestPageType(currentLocation = location) {
@@ -3698,17 +3834,16 @@
             id: 'reddit-comments',
             label: 'Reddit comment media',
             archivePrefix: 'reddit',
+            preferredScanMode: 'current-to-newest',
+            boundaryConfirmMs: 5_000,
             capabilities: {
                 media: true,
                 textRecords: false,
                 virtualTimeline: true,
-                dateFilter: true,
+                dateFilter: false,
                 hostPageSelection: false,
                 scanModes: [
-                    'newest-to-oldest',
-                    'current-to-oldest',
-                    'current-to-newest',
-                    'full-finish-down'
+                    'current-to-newest'
                 ],
                 views: ['grid', 'list']
             },
@@ -3723,6 +3858,7 @@
                 return Boolean(redditCommentThreadPageType(currentLocation));
             },
             scanVisibleMedia: scanRedditRenderedThread,
+            expandRenderedContent: expandRedditRenderedComments,
             findScroller: findRedditThreadScroller,
             visibleItemIds: redditVisibleCommentIds,
             visibleItemTimeRange: redditVisibleCommentTimeRange,
@@ -4104,6 +4240,115 @@
                 ? position.top / (position.height - position.client)
                 : 0
         };
+    }
+
+    function redditExpansionControlText(element) {
+        return [
+            element?.innerText,
+            element?.textContent,
+            element?.getAttribute?.('aria-label'),
+            element?.getAttribute?.('title')
+        ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    }
+
+    function redditExpansionControlEligible(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        if (element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+        if (element.matches(':disabled, [disabled], [aria-disabled="true"]')) return false;
+        if (!element.getClientRects().length) return false;
+
+        const text = redditExpansionControlText(element).toLocaleLowerCase();
+        if (!text) return false;
+
+        const expansionText =
+            /\b(?:view|load|show)\s+(?:\d+\s+)?(?:more\s+)?(?:comments?|repl(?:y|ies))\b/i.test(text) ||
+            /\bmore\s+(?:comments?|repl(?:y|ies))\b/i.test(text) ||
+            /\bcontinue\s+this\s+thread\b/i.test(text);
+        if (!expansionText) return false;
+
+        if (/\b(?:log\s*in|sign\s*up|award|share|report|save|follow|join|vote|upvote|downvote)\b/i.test(text)) {
+            return false;
+        }
+
+        const withinThread = Boolean(element.closest([
+            'shreddit-comment',
+            '[data-testid="comment"]',
+            '[data-comment-id]',
+            '.commentarea',
+            '.sitetable.nestedlisting',
+            'main',
+            '[role="main"]'
+        ].join(',')));
+        return withinThread;
+    }
+
+    function redditExpansionCandidates() {
+        const selector = [
+            'button',
+            '[role="button"]',
+            'a',
+            'faceplate-button',
+            'faceplate-tracker',
+            'shreddit-async-loader'
+        ].join(',');
+        const candidates = [];
+        for (const element of document.querySelectorAll(selector)) {
+            const clickable = element.matches('button, a, [role="button"]')
+                ? element
+                : element.querySelector('button, a, [role="button"]') || element;
+            if (redditExpansionControlEligible(clickable)) candidates.push(clickable);
+        }
+        return [...new Set(candidates)];
+    }
+
+    async function expandRedditRenderedComments({ scroller, direction }) {
+        if (direction !== 'newer') return 0;
+        const now = Date.now();
+        const candidates = redditExpansionCandidates()
+            .filter(element => {
+                const lastAttempt = Number(element.dataset.maRedditExpandAttempt || 0);
+                return !lastAttempt || now - lastAttempt >= 8_000;
+            })
+            .slice(0, 8);
+
+        if (!candidates.length) return 0;
+
+        const beforeHeight = scrollPosition(scroller).height;
+        const beforeCommentCount = redditCommentElements().length;
+        let activated = 0;
+
+        for (const control of candidates) {
+            control.dataset.maRedditExpandAttempt = String(now);
+            try {
+                control.click();
+                activated++;
+            } catch {
+                // One stale/replaced control must not stop the remaining pass.
+            }
+            await sleep(90);
+        }
+
+        if (!activated) return 0;
+
+        const startedAt = performance.now();
+        let stableRounds = 0;
+        let previousHeight = beforeHeight;
+        while (!stopRequested && performance.now() - startedAt < 2_800) {
+            await sleep(280);
+            scanVisiblePage();
+            const currentHeight = scrollPosition(scroller).height;
+            const currentCommentCount = redditCommentElements().length;
+            const changed =
+                currentCommentCount > beforeCommentCount ||
+                Math.abs(currentHeight - beforeHeight) >= 3;
+            stableRounds = changed && Math.abs(currentHeight - previousHeight) < 3
+                ? stableRounds + 1
+                : 0;
+            previousHeight = currentHeight;
+            if (stableRounds >= 2) break;
+        }
+
+        return activated;
     }
 
     registerSiteAdapter(createRedditCommentsAdapter());
@@ -4769,8 +5014,98 @@
         );
     }
 
+    function adapterBoundaryConfirmMs() {
+        const configured = Number(activeSiteAdapter?.boundaryConfirmMs);
+        return Number.isFinite(configured) && configured >= 1_000
+            ? configured
+            : REAL_TOP_CONFIRM_MS;
+    }
+
+    async function expandActiveRenderedContent(scroller, direction) {
+        const expand = activeSiteAdapter?.expandRenderedContent;
+        if (typeof expand !== 'function' || stopRequested) return 0;
+
+        try {
+            const expanded = Number(await expand({ scroller, direction })) || 0;
+            if (expanded > 0 && !stopRequested) {
+                await sleep(300);
+                scanVisiblePage();
+                await sleep(300);
+                scanVisiblePage();
+            }
+            return expanded;
+        } catch (error) {
+            diagnostics.warn(
+                'ADAPTER_EXPANSION_FAILED',
+                'A rendered-content expansion control could not be activated.',
+                { adapterId: activeSiteAdapter?.id, direction },
+                {
+                    category: 'adapter',
+                    userMessage: `${activeSiteAdapter?.label || 'The site'} could not expand one rendered “more” control. Scanning continues.`
+                }
+            );
+            return 0;
+        }
+    }
+
+    async function advanceScanWindow(scroller, direction, iteration) {
+        const expanded = await expandActiveRenderedContent(scroller, direction);
+        if (stopRequested) return { expanded, overlapVerified: true };
+
+        if (typeof activeSiteAdapter?.jumpScanWindow === 'function') {
+            const result = await activeSiteAdapter.jumpScanWindow({
+                scroller,
+                direction,
+                iteration
+            }) || {};
+
+            scanVisiblePage();
+            await sleep(120);
+            scanVisiblePage();
+
+            if (result.overlapVerified === false) {
+                diagnostics.warn(
+                    'SCAN_OVERLAP_NOT_VERIFIED',
+                    'The previous virtual-timeline edge was not visible after a jump.',
+                    {
+                        adapterId: activeSiteAdapter.id,
+                        direction,
+                        overlapId: result.overlapId || null,
+                        iteration,
+                        continued: true
+                    },
+                    {
+                        category: 'scan',
+                        userMessage: 'A fast jump temporarily hid the previous overlap anchor. A recovery scan was attempted and scanning continues.'
+                    }
+                );
+            }
+
+            return { ...result, expanded };
+        }
+
+        const before = scrollPosition(scroller);
+        const step = Math.max(Math.floor(before.client * 0.78), 520);
+        scroller.scrollTop = direction === 'older'
+            ? Math.max(0, before.top - step)
+            : Math.min(scroller.scrollHeight, before.top + step);
+        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+        await sleep(SCAN_DELAY_MS);
+        scanVisiblePage();
+        await sleep(120);
+        scanVisiblePage();
+
+        return {
+            expanded,
+            overlapVerified: true,
+            before,
+            after: scrollPosition(scroller)
+        };
+    }
+
     async function confirmRealTimelineStart(scroller) {
         const startedAt = performance.now();
+        const confirmMs = adapterBoundaryConfirmMs();
         const baseline = {
             oldestId: oldestVisibleItemId(),
             mediaCount: mediaEntries.size,
@@ -4778,10 +5113,11 @@
         };
 
         addLog(
-            'Possible timeline start reached. Waiting 20 seconds for delayed older items.'
+            `Possible timeline start reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed older items.`
         );
 
         while (!stopRequested) {
+            await expandActiveRenderedContent(scroller, 'older');
             scroller.scrollTop = 0;
             scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
             await sleep(TOP_PROBE_INTERVAL_MS);
@@ -4808,7 +5144,7 @@
             }
 
             const elapsed = performance.now() - startedAt;
-            const remaining = Math.max(0, REAL_TOP_CONFIRM_MS - elapsed);
+            const remaining = Math.max(0, confirmMs - elapsed);
             setPhase(
                 `SCAN: confirming real timeline start · ${Math.ceil(remaining / 1000)} s left`
             );
@@ -4823,28 +5159,21 @@
     }
 
     async function autoScrollToOldest(scroller) {
+        const usesJumpScanner = typeof activeSiteAdapter?.jumpScanWindow === 'function';
         setPhase('SCAN: newest → oldest');
-        addLog('Fast scan started. A 20-second confirmation runs at the possible timeline start.');
+        addLog(
+            usesJumpScanner
+                ? 'Fast edge-jump scan started. Each loaded edge is scanned with an overlap-anchor safety pass.'
+                : 'Fast scan started. A delayed confirmation runs at the possible timeline start.'
+        );
 
         let iterations = 0;
 
         while (!stopRequested && iterations < 20_000) {
             iterations++;
             scanVisiblePage();
-
-            const before = scrollPosition(scroller);
-            const step = Math.max(Math.floor(before.client * 0.78), 520);
-
-            scroller.scrollTop = Math.max(0, before.top - step);
-            await sleep(SCAN_DELAY_MS);
-            scanVisiblePage();
-
-            // A second short scan catches media inserted shortly after the item
-            // without slowing the whole run too much.
-            await sleep(120);
-            scanVisiblePage();
-
-            const after = scrollPosition(scroller);
+            const result = await advanceScanWindow(scroller, 'older', iterations);
+            const after = result.after || scrollPosition(scroller);
             const dateBoundary = selectedDateBoundaryReached('older');
 
             if (dateBoundary) {
@@ -4866,7 +5195,7 @@
                 if (reallyAtTop) {
                     lastScanBoundaryReason = 'timeline-start';
                     addLog(
-                        'No older items appeared for 20 seconds. Timeline start confirmed.',
+                        `No older items appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Timeline start confirmed.`,
                         'success'
                     );
                     return true;
@@ -4899,6 +5228,7 @@
 
     async function confirmRealTimelineEnd(scroller) {
         const startedAt = performance.now();
+        const confirmMs = adapterBoundaryConfirmMs();
         const baseline = {
             newestId: newestVisibleItemId(),
             mediaCount: mediaEntries.size,
@@ -4906,10 +5236,19 @@
         };
 
         addLog(
-            'Possible timeline-end boundary reached. Waiting 20 seconds for delayed newer items.'
+            `Possible timeline-end boundary reached. Waiting ${Math.ceil(confirmMs / 1000)} seconds for delayed newer items or expansion controls.`
         );
 
         while (!stopRequested) {
+            const expanded = await expandActiveRenderedContent(scroller, 'newer');
+            if (expanded > 0) {
+                addLog(
+                    `${activeSiteAdapter.label} expanded ${expanded} rendered “more” control${expanded === 1 ? '' : 's'}; downward scanning continues.`,
+                    'success'
+                );
+                return false;
+            }
+
             scroller.scrollTop = scroller.scrollHeight;
             scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
             await sleep(TOP_PROBE_INTERVAL_MS);
@@ -4939,10 +5278,7 @@
             }
 
             const elapsed = performance.now() - startedAt;
-            const remaining = Math.max(
-                0,
-                REAL_BOTTOM_CONFIRM_MS - elapsed
-            );
+            const remaining = Math.max(0, confirmMs - elapsed);
 
             setPhase(
                 `SCAN: confirming timeline-end boundary · ${Math.ceil(remaining / 1000)} s left`
@@ -4958,9 +5294,12 @@
     }
 
     async function autoScrollToNewest(scroller) {
+        const usesJumpScanner = typeof activeSiteAdapter?.jumpScanWindow === 'function';
         setPhase('SCAN: current → newest');
         addLog(
-            'Downward scan started. A 20-second confirmation runs at the possible timeline-end boundary.'
+            usesJumpScanner
+                ? 'Downward edge-jump scan started with overlap verification.'
+                : 'Downward scan started. Expansion controls are activated when supported.'
         );
 
         let iterations = 0;
@@ -4968,25 +5307,8 @@
         while (!stopRequested && iterations < 20_000) {
             iterations++;
             scanVisiblePage();
-
-            const before = scrollPosition(scroller);
-            const step = Math.max(
-                Math.floor(before.client * 0.78),
-                520
-            );
-
-            scroller.scrollTop = Math.min(
-                scroller.scrollHeight,
-                before.top + step
-            );
-
-            await sleep(SCAN_DELAY_MS);
-            scanVisiblePage();
-
-            await sleep(120);
-            scanVisiblePage();
-
-            const after = scrollPosition(scroller);
+            const result = await advanceScanWindow(scroller, 'newer', iterations);
+            const after = result.after || scrollPosition(scroller);
             const dateBoundary = selectedDateBoundaryReached('newer');
 
             if (dateBoundary) {
@@ -5014,7 +5336,7 @@
                 if (reallyAtBottom) {
                     lastScanBoundaryReason = 'timeline-end';
                     addLog(
-                        'No newer items appeared for 20 seconds. Timeline end confirmed.',
+                        `No newer items or expansion controls appeared during the final ${Math.ceil(adapterBoundaryConfirmMs() / 1000)}-second confirmation. Timeline end confirmed.`,
                         'success'
                     );
                     return true;
@@ -8079,6 +8401,212 @@
             .ma-library-footer-actions { flex-direction: column; }
         }
     `;
+    // Large-library hardening. Keep the complete filtered model in memory, but
+    // create cards in bounded batches so opening a 1,000+ item review does not
+    // synchronously attach every preview and event listener at once.
+    let libraryRenderedCount = 0;
+    const LIBRARY_INITIAL_RENDER_COUNT = 240;
+    const LIBRARY_RENDER_BATCH_COUNT = 160;
+
+    function staticLibraryPosterUrl(entry) {
+        const raw = entry?.previewUrl;
+        if (!raw || raw === entry?.url) return '';
+        try {
+            const extension = extensionFromPath(new URL(raw, location.href).pathname);
+            return ['.jpg', '.jpeg', '.png', '.webp', '.avif', '.bmp'].includes(extension)
+                ? raw
+                : '';
+        } catch {
+            return '';
+        }
+    }
+
+    createLibraryPreview = function createLibraryPreviewOptimized(entry) {
+        if (entry.kind === 'comment') {
+            const text = document.createElement('div');
+            text.className = 'ma-library-comment-preview';
+            text.textContent = entry.payload?.bodyText || 'Comment';
+            return text;
+        }
+
+        if (entry.mediaType === 'video' || entry.mediaType === 'external-gif') {
+            const tile = document.createElement('div');
+            tile.className = 'ma-library-video-preview';
+            tile.textContent = entry.mediaType === 'external-gif' ? 'GIF' : '▶';
+            const poster = staticLibraryPosterUrl(entry);
+            if (poster) {
+                tile.style.backgroundImage = `url("${String(poster).replace(/"/g, '%22')}")`;
+            }
+            return tile;
+        }
+
+        const image = document.createElement('img');
+        image.className = 'ma-library-image';
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        image.fetchPriority = 'low';
+        image.referrerPolicy = 'no-referrer';
+        image.alt = '';
+        image.src = entry.previewUrl || entry.url;
+        return image;
+    };
+
+    function appendLibraryRenderBatch(minimumTargetIndex = null) {
+        if (!libraryItemsElement || libraryRenderedCount >= libraryViewItems.length) return;
+        const requestedEnd = minimumTargetIndex === null
+            ? libraryRenderedCount + (
+                libraryRenderedCount === 0
+                    ? LIBRARY_INITIAL_RENDER_COUNT
+                    : LIBRARY_RENDER_BATCH_COUNT
+            )
+            : minimumTargetIndex + 1;
+        const end = Math.min(
+            libraryViewItems.length,
+            Math.max(requestedEnd, libraryRenderedCount + 1)
+        );
+        const fragment = document.createDocumentFragment();
+        for (let index = libraryRenderedCount; index < end; index++) {
+            fragment.appendChild(createLibraryCard(libraryViewItems[index], index));
+        }
+        libraryItemsElement.appendChild(fragment);
+        libraryRenderedCount = end;
+        updateLibraryRovingTabIndex();
+    }
+
+    renderLibrary = function renderLibraryBatched() {
+        if (typeof libraryItemsElement === 'undefined' || !libraryItemsElement) return;
+        libraryViewItems = libraryFilteredEntries();
+        if (!libraryViewItems.some(entry => entry.key === libraryFocusedKey)) {
+            libraryFocusedKey = libraryViewItems[0]?.key || null;
+        }
+
+        libraryItemsElement.replaceChildren();
+        libraryRenderedCount = 0;
+        libraryItemsElement.classList.toggle(
+            'ma-list-view',
+            libraryViewToggle?.dataset.view === 'list'
+        );
+        appendLibraryRenderBatch();
+        libraryEmptyElement.hidden = libraryViewItems.length > 0;
+        updateLibrarySelectionSummary();
+    };
+
+    handleLibraryCardKeydown = function handleLibraryCardKeydownBatched(event, key) {
+        if (event.key === ' ') {
+            event.preventDefault();
+            selectionStore.toggle(key);
+            selectionStore.syncItems([...mediaEntries.values()]);
+            updateAllLibraryCardStates();
+            return;
+        }
+
+        const index = libraryViewItems.findIndex(entry => entry.key === key);
+        if (index < 0) return;
+        let target = index;
+        const grid = libraryViewToggle?.dataset.view !== 'list';
+        const firstCard = libraryItemsElement.querySelector('[data-ma-item-key]');
+        const columns = grid && firstCard
+            ? Math.max(1, Math.floor(
+                libraryItemsElement.clientWidth /
+                Math.max(190, firstCard.getBoundingClientRect().width)
+            ))
+            : 1;
+
+        if (event.key === 'ArrowLeft') target = index - 1;
+        else if (event.key === 'ArrowRight') target = index + 1;
+        else if (event.key === 'ArrowUp') target = index - columns;
+        else if (event.key === 'ArrowDown') target = index + columns;
+        else if (event.key === 'Home') target = 0;
+        else if (event.key === 'End') target = libraryViewItems.length - 1;
+        else return;
+
+        event.preventDefault();
+        target = Math.max(0, Math.min(libraryViewItems.length - 1, target));
+        if (target >= libraryRenderedCount) appendLibraryRenderBatch(target);
+        libraryFocusedKey = libraryViewItems[target]?.key || key;
+        updateLibraryRovingTabIndex();
+        const targetCard = [...libraryItemsElement.querySelectorAll('[data-ma-item-key]')]
+            .find(card => card.dataset.maItemKey === libraryFocusedKey);
+        targetCard?.focus();
+        targetCard?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    };
+
+    libraryItemsElement.addEventListener('scroll', () => {
+        const remaining =
+            libraryItemsElement.scrollHeight -
+            (libraryItemsElement.scrollTop + libraryItemsElement.clientHeight);
+        if (remaining < 720) appendLibraryRenderBatch();
+    }, { passive: true });
+
+    const shortcutHint = libraryOverlay.querySelector('.ma-library-shortcuts');
+    if (shortcutHint) {
+        shortcutHint.textContent =
+            'Click/check: toggle · Shift: range · Ctrl/Cmd+Shift: additive range · Ctrl/Cmd+A: visible · Space: toggle';
+    }
+
+    libraryStyle.textContent += `
+        .ma-library-dialog,
+        .ma-developer-dialog { min-height: 0; }
+        .ma-library-items {
+            grid-auto-rows: 232px;
+            min-height: 0;
+            height: 100%;
+            overflow-x: hidden;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable;
+            align-content: start;
+        }
+        .ma-library-card {
+            height: 232px;
+            min-height: 232px;
+            grid-template-rows: minmax(0, 1fr) auto;
+            contain-intrinsic-size: 232px;
+        }
+        .ma-library-image,
+        .ma-library-video-preview,
+        .ma-library-comment-preview {
+            min-width: 0;
+            min-height: 0;
+        }
+        .ma-library-items.ma-list-view {
+            grid-auto-rows: 96px;
+        }
+        .ma-library-items.ma-list-view .ma-library-card {
+            height: 96px;
+            min-height: 96px;
+            grid-template-columns: 112px minmax(0, 1fr);
+            grid-template-rows: 96px;
+            contain-intrinsic-size: 96px;
+        }
+        .ma-developer-toolbar > input[type="search"] {
+            width: 100%;
+        }
+        .ma-developer-toolbar fieldset label {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            min-height: 24px;
+            padding: 2px 5px;
+            border: 1px solid rgba(255,255,255,.08);
+            border-radius: 6px;
+            background: rgba(0,0,0,.12);
+        }
+        .ma-developer-toolbar input[type="checkbox"] {
+            appearance: auto !important;
+            width: 15px !important;
+            min-width: 15px !important;
+            height: 15px !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            accent-color: #4f8cff;
+        }
+        @media (max-width: 560px) {
+            .ma-library-items { grid-auto-rows: 200px; }
+            .ma-library-card { height: 200px; min-height: 200px; }
+        }
+    `;
     document.head.appendChild(style);
     document.body.appendChild(panel);
 
@@ -8344,6 +8872,33 @@
     }
 
     applyAdapterCapabilitiesToUi();
+    function applyProviderPreferredScanMode({ forDateFilter = false } = {}) {
+        const preferred = forDateFilter
+            ? activeSiteAdapter.preferredDateScanMode || activeSiteAdapter.preferredScanMode
+            : activeSiteAdapter.preferredScanMode;
+        if (!preferred) return false;
+
+        const option = [...scanDirectionSelect.options]
+            .find(candidate => candidate.value === preferred && !candidate.disabled);
+        if (!option || scanDirectionSelect.value === preferred) return false;
+
+        scanDirectionSelect.value = preferred;
+        addLog(
+            `${activeSiteAdapter.label} selected its optimized scan mode: ${scanModeDescription(preferred)}.`
+        );
+        return true;
+    }
+
+    dateFilterCheckbox.addEventListener('change', () => {
+        if (
+            dateFilterCheckbox.checked &&
+            activeSiteAdapter.capabilities?.dateFilter !== false
+        ) {
+            applyProviderPreferredScanMode({ forDateFilter: true });
+        }
+    });
+
+    applyProviderPreferredScanMode();
     const virusTotalService = globalThis.MediaArchiverVirusTotal.createService(runtime);
     let virusTotalSettingsReady;
 
