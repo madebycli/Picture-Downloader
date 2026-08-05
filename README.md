@@ -148,3 +148,9 @@ Automated fixtures can prove the control flow, overlap recovery, DOM restriction
 ## Safety
 
 Media Archiver never extracts tokens, cookies, account credentials, or Authorization headers; never enumerates site content through undocumented authenticated APIs; and never votes, posts, reacts, follows, joins, or messages. Every media URL must pass generated permissions plus the active adapter runtime allowlist. See `SECURITY.md`.
+
+## 7.2 navigation
+
+- **Current position → older messages** and **Current position → newer messages** use explicit chronology wording.
+- **Automatic date intervals** seek to the nearest interval boundary without collecting media, then run the safe scanner only across the selected dates.
+- The compact panel is organized into **Scan**, **Media**, **Archive**, and **Activity** tabs.

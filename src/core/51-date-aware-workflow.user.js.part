@@ -1,0 +1,194 @@
+    // ---------- Date-aware workflow override ----------
+
+    async function startAutomaticWorkflow() {
+        if (running) return;
+
+        resetCollection();
+        stopRequested = false;
+        running = true;
+        scanning = true;
+        packing = false;
+        reviewArchiveConfirmed = false;
+        const afterScanMode = syncWorkflowMode();
+        try {
+            workflowState.transition(globalThis.MediaArchiverWorkflowState.phases.SCANNING);
+        } catch {
+            // Diagnostic compatibility state only.
+        }
+        updateButtons();
+
+        const dateRange = getDateRangeConfig();
+        const scanMode = dateRange.enabled
+            ? 'date-interval'
+            : scanDirectionSelect.value;
+
+        if (!dateRange.valid) {
+            running = false;
+            scanning = false;
+            setPhase('DATE INTERVAL ERROR');
+            addLog(dateRange.error, 'error');
+            updateButtons();
+            return;
+        }
+
+        diagnostics.startSession({
+            adapterId: activeSiteAdapter.id,
+            pageType: activeSiteAdapter.getArchiveContext()?.label || 'supported-page',
+            scanMode,
+            afterScanMode,
+            dateRange: dateRange.label
+        });
+        liveMetrics.startSession({ phase: 'scanning' });
+
+        lastScanBoundaryReason = '';
+        setPhase('STARTING');
+        addLog(
+            dateRange.enabled
+                ? `Date-interval scan started on ${activeSiteAdapter.label}: ${dateRange.label}. Direction and seek pacing are automatic.`
+                : `Scan started on ${activeSiteAdapter.label}. Mode: ${scanModeDescription(scanMode)}.`
+        );
+
+        await sleep(250);
+        let scroller = null;
+        let startingAnchor = null;
+
+        try {
+            scroller = findTimelineScroller();
+            if (!scroller) {
+                const error = new Error(
+                    `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found.`
+                );
+                error.code = 'ADAPTER_TIMELINE_NOT_FOUND';
+                throw error;
+            }
+
+            startingAnchor = captureStartingAnchor(scroller);
+            let reachedBoundary = false;
+            let completedBoundaryLabel = '';
+
+            if (dateRange.enabled) {
+                reachedBoundary = await runDateIntervalScan(scroller, dateRange);
+                completedBoundaryLabel = scanBoundaryDescription(
+                    lastScanBoundaryReason
+                );
+            } else {
+                setScanCollectionPolicy({ enabled: true });
+                scanVisiblePage();
+
+                if (scanMode === 'newest-to-oldest') {
+                    await moveToNewest(scroller);
+                    if (stopRequested) {
+                        finishStoppedScan();
+                        return;
+                    }
+                    reachedBoundary = await autoScrollToOldest(scroller);
+                } else if (scanMode === 'current-to-oldest') {
+                    reachedBoundary = await autoScrollToOldest(scroller);
+                } else if (scanMode === 'current-to-newest') {
+                    reachedBoundary = await autoScrollToNewest(scroller);
+                } else if (scanMode === 'full-finish-down') {
+                    const reachedOlderBoundary = await autoScrollToOldest(scroller);
+                    if (stopRequested) {
+                        finishStoppedScan();
+                        return;
+                    }
+                    if (reachedOlderBoundary) {
+                        lastScanBoundaryReason = '';
+                        reachedBoundary = await autoScrollToNewest(scroller);
+                    }
+                }
+                completedBoundaryLabel = scanBoundaryDescription(
+                    lastScanBoundaryReason
+                );
+            }
+
+            scanning = false;
+            setScanCollectionPolicy({ enabled: true });
+
+            if (stopRequested) {
+                finishStoppedScan();
+                return;
+            }
+
+            running = false;
+            updateCounters();
+            updateButtons();
+
+            if (reachedBoundary) {
+                setPhase(`SCAN FINISHED: ${mediaEntries.size} items`);
+                addLog(
+                    `Scan completed at the ${completedBoundaryLabel}: ${mediaEntries.size} unique items found.`,
+                    'success'
+                );
+            } else {
+                setPhase(`SCAN ENDED: ${mediaEntries.size} items`);
+                addLog(
+                    'The scan stopped before the selected boundary could be verified.',
+                    'warn'
+                );
+            }
+
+            const statsAfterScan = selectionStatistics();
+            addLog(
+                `Selection summary: ${statsAfterScan.total} canonical items, ${statsAfterScan.eligible} eligible, ${statsAfterScan.selected} selected.`
+            );
+
+            await applyFinalTimelinePosition(
+                scroller,
+                finalPositionSelect.value,
+                startingAnchor
+            );
+
+            const selectedAfterScan = selectedMediaEntries();
+            if (afterScanMode === 'quick') {
+                try {
+                    workflowState.afterScan();
+                } catch {
+                    // Diagnostic compatibility state only.
+                }
+                if (selectedAfterScan.length > 0) {
+                    await createAndDownloadZipParts();
+                } else {
+                    liveMetrics.stopSession({ phase: 'completed' });
+                    setPhase('SCAN FINISHED: NOTHING ELIGIBLE');
+                    addLog('The scan finished, but no eligible items matched the interval and media choices.', 'warn');
+                }
+                return;
+            }
+
+            try {
+                workflowState.afterScan();
+            } catch {
+                // Diagnostic compatibility state only.
+            }
+            liveMetrics.stopSession({ phase: 'review-ready' });
+            setPhase(`REVIEW READY: ${statsAfterScan.selected} selected`);
+            addLog(
+                'Review is ready. No original files have been requested.',
+                'success'
+            );
+            openLibrary();
+        } catch (error) {
+            setScanCollectionPolicy({ enabled: true });
+            scanning = false;
+            running = false;
+            packing = false;
+            liveMetrics.stopSession({ phase: 'error', errors: 1 });
+            setPhase('SCAN ERROR');
+            diagnostics.error(
+                error.code || 'SCAN_WORKFLOW_FAILED',
+                'The scan workflow failed.',
+                error,
+                { adapterId: activeSiteAdapter.id, scanMode },
+                {
+                    category: 'scan',
+                    userMessage: error.message
+                }
+            );
+            addLog(
+                `${error.message} Code: ${error.code || 'SCAN_WORKFLOW_FAILED'}`,
+                'error'
+            );
+            updateButtons();
+        }
+    }

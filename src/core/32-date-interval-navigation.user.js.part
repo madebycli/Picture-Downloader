@@ -1,0 +1,208 @@
+    // ---------- Date-interval navigation ----------
+
+    let scanCollectionPolicy = Object.freeze({
+        enabled: true,
+        startMs: Number.NEGATIVE_INFINITY,
+        endExclusiveMs: Number.POSITIVE_INFINITY
+    });
+
+    function setScanCollectionPolicy({ enabled = true, range = null } = {}) {
+        scanCollectionPolicy = Object.freeze({
+            enabled: Boolean(enabled),
+            startMs: range?.enabled && range?.valid
+                ? range.startMs
+                : Number.NEGATIVE_INFINITY,
+            endExclusiveMs: range?.enabled && range?.valid
+                ? range.endExclusiveMs
+                : Number.POSITIVE_INFINITY
+        });
+    }
+
+    function shouldCollectRenderedItem(sourceElement) {
+        if (!scanCollectionPolicy.enabled) return false;
+        if (
+            scanCollectionPolicy.startMs === Number.NEGATIVE_INFINITY &&
+            scanCollectionPolicy.endExclusiveMs === Number.POSITIVE_INFINITY
+        ) {
+            return true;
+        }
+
+        const itemId = findItemId(sourceElement);
+        const rawTimestamp =
+            findItemTimestamp(sourceElement) ||
+            timestampFromItemId(itemId);
+        const timestamp = Date.parse(rawTimestamp || '');
+
+        return Number.isFinite(timestamp) &&
+            timestamp >= scanCollectionPolicy.startMs &&
+            timestamp < scanCollectionPolicy.endExclusiveMs;
+    }
+
+    function dateIntervalTargetLabel(milliseconds) {
+        return new Date(milliseconds).toLocaleDateString('en-GB', {
+            year: 'numeric',
+            month: 'short',
+            day: '2-digit'
+        });
+    }
+
+    function dateSeekReached(visible, targetMs, direction) {
+        if (!visible) return false;
+        return direction === 'older'
+            ? visible.minMs <= targetMs
+            : visible.maxMs >= targetMs;
+    }
+
+    function dateSeekProgressed(previous, current, direction) {
+        if (!previous || !current) return Boolean(current);
+        return direction === 'older'
+            ? current.minMs < previous.minMs
+            : current.maxMs > previous.maxMs;
+    }
+
+    async function seekDateBoundary(scroller, targetMs, direction) {
+        const label = dateIntervalTargetLabel(targetMs);
+        setPhase(`SEEK: ${direction} messages → ${label}`);
+        addLog(
+            `Fast seek started toward ${direction} messages. Media collection is paused until the ${label} boundary is reached.`
+        );
+
+        let previousRange = visibleItemTimeRange();
+        if (dateSeekReached(previousRange, targetMs, direction)) {
+            return { reached: true, iterations: 0 };
+        }
+
+        let noProgressRounds = 0;
+        for (let iteration = 1; iteration <= 20_000 && !stopRequested; iteration++) {
+            const before = scrollPosition(scroller);
+            scroller.scrollTop = direction === 'older'
+                ? 0
+                : scroller.scrollHeight;
+            scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+            await sleep(iteration < 8 ? 190 : 280);
+            const currentRange = visibleItemTimeRange();
+
+            if (dateSeekReached(currentRange, targetMs, direction)) {
+                setPhase(`SEEK COMPLETE: ${label}`);
+                addLog(
+                    `Date boundary located near ${label}. Safe overlap scanning starts now.`,
+                    'success'
+                );
+                return { reached: true, iterations: iteration };
+            }
+
+            const after = scrollPosition(scroller);
+            const moved =
+                Math.abs(after.top - before.top) >= 2 ||
+                Math.abs(after.height - before.height) >= 3 ||
+                dateSeekProgressed(previousRange, currentRange, direction);
+
+            noProgressRounds = moved ? 0 : noProgressRounds + 1;
+            previousRange = currentRange || previousRange;
+
+            if (iteration % 20 === 0 && currentRange) {
+                const currentLabel = dateIntervalTargetLabel(
+                    direction === 'older'
+                        ? currentRange.minMs
+                        : currentRange.maxMs
+                );
+                setPhase(`SEEK: ${direction} messages · ${currentLabel}`);
+            }
+
+            if (noProgressRounds >= 7) {
+                const error = new Error(
+                    `Discord did not move toward ${direction} messages while seeking ${label}.`
+                );
+                error.code = 'DATE_SEEK_NO_PROGRESS';
+                throw error;
+            }
+        }
+
+        if (stopRequested) return { reached: false, stopped: true };
+        const error = new Error('The date seek reached its safety iteration limit.');
+        error.code = 'DATE_SEEK_ITERATION_LIMIT';
+        throw error;
+    }
+
+    function createDateIntervalPlan(range, visible) {
+        if (!visible) {
+            const error = new Error('No machine-readable message timestamps are visible.');
+            error.code = 'DATE_SEEK_TIMESTAMPS_MISSING';
+            throw error;
+        }
+
+        const centerMs = (visible.minMs + visible.maxMs) / 2;
+        if (!Number.isFinite(range.endExclusiveMs)) {
+            return {
+                targetMs: range.startMs,
+                seekDirection: centerMs > range.startMs ? 'older' : 'newer',
+                scanDirection: 'newer',
+                targetBoundary: 'From date'
+            };
+        }
+
+        const endTargetMs = range.endExclusiveMs - 1;
+        if (centerMs > endTargetMs) {
+            return {
+                targetMs: endTargetMs,
+                seekDirection: 'older',
+                scanDirection: 'older',
+                targetBoundary: 'To date'
+            };
+        }
+        if (centerMs < range.startMs) {
+            return {
+                targetMs: range.startMs,
+                seekDirection: 'newer',
+                scanDirection: 'newer',
+                targetBoundary: 'From date'
+            };
+        }
+
+        const distanceToStart = Math.abs(centerMs - range.startMs);
+        const distanceToEnd = Math.abs(endTargetMs - centerMs);
+        if (distanceToEnd < distanceToStart) {
+            return {
+                targetMs: endTargetMs,
+                seekDirection: 'newer',
+                scanDirection: 'older',
+                targetBoundary: 'To date'
+            };
+        }
+
+        return {
+            targetMs: range.startMs,
+            seekDirection: 'older',
+            scanDirection: 'newer',
+            targetBoundary: 'From date'
+        };
+    }
+
+    async function runDateIntervalScan(scroller, range) {
+        setScanCollectionPolicy({ enabled: false });
+        const visible = visibleItemTimeRange();
+        const plan = createDateIntervalPlan(range, visible);
+        const targetLabel = dateIntervalTargetLabel(plan.targetMs);
+
+        addLog(
+            `Automatic date plan: seek ${plan.seekDirection} messages to the ${plan.targetBoundary} near ${targetLabel}, then scan ${plan.scanDirection} messages across the requested interval.`
+        );
+
+        const seekResult = await seekDateBoundary(
+            scroller,
+            plan.targetMs,
+            plan.seekDirection
+        );
+        if (!seekResult.reached) return false;
+
+        setScanCollectionPolicy({ enabled: true, range });
+        lastScanBoundaryReason = '';
+
+        const reached = plan.scanDirection === 'older'
+            ? await autoScrollToOldest(scroller)
+            : await autoScrollToNewest(scroller);
+
+        setScanCollectionPolicy({ enabled: true });
+        return reached;
+    }

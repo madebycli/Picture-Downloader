@@ -1,0 +1,155 @@
+    // ---------- Compact four-tab interface ----------
+
+    const setupTabButton = panel.querySelector('[data-ma-tab="setup"]');
+    const setupTabPanel = panel.querySelector('[data-ma-panel="setup"]');
+    const mediaTabButton = panel.querySelector('[data-ma-tab="media"]');
+    const mediaTabPanel = panel.querySelector('[data-ma-panel="media"]');
+    const activityTabButton = panel.querySelector('[data-ma-tab="activity"]');
+
+    if (setupTabButton) setupTabButton.textContent = 'Scan';
+
+    const archiveTabButton = document.createElement('button');
+    archiveTabButton.type = 'button';
+    archiveTabButton.dataset.maTab = 'archive';
+    archiveTabButton.setAttribute('aria-selected', 'false');
+    archiveTabButton.textContent = 'Archive';
+    activityTabButton?.before(archiveTabButton);
+
+    const archiveTabPanel = document.createElement('section');
+    archiveTabPanel.dataset.maPanel = 'archive';
+    archiveTabPanel.hidden = true;
+    activityTabButton && panel
+        .querySelector('[data-ma-panel="activity"]')
+        ?.before(archiveTabPanel);
+
+    tabButtons.splice(
+        Math.max(0, tabButtons.indexOf(activityTabButton)),
+        0,
+        archiveTabButton
+    );
+    tabPanels.push(archiveTabPanel);
+    archiveTabButton.addEventListener('click', () => selectInterfaceTab('archive'));
+
+    const mediaChoiceGroup = photoCheckbox?.closest('.ma-group');
+    if (mediaChoiceGroup && mediaTabPanel) {
+        mediaTabPanel.prepend(mediaChoiceGroup);
+        const heading = mediaChoiceGroup.querySelector('h2');
+        const description = mediaChoiceGroup.querySelector('p');
+        if (heading) heading.textContent = 'Media types';
+        if (description) description.textContent = 'Choose what the interval scan may collect.';
+    }
+
+    const photoChoice = photoCheckbox?.closest('.ma-choice');
+    const videoChoice = videoCheckbox?.closest('.ma-choice');
+    const gifChoice = externalGifCheckbox?.closest('.ma-choice');
+    if (photoChoice) {
+        photoChoice.querySelector('strong').textContent = 'Images';
+        photoChoice.querySelector('small').textContent = 'Photos and image attachments';
+    }
+    if (gifChoice) {
+        gifChoice.querySelector('strong').textContent = 'GIFs & animated previews';
+        gifChoice.querySelector('small').textContent = 'Native GIFs and rendered animation previews';
+    }
+    if (videoChoice) {
+        videoChoice.querySelector('strong').textContent = 'Videos';
+        videoChoice.querySelector('small').textContent = 'Rendered video attachments';
+    }
+
+    const dateGroup = dateFilterCheckbox?.closest('.ma-group');
+    if (dateGroup) {
+        const heading = dateGroup.querySelector('h2');
+        const description = dateGroup.querySelector('p');
+        const switchLabel = dateGroup.querySelector('.ma-switch b');
+        if (heading) heading.textContent = 'Date interval';
+        if (description) description.textContent = 'Seek first, then collect only inside the requested calendar interval.';
+        if (switchLabel) switchLabel.textContent = 'Use interval';
+    }
+
+    const scanBehaviorGroup = scanDirectionSelect?.closest('.ma-group');
+    const scanDirectionLabel = scanDirectionSelect?.closest('label');
+    const finalPositionLabel = finalPositionSelect?.closest('label');
+    if (scanBehaviorGroup) {
+        const heading = scanBehaviorGroup.querySelector('h2');
+        const description = scanBehaviorGroup.querySelector('p');
+        if (heading) heading.textContent = 'Current-position scan';
+        if (description) description.textContent = 'Used only when Date interval is off.';
+    }
+    if (scanDirectionLabel?.querySelector('span')) {
+        scanDirectionLabel.querySelector('span').textContent = 'Chronology';
+    }
+
+    const archiveMainGroup = document.createElement('section');
+    archiveMainGroup.className = 'ma-group';
+    archiveMainGroup.innerHTML = `
+        <div class="ma-group-heading">
+            <div>
+                <h2>Archive workflow</h2>
+                <p>Choose whether to review first and where Discord remains afterward.</p>
+            </div>
+        </div>
+        <div class="ma-archive-primary"></div>
+        <details class="ma-advanced-disclosure">
+            <summary>Position after completion</summary>
+            <div class="ma-disclosure-body ma-field-grid"></div>
+        </details>
+    `;
+    archiveTabPanel.appendChild(archiveMainGroup);
+
+    const autoArchiveGroup = autoZipCheckbox?.closest('.ma-group');
+    if (autoArchiveGroup) {
+        const row = autoArchiveGroup.querySelector('.ma-option-row');
+        if (row) archiveMainGroup.querySelector('.ma-archive-primary').appendChild(row);
+        autoArchiveGroup.remove();
+    }
+    if (finalPositionLabel) {
+        archiveMainGroup
+            .querySelector('.ma-disclosure-body')
+            .appendChild(finalPositionLabel);
+    }
+
+    const compactStyle = document.createElement('style');
+    compactStyle.textContent = `
+        #media-archiver-panel .ma-tabs { grid-template-columns: repeat(4, 1fr); }
+        #media-archiver-panel .ma-tab-content { overflow: hidden; }
+        #media-archiver-panel [data-ma-panel="setup"],
+        #media-archiver-panel [data-ma-panel="archive"] { min-height: 0; }
+        #media-archiver-panel .ma-advanced-disclosure {
+            margin-top: 10px;
+            border: 1px solid var(--ma-border);
+            border-radius: 9px;
+            background: rgba(0,0,0,.14);
+        }
+        #media-archiver-panel .ma-advanced-disclosure summary {
+            padding: 10px;
+            cursor: pointer;
+            color: #cfd7df;
+            font-size: 11px;
+            font-weight: 750;
+        }
+        #media-archiver-panel .ma-disclosure-body { padding: 0 10px 10px; }
+        #media-archiver-panel .ma-archive-primary .ma-option-row {
+            padding: 9px;
+            border: 1px solid var(--ma-border);
+            border-radius: 9px;
+            background: rgba(0,0,0,.14);
+        }
+        #media-archiver-panel .ma-date-mode-active .ma-current-direction { display: none; }
+    `;
+    document.head.appendChild(compactStyle);
+
+    scanDirectionLabel?.classList.add('ma-current-direction');
+
+    function refreshCompactScanMode() {
+        const dateMode = Boolean(dateFilterCheckbox?.checked);
+        scanBehaviorGroup?.classList.toggle('ma-date-mode-active', dateMode);
+        if (scanDirectionLabel) scanDirectionLabel.hidden = dateMode;
+        if (startButton && !running) {
+            startButton.textContent = dateMode
+                ? (autoZipCheckbox.checked ? 'Scan interval & create ZIPs' : 'Scan interval')
+                : (autoZipCheckbox.checked ? 'Scan & create ZIPs' : 'Scan for review');
+        }
+    }
+
+    dateFilterCheckbox?.addEventListener('change', refreshCompactScanMode);
+    autoZipCheckbox?.addEventListener('change', refreshCompactScanMode);
+    refreshCompactScanMode();

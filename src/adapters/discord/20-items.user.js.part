@@ -120,6 +120,7 @@
     }
 
     function addOrUpdateMediaEntry(rawUrl, sourceElement) {
+        if (!shouldCollectRenderedItem(sourceElement)) return false;
         if (!isDiscordAttachmentUrl(rawUrl, sourceElement)) return false;
 
         const originalUrl = normalizeDiscordAttachmentUrl(rawUrl);
@@ -169,6 +170,7 @@
         sourceElement,
         sourcePageUrl = null
     ) {
+        if (!shouldCollectRenderedItem(sourceElement)) return false;
         if (
             !isDiscordExternalProxyUrl(rawUrl) ||
             !isExternalGifEmbedContext(sourceElement)

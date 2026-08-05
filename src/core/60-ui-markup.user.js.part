@@ -38,7 +38,7 @@
             </section>
 
             <nav class="ma-tabs" aria-label="Media Archiver sections">
-                <button type="button" data-ma-tab="setup" aria-selected="true">Setup</button>
+                <button type="button" data-ma-tab="setup" aria-selected="true">Scan</button>
                 <button type="button" data-ma-tab="media" aria-selected="false">
                     Media <span id="ma-media-tab-count">0</span>
                 </button>
