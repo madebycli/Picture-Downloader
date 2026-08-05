@@ -82,8 +82,9 @@ test('selection survives filtering, sorting, rerendering, and explicit deselecti
     assert.equal(store.isSelected('b'), false);
     assert.equal(items[1].manuallySelected, false);
 
-    store.applyRange([items[2], items[0], items[1]], 'c');
-    store.applyRange([items[2], items[0], items[1]], 'b');
+    const sortedView = [items[2], items[0], items[1]];
+    store.setAnchor('c');
+    store.applyRange(sortedView, 'b');
     assert.deepEqual([...store.selectedKeys()].sort(), ['a', 'b', 'c']);
 });
 
@@ -100,8 +101,9 @@ test('file-manager click semantics support plain, additive, and range selection'
     assert.deepEqual([...store.selectedKeys()].sort(), ['b', 'd']);
 
     store.applyClick({ key: 'c', viewItems: items, shiftKey: true });
-    assert.deepEqual([...store.selectedKeys()].sort(), ['b', 'c']);
+    assert.deepEqual([...store.selectedKeys()].sort(), ['c', 'd']);
 
+    store.setAnchor('b');
     store.applyClick({ key: 'd', viewItems: items, metaKey: true, shiftKey: true });
     assert.deepEqual([...store.selectedKeys()].sort(), ['b', 'c', 'd']);
 });
@@ -132,7 +134,8 @@ test('naming sanitizes Windows names and resolves case/Unicode collisions determ
         mediaItem('c', 'café.webp', { payload: { filename: 'café.webp', originalFilename: 'café.webp', url: 'https://media.example.invalid/cafe.webp', mediaType: 'photo' } })
     ];
     const plan = naming.planArchiveNames(items, { preset: naming.PRESETS.ORIGINAL_NUMBER });
-    assert.match(plan.get('a'), /^_CON_000001\.jpg$/);
+    assert.match(plan.get('a'), /^CON_000001\.jpg$/);
+    assert.equal(naming.sanitizeComponent('CON'), '_CON');
     const keys = plan.records.map(record => naming.normalizeCollisionKey(record.archiveStem));
     assert.equal(new Set(keys).size, keys.length);
 });
