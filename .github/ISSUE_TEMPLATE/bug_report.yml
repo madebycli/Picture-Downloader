@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a scanner, filter, download, ZIP, or interface problem.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Userscript version
+      placeholder: 5.6.0
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Firefox
+        - Chrome
+        - Edge
+        - Other Chromium browser
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Describe the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Relevant settings
+      description: Media filters, date range, scan direction, final position, and automatic ZIP setting.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant live-log lines
+      render: text
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open a channel...
+        2. Choose...
+        3. Click...
+    validations:
+      required: true
