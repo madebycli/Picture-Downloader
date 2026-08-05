@@ -157,7 +157,7 @@ if (reviewGuardIndex < 0 || requestIndex < 0 || reviewGuardIndex > requestIndex)
     failures.push('Review confirmation guard must precede every original-file request path.');
 }
 const vtDownloadIndex = source.indexOf('requestArrayBufferWithoutVirusTotal');
-const vtScanIndex = source.indexOf('scanArchiveEntryWithVirusTotal');
+const vtScanIndex = source.lastIndexOf('scanArchiveEntryWithVirusTotal(');
 if (vtDownloadIndex < 0 || vtScanIndex < 0 || vtDownloadIndex > vtScanIndex) {
     failures.push('VirusTotal scanning must occur after the confirmed original-file download.');
 }
