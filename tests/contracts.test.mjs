@@ -133,7 +133,7 @@ test('workflow state distinguishes quick archive and review before archive', asy
     assert.equal(stoppedReview.phase, workflow.phases.REVIEW_READY);
 });
 
-test('Discord declares current behavior as explicit capabilities', async () => {
+test('Discord exposes only the two verified chronology directions', async () => {
     const source = await readFile(
         new URL('src/adapters/discord/00-config.user.js.part', root),
         'utf8'
@@ -142,11 +142,33 @@ test('Discord declares current behavior as explicit capabilities', async () => {
         'media: true',
         'virtualTimeline: true',
         'dateFilter: true',
-        "'newest-to-oldest'",
+        "preferredScanMode: 'current-to-oldest'",
         "'current-to-oldest'",
         "'current-to-newest'",
-        "'full-finish-down'"
+        'findScrollerCandidates: findDiscordScrollerCandidates'
     ]) {
         assert.match(source, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
+
+    const scanModesBlock = source.match(/scanModes:\s*\[([\s\S]*?)\]/)?.[1] || '';
+    assert.doesNotMatch(scanModesBlock, /newest-to-oldest|full-finish-down/);
+});
+
+test('Discord verifies a writable scroller and reports no-progress states', async () => {
+    const position = await readFile(
+        new URL('src/core/30-scanner-position.user.js.part', root),
+        'utf8'
+    );
+    const timeline = await readFile(
+        new URL('src/adapters/discord/30-timeline.user.js.part', root),
+        'utf8'
+    );
+
+    assert.match(position, /function canDriveScroller\(/);
+    assert.match(position, /element\.scrollTop = target/);
+    assert.match(position, /element\.scrollTop = original/);
+    assert.match(timeline, /findDiscordScrollerCandidates/);
+    assert.match(timeline, /candidates\.findIndex\(canDriveScroller\)/);
+    assert.match(timeline, /DISCORD_SCROLLER_NOT_WRITABLE/);
+    assert.match(timeline, /DISCORD_SCROLL_NO_PROGRESS/);
 });
