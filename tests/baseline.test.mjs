@@ -18,7 +18,7 @@ test('baseline metadata preserves the audited 6.0 main build independently from 
 
     assert.equal(baseline.auditedMainCommit, 'e2799fe310cfd6cb6dc9d1482780bc3d64b8cbeb');
     assert.equal(baseline.version, '6.0.0');
-    assert.equal(packageJson.version, '7.1.0');
+    assert.equal(packageJson.version, '7.2.0');
     assert.notEqual(packageJson.version, baseline.version);
     assert.match(baseline.buildOutput, /17 modules and 1 adapter/);
     assert.equal(baseline.automatedResult, 'npm test passed');
