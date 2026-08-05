@@ -1,14 +1,13 @@
-name: Publish assembled userscript
+name: Publish Media Archiver artifacts
 
 on:
   push:
     branches: [main]
     paths:
-      - "src/core/**"
-      - "src/adapters/**"
-      - "src/build-manifest.json"
-      - "scripts/assemble-userscript.mjs"
-      - "scripts/check-userscript.mjs"
+      - "src/**"
+      - "scripts/**"
+      - "tests/**"
+      - "playwright.config.mjs"
       - "package.json"
       - ".github/workflows/publish-userscript.yml"
   workflow_dispatch:
@@ -17,21 +16,26 @@ permissions:
   contents: write
 
 concurrency:
-  group: publish-userscript-main
+  group: publish-media-archiver-main
   cancel-in-progress: true
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
-      - run: npm test
+          node-version: 24
+      - name: Install test tooling
+        run: npm install --ignore-scripts
+      - name: Build and validate all targets
+        run: npm test
       - name: Commit assembled userscript
+        shell: bash
         run: |
           if [ -z "$(git status --porcelain -- media-archiver.user.js)" ]; then
             echo "Generated userscript is already current."
@@ -43,3 +47,13 @@ jobs:
           git commit -m "build: assemble userscript"
           git pull --rebase origin main
           git push origin HEAD:main
+      - name: Upload installable artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: media-archiver-${{ github.sha }}
+          path: |
+            media-archiver.user.js
+            dist/media-archiver-chromium-*.zip
+            dist/media-archiver-firefox-*.zip
+          if-no-files-found: error
+          retention-days: 90
