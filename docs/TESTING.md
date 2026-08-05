@@ -1,82 +1,114 @@
 # Testing
 
-## Automated validation
-
-Run:
+## Required commands
 
 ```bash
+npm install --ignore-scripts
 npm test
+npm run test:fixtures
+npm run test:ui
 ```
 
-This verifies assembly, generated adapter metadata, JavaScript syntax, version alignment, adapter-registry markers, generic product naming, the new tabbed UI, ZIP fallbacks, and prohibited credential/API patterns.
+Target-specific builds remain available:
 
-## Browser matrix
+```bash
+npm run build:userscript
+npm run build:extension:chromium
+npm run build:extension:firefox
+```
 
-Test current:
+## Automated coverage
 
-- Firefox + Tampermonkey
-- Chrome or Edge + Tampermonkey
+### Baseline and invariants
 
-Run once with `fflate` available and once with its CDN blocked to force the built-in ZIP writer.
+- source-manifest assembly and syntax;
+- version alignment;
+- adapter-generated userscript metadata;
+- unsupported pages stop before DOM access;
+- no token/API/account-action patterns;
+- no site coupling in shared modules;
+- retained ZIP fallback.
 
-## Adapter activation
+### Shared domain and runtime
 
-For every adapter:
+- complete runtime contract;
+- no direct `GM_*`, `chrome.*`, or `browser.*` calls in shared modules;
+- ArchiveItem kinds and final inclusion rule;
+- adapter capabilities;
+- Quick/Review workflow transitions;
+- userscript runtime isolation and retries;
+- extension manifests, messaging, allowlists, toolbar actions, and absence of remote executable JavaScript.
 
-- supported pages inject one Media Archiver panel
-- unsupported pages inject nothing
-- the correct site badge appears
-- every discovered download URL passes the adapter allowlist
-- undeclared hosts are rejected
+### Selection and Library
 
-## Interface
+- eligible canonical entries initialize selected;
+- plain, checkmark, Ctrl/Cmd, Shift, and additive range semantics;
+- filter/sort/re-render persistence;
+- all visible, all eligible, none, and invert;
+- 2,000-item reducer performance;
+- one toggle does not rebuild all cards;
+- ARIA dialog/listbox, focus trap, Escape, Space, arrows, and reduced motion;
+- Review closes/cancels without requesting originals;
+- only explicitly confirmed selected originals are requested.
 
-Confirm:
+### Naming
 
-- persistent phase, progress, and primary metrics remain visible
-- Setup groups related media, date, scan, and archive controls
-- Media shows detailed counters and item rows
-- Activity contains operational messages and Clear works
-- no changelog or release-note section appears
-- action buttons remain visible and disabled states are correct
-- collapse/expand and narrow-screen layout work
+- exact Windows duplicate-stem regression;
+- global numbering across extensions and item kinds;
+- case/Unicode collision handling;
+- reserved Windows names and invalid characters;
+- immutable preview/download/manifest/ZIP naming map;
+- fixed Reddit document names participating in complete collision detection;
+- identical shared naming implementation for all targets.
 
-## Media and filters
+### Diagnostics and metrics
 
-Test each category alone and mixed:
+- structured bounded event store;
+- stable codes and sensitive-data redaction;
+- selectable Activity/Developer text;
+- Copy and UTF-8 Markdown download paths;
+- 750 ms active heartbeat;
+- synthetic twelve-second DOM-visible staleness test;
+- no full Library rebuild or thumbnail source change on metrics updates;
+- exact completion and visibility-return flush.
 
-- photos/native GIFs
-- videos
-- rendered GIF previews
+### Adapter fixtures
 
-Test date filter disabled, From through latest, and a specific inclusive To date. An entry outside the range or disabled by type must never enter a ZIP.
+- Discord image/video/rendered-GIF discovery baseline;
+- Pinterest pin detail, board, Masonry duplicate merge, profile/search scope, and home-feed rejection;
+- Reddit thread-only activation, hierarchy, selected-only JSON/Markdown/CSV, deleted/collapsed/edited records, and independent comment media.
 
-## Scan modes
+### Build reproducibility
 
-Test:
+Chromium and Firefox packages use sorted deterministic ZIP entries and fixed archive timestamps. `npm run check:reproducible` rebuilds and compares SHA-256 hashes.
 
-- end → start
-- current → start
-- current → end
-- full timeline current → start → end
+## Playwright matrix
 
-Confirm delayed start/end loading is detected, date boundaries stop safely, and duplicate entries are not created during virtualized re-rendering.
+CI runs the UI suite in Chromium and Firefox. It uses sanitized Discord DOM fragments and a mocked Tampermonkey transport to verify:
 
-## Stop and final position
+- partial stopped scan opens Review;
+- no original request before explicit confirmation;
+- closing and reopening preserves selection;
+- Archive selected requests only the final selection;
+- keyboard selection changes card state without rebuilding the Library;
+- Activity is selectable and `.md` download works;
+- DOM-visible metrics remain at most one second stale for twelve seconds.
 
-Stop during scanning and during downloads. Confirm completed ZIP parts remain valid. Test final position at timeline end, scan end, and starting anchor, including an anchor that has been unloaded.
+## Manual browser matrix
 
-## ZIP output
+These checks remain mandatory before a production release and must never be claimed unless actually run:
 
-Confirm:
+- Firefox + Tampermonkey with `fflate` blocked;
+- Chromium + Tampermonkey with `fflate` available;
+- packaged Firefox extension;
+- packaged Chromium extension;
+- Discord channel/thread containing every supported media category;
+- Pinterest pin, board, profile grid, and search result surfaces;
+- Reddit nested/deleted/collapsed/edited comments with rendered media;
+- one video larger than 50 MB;
+- at least 300 MB combined selected data;
+- cancellation and memory behavior in Firefox and Chromium;
+- multiple ZIP download permissions;
+- final-position restoration on a real virtualized timeline.
 
-- newest-to-oldest continuous numbering
-- true extensions
-- multiple ZIP parts
-- `manifest_part.csv` content and `item_id` column
-- retry/error states
-- large-file responsiveness in Firefox
-
-## Discord adapter regression set
-
-Use a channel or thread containing an image, native GIF, video, and rendered external GIF preview. Verify attachment URL normalization, proxy-host handling, snowflake fallback timestamps, and virtual message-list boundary behavior. Also confirm no token access and no `discord.com/api` calls.
+For this implementation session those live/manual checks are recorded as **Blocked with evidence** where the execution environment cannot install interactive browser extensions or access private real-world pages.
