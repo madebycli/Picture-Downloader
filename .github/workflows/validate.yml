@@ -1,9 +1,10 @@
-name: Validate userscript
+name: Validate Media Archiver
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,9 +12,33 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
-      - run: npm test
+          node-version: 24
+      - name: Run complete validation
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee npm-test.log
+      - name: Add failure details to job summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## npm test failure'
+            echo
+            echo '```text'
+            tail -n 300 npm-test.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload validation log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-test-log
+          path: npm-test.log
+          if-no-files-found: warn
+          retention-days: 14
