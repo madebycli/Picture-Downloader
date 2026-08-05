@@ -12,13 +12,14 @@ const fixturePaths = [
     'tests/fixtures/reddit-comments.html'
 ];
 
-test('baseline metadata records the current unchanged main build', async () => {
+test('baseline metadata preserves the audited 6.0 main build independently from the current release', async () => {
     const baseline = await readJson('tests/fixtures/baseline.json');
     const packageJson = await readJson('package.json');
 
     assert.equal(baseline.auditedMainCommit, 'e2799fe310cfd6cb6dc9d1482780bc3d64b8cbeb');
     assert.equal(baseline.version, '6.0.0');
-    assert.equal(packageJson.version, baseline.version);
+    assert.equal(packageJson.version, '7.1.0');
+    assert.notEqual(packageJson.version, baseline.version);
     assert.match(baseline.buildOutput, /17 modules and 1 adapter/);
     assert.equal(baseline.automatedResult, 'npm test passed');
 });
