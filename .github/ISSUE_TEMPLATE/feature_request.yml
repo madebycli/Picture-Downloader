@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a focused improvement to media detection, scanning, filtering, ZIP output, or the interface.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What task is difficult with the current userscript?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the desired controls, detection rule, or output.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Source and safety boundaries
+      description: Identify the Discord-rendered source, host, or DOM pattern involved.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
