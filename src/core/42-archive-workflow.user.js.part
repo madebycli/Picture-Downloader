@@ -33,9 +33,30 @@
         resetEntryStatuses();
         updateButtons();
 
-        const entries = [...selectedEntries];
+        const rawSelectedEntries = [...selectedEntries];
         const archiveContext = activeSiteAdapter.getArchiveContext();
+        const preparedArchive = globalThis.MediaArchiverCommentExport
+            ? globalThis.MediaArchiverCommentExport.prepareArchiveItems(
+                rawSelectedEntries,
+                archiveContext
+            )
+            : {
+                selectedCommentCount: 0,
+                selectedBinaryCount: rawSelectedEntries.length,
+                finalItems: rawSelectedEntries
+            };
+        const entries = [...preparedArchive.finalItems];
         const namingSettings = currentNamingSettings();
+
+        if (!entries.length) {
+            packing = false;
+            running = false;
+            reviewArchiveConfirmed = false;
+            setPhase('NOTHING TO ARCHIVE');
+            addLog('The confirmed selection produced no archive items.', 'warn');
+            updateButtons();
+            return;
+        }
 
         try {
             activeArchiveNamePlan = globalThis.MediaArchiverNaming.planArchiveNames(
@@ -56,7 +77,7 @@
                 error.code || 'NAMING_PLAN_FAILED',
                 'Final archive names could not be planned.',
                 error,
-                { selectedCount: entries.length },
+                { selectedCount: rawSelectedEntries.length, finalItemCount: entries.length },
                 {
                     category: 'naming',
                     userMessage: `Archive naming failed. Correct the File naming settings and try again. Code: ${error.code || 'NAMING_PLAN_FAILED'}`
@@ -77,7 +98,7 @@
             .replace('T', '_')
             .replace(':', '-');
         const archiveKind = selectedArchiveKind(entries);
-        const selectedCounts = countMediaTypes(entries);
+        const selectedCounts = countMediaTypes(rawSelectedEntries);
         const initialZipLibrary = resolveFflateLibrary();
         const initialStats = selectionStatistics();
 
@@ -85,7 +106,7 @@
         liveMetrics.update({
             found: initialStats.total,
             eligible: initialStats.eligible,
-            selected: entries.length,
+            selected: rawSelectedEntries.length,
             duplicatesMerged: initialStats.duplicatesMerged,
             totalItems: entries.length
         });
@@ -110,11 +131,19 @@
         let zippedCount = 0;
         let errorCount = 0;
         let groupStart = 0;
+        let savedGeneratedDocumentCount = 0;
 
+        const contentSummary = [
+            `${selectedCounts.photos} photos/native GIFs`,
+            `${selectedCounts.videos} videos`,
+            `${selectedCounts.externalGifs} rendered GIF previews`,
+            `${preparedArchive.selectedCommentCount} comments`
+        ].join(', ');
         addLog(
-            `${entries.length} selected files (${selectedCounts.photos} photos/native GIFs, ` +
-            `${selectedCounts.videos} videos, ${selectedCounts.externalGifs} external GIF previews). ` +
-            `Only this confirmed final selection will be requested. Using ${DOWNLOAD_CONCURRENCY} parallel downloads.`
+            `${rawSelectedEntries.length} selected records (${contentSummary}). ` +
+            `${preparedArchive.selectedCommentCount ? 'Selected comments will be generated locally as comments.json, comments.md, and comments.csv. ' : ''}` +
+            `Only ${preparedArchive.selectedBinaryCount} selected media originals can create network requests. ` +
+            `Using ${DOWNLOAD_CONCURRENCY} parallel media downloads.`
         );
 
         while (groupStart < entries.length && !stopRequested) {
@@ -124,14 +153,15 @@
             const records = new Array(group.length);
             let finishedInGroup = 0;
             let bytesInGroup = 0;
+            const binaryItemsInGroup = group.filter(entry => entry.kind === 'media').length;
 
             setPhase(
-                `DOWNLOADING SELECTED ORIGINALS: ${groupStart + 1}–` +
+                `PREPARING CONFIRMED ITEMS: ${groupStart + 1}–` +
                 `${groupStart + group.length}/${entries.length}`
             );
             liveMetrics.setPhase('fetching-selected');
             liveMetrics.update({
-                downloading: group.length,
+                downloading: binaryItemsInGroup,
                 currentItem: groupStart,
                 totalItems: entries.length
             });
@@ -148,18 +178,30 @@
                     updateLibraryCardState(entry.key);
 
                     try {
-                        const buffer = await requestArrayBuffer(entry.url);
-                        if (stopRequested) return;
+                        let data;
+                        if (entry.kind === 'generated-document') {
+                            data = entry.payload.generatedBytes instanceof Uint8Array
+                                ? entry.payload.generatedBytes
+                                : encodeUtf8(entry.payload.generatedText || '');
+                        } else if (entry.kind === 'media') {
+                            const buffer = await requestArrayBuffer(entry.url);
+                            if (stopRequested) return;
+                            data = new Uint8Array(buffer);
+                            liveMetrics.record('downloaded', 1);
+                            liveMetrics.record('bytesDownloaded', buffer.byteLength);
+                        } else {
+                            const error = new Error(`No archive handler for item kind ${entry.kind}.`);
+                            error.code = 'ARCHIVE_HANDLER_UNAVAILABLE';
+                            throw error;
+                        }
 
-                        entry.size = buffer.byteLength;
-                        bytesInGroup += buffer.byteLength;
+                        entry.size = data.byteLength;
+                        bytesInGroup += data.byteLength;
                         records[localIndex] = {
                             entry,
                             globalIndex: groupStart + localIndex,
-                            data: new Uint8Array(buffer)
+                            data
                         };
-                        liveMetrics.record('downloaded', 1);
-                        liveMetrics.record('bytesDownloaded', buffer.byteLength);
                     } catch (error) {
                         if (stopRequested) return;
 
@@ -168,7 +210,7 @@
                         errorCount++;
                         liveMetrics.record('errors', 1);
                         addLog(
-                            `Failed: ${entry.filename} — ${entry.error}. Remaining selected files continue. Code: ${error?.code || 'NETWORK_RETRY_EXHAUSTED'}`,
+                            `Failed: ${entry.filename || entry.key} — ${entry.error}. Remaining selected items continue. Code: ${error?.code || 'NETWORK_RETRY_EXHAUSTED'}`,
                             'error'
                         );
                     }
@@ -176,10 +218,14 @@
                     finishedInGroup++;
                     liveMetrics.update({
                         currentItem: groupStart + finishedInGroup,
-                        downloading: Math.max(0, group.length - finishedInGroup)
+                        downloading: Math.max(
+                            0,
+                            group.slice(finishedInGroup)
+                                .filter(candidate => candidate.kind === 'media').length
+                        )
                     });
                     setPhase(
-                        `DOWNLOADING SELECTED ORIGINALS: ${finishedInGroup}/${group.length} · ` +
+                        `PREPARING CONFIRMED ITEMS: ${finishedInGroup}/${group.length} · ` +
                         `${formatBytes(bytesInGroup)}`
                     );
                     progressFill.style.width =
@@ -295,6 +341,9 @@
                 for (const record of partRecords) {
                     record.entry.status = STATUS.PACKED;
                     zippedCount++;
+                    if (record.entry.kind === 'generated-document') {
+                        savedGeneratedDocumentCount++;
+                    }
                     liveMetrics.record('saved', 1);
                     record.data = null;
                     updateLibraryCardState(record.entry.key);
@@ -322,6 +371,15 @@
         running = false;
         reviewArchiveConfirmed = false;
 
+        if (savedGeneratedDocumentCount > 0) {
+            for (const entry of rawSelectedEntries) {
+                if (entry.kind === 'comment') {
+                    entry.status = STATUS.PACKED;
+                    updateLibraryCardState(entry.key);
+                }
+            }
+        }
+
         if (stopRequested) {
             setPhase(`STOPPED: ${zippedCount} files already saved`);
             addLog(
@@ -333,14 +391,16 @@
             setPhase('FINISHED');
             progressFill.style.width = '100%';
             addLog(
-                `Finished: ${zippedCount} files in ${zipPart} ZIP parts, ` +
+                `Finished: ${zippedCount} archive files in ${zipPart} ZIP parts, ` +
                 `${errorCount} errors.`,
                 errorCount ? 'warn' : 'success'
             );
             liveMetrics.stopSession({ phase: 'completed' });
             diagnostics.endSession({
-                selected: entries.length,
-                saved: zippedCount,
+                selectedRecords: rawSelectedEntries.length,
+                selectedComments: preparedArchive.selectedCommentCount,
+                binaryRequestsPlanned: preparedArchive.selectedBinaryCount,
+                archiveFilesSaved: zippedCount,
                 errors: errorCount,
                 zipParts: zipPart
             });

@@ -41,6 +41,28 @@
         "src/adapters/pinterest/20-timeline.user.js.part",
         "src/adapters/pinterest/90-register.user.js.part"
       ]
+    },
+    {
+      "id": "reddit-comments",
+      "label": "Reddit comments",
+      "matches": [
+        "https://www.reddit.com/r/*/comments/*",
+        "https://reddit.com/r/*/comments/*",
+        "https://old.reddit.com/r/*/comments/*"
+      ],
+      "connect": [
+        "i.redd.it",
+        "preview.redd.it",
+        "external-preview.redd.it",
+        "v.redd.it"
+      ],
+      "modules": [
+        "src/adapters/reddit-comments/00-config.user.js.part",
+        "src/adapters/reddit-comments/10-comments.user.js.part",
+        "src/adapters/reddit-comments/20-media.user.js.part",
+        "src/adapters/reddit-comments/30-thread.user.js.part",
+        "src/adapters/reddit-comments/90-register.user.js.part"
+      ]
     }
   ]
 }

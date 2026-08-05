@@ -1,0 +1,65 @@
+    function findRedditThreadScroller() {
+        const root = document.scrollingElement || document.documentElement;
+        if (root && root.scrollHeight > root.clientHeight + 80) return root;
+        const candidates = [...document.querySelectorAll('main, [role="main"], main div')]
+            .filter(isScrollable)
+            .sort((a, b) =>
+                (b.scrollHeight - b.clientHeight) -
+                (a.scrollHeight - a.clientHeight)
+            );
+        return candidates[0] || null;
+    }
+
+    function redditVisibleCommentIds() {
+        const ids = [];
+        for (const element of redditCommentElements()) {
+            const rect = element.getBoundingClientRect();
+            if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+            const id = redditCommentId(element);
+            if (id) ids.push(id);
+        }
+        return [...new Set(ids)];
+    }
+
+    function redditVisibleCommentTimeRange() {
+        const values = [];
+        for (const element of redditCommentElements()) {
+            const rect = element.getBoundingClientRect();
+            if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+            const milliseconds = Date.parse(redditCommentTimestamp(element) || '');
+            if (Number.isFinite(milliseconds)) values.push(milliseconds);
+        }
+        if (!values.length) return null;
+        return { minMs: Math.min(...values), maxMs: Math.max(...values) };
+    }
+
+    function findRedditCommentElementById(itemId) {
+        if (!itemId) return null;
+        return redditCommentElements().find(element => redditCommentId(element) === itemId) || null;
+    }
+
+    function captureRedditStartingAnchor(scroller) {
+        const scrollerRect = scroller === document.scrollingElement
+            ? { top: 0, bottom: window.innerHeight }
+            : scroller.getBoundingClientRect();
+        let best = null;
+        for (const element of redditCommentElements()) {
+            const itemId = redditCommentId(element);
+            if (!itemId) continue;
+            const rect = element.getBoundingClientRect();
+            if (rect.bottom < scrollerRect.top || rect.top > scrollerRect.bottom) continue;
+            const distance = Math.abs(rect.top - scrollerRect.top);
+            if (!best || distance < best.distance) {
+                best = { itemId, offset: rect.top - scrollerRect.top, distance };
+            }
+        }
+        const position = scrollPosition(scroller);
+        return {
+            itemId: best?.itemId || null,
+            offset: best?.offset || 0,
+            scrollRatio: position.height > position.client
+                ? position.top / (position.height - position.client)
+                : 0
+        };
+    }
+

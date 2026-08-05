@@ -1,0 +1,144 @@
+    function redditRenderedMediaCandidates(element) {
+        const candidates = [];
+        const add = (rawUrl, score) => {
+            if (!rawUrl) return;
+            try {
+                const url = new URL(rawUrl, location.href);
+                if (!['i.redd.it', 'preview.redd.it', 'external-preview.redd.it', 'v.redd.it'].includes(url.hostname)) return;
+                candidates.push({ url: url.href, score });
+            } catch {
+                // Ignore malformed rendered attributes.
+            }
+        };
+
+        add(element.currentSrc, 1_000_000);
+        if (element.tagName?.toUpperCase?.() === 'IMG') {
+            for (const part of String(element.getAttribute?.('srcset') || '').split(',')) {
+                const match = part.trim().match(/^(\S+)\s+(\d+)(?:w|x)$/i);
+                if (match) add(match[1], 500_000 + Number(match[2]));
+            }
+        }
+        add(element.src, 100_000);
+        add(element.getAttribute?.('src'), 90_000);
+        if (element.tagName?.toUpperCase?.() === 'VIDEO') {
+            for (const source of element.querySelectorAll?.('source[src]') || []) {
+                add(source.src || source.getAttribute('src'), 800_000);
+            }
+        }
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates;
+    }
+
+    function redditMediaFilename(rawUrl, isVideo) {
+        try {
+            const url = new URL(rawUrl, location.href);
+            const raw = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || 'reddit-media');
+            const extension = extensionFromPath(`/${raw}`);
+            if (extension) return sanitizeFilename(raw);
+            return sanitizeFilename(`${raw || 'reddit-media'}${isVideo ? '.mp4' : '.jpg'}`);
+        } catch {
+            return isVideo ? 'reddit-video.mp4' : 'reddit-image.jpg';
+        }
+    }
+
+    function addOrUpdateRedditCommentMedia(element) {
+        const comment = redditCommentNode(element);
+        const commentId = redditCommentId(comment);
+        if (!commentId) return false;
+        const candidate = redditRenderedMediaCandidates(element)[0];
+        if (!candidate) return false;
+
+        const url = new URL(candidate.url, location.href);
+        const key = `reddit-media:${commentId}:${url.hostname}${url.pathname}`.toLowerCase();
+        const existing = mediaEntries.get(key);
+        const isVideo = element.tagName?.toUpperCase?.() === 'VIDEO' ||
+            Boolean(element.closest?.('video')) ||
+            url.hostname === 'v.redd.it' ||
+            VIDEO_EXTENSIONS.has(extensionFromPath(url.pathname));
+
+        if (existing) {
+            recordCanonicalDuplicate(existing, 'reddit-comment-media-rerender');
+            existing.url = candidate.url;
+            existing.previewUrl = element.currentSrc || element.src || existing.previewUrl;
+            existing.payload.url = existing.url;
+            existing.payload.previewUrl = existing.previewUrl;
+            return false;
+        }
+
+        const filename = redditMediaFilename(candidate.url, isVideo);
+        const timestamp = redditCommentTimestamp(comment);
+        const item = {
+            key,
+            kind: 'media',
+            adapterId: 'reddit-comments',
+            canonical: true,
+            canonicalKey: key,
+            duplicateCount: 0,
+            eligibility: { adapter: true, type: true, date: true },
+            manuallySelected: true,
+            sourceId: `${commentId}:${url.pathname}`,
+            parentSourceId: commentId,
+            itemId: commentId,
+            timestamp,
+            firstSeen: firstSeenCounter++,
+            discoveryIndex: firstSeenCounter - 1,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0,
+            filename,
+            mediaType: isVideo ? 'video' : 'photo',
+            sourceKind: 'reddit-comment-media',
+            sourcePageUrl: redditCommentPermalink(comment),
+            url: candidate.url,
+            previewUrl: element.currentSrc || element.src || candidate.url,
+            payload: {
+                url: candidate.url,
+                previewUrl: element.currentSrc || element.src || candidate.url,
+                filename,
+                originalFilename: filename,
+                mediaType: isVideo ? 'video' : 'photo',
+                sourceKind: 'reddit-comment-media',
+                sourcePageUrl: redditCommentPermalink(comment),
+                itemId: commentId,
+                sourceLabel: activeSiteAdapter?.getArchiveContext?.().label || 'reddit-comments'
+            }
+        };
+        mediaEntries.set(key, item);
+        ensureSelectionForEntries([item]);
+        liveMetrics.record('found', 1);
+        scheduleRender();
+        return true;
+    }
+
+    function scanRedditRenderedCommentMedia() {
+        let added = 0;
+        for (const comment of redditCommentElements()) {
+            const body = redditCommentBodyNode(comment) || comment;
+            const mediaElements = new Set();
+            for (const element of body.querySelectorAll?.('img[src], img[srcset], video[src], video source[src]') || []) {
+                if (element.tagName?.toUpperCase?.() === 'SOURCE') {
+                    const video = element.closest('video');
+                    if (video) mediaElements.add(video);
+                } else {
+                    mediaElements.add(element);
+                }
+            }
+            for (const element of mediaElements) {
+                if (addOrUpdateRedditCommentMedia(element)) added++;
+            }
+        }
+        return added;
+    }
+
+    function scanRedditRenderedThread() {
+        const added = scanRedditRenderedComments() + scanRedditRenderedCommentMedia();
+        liveMetrics.update({
+            found: mediaEntries.size,
+            duplicatesMerged: [...mediaEntries.values()]
+                .filter(entry => entry.adapterId === 'reddit-comments')
+                .reduce((sum, entry) => sum + (entry.duplicateCount || 0), 0)
+        });
+        updateCounters();
+        return added;
+    }
+

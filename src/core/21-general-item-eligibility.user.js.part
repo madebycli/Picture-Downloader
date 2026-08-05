@@ -1,0 +1,46 @@
+    function mediaTypeIsEnabled(entry) {
+        if (entry.kind === 'comment' || entry.kind === 'generated-document') {
+            return true;
+        }
+        if (entry.mediaType === 'video') {
+            return Boolean(videoCheckbox?.checked);
+        }
+        if (entry.mediaType === 'external-gif') {
+            return Boolean(externalGifCheckbox?.checked);
+        }
+        return Boolean(photoCheckbox?.checked);
+    }
+
+    function countMediaTypes(entries = [...mediaEntries.values()]) {
+        let photos = 0;
+        let videos = 0;
+        let externalGifs = 0;
+        let comments = 0;
+        let documents = 0;
+
+        for (const entry of entries) {
+            if (entry.kind === 'comment') comments++;
+            else if (entry.kind === 'generated-document') documents++;
+            else if (entry.mediaType === 'video') videos++;
+            else if (entry.mediaType === 'external-gif') externalGifs++;
+            else photos++;
+        }
+
+        return { photos, videos, externalGifs, comments, documents };
+    }
+
+    function selectedArchiveKind(entries) {
+        const { photos, videos, externalGifs, comments, documents } =
+            countMediaTypes(entries);
+        const mediaCount = photos + videos + externalGifs;
+        const textCount = comments + documents;
+        if (mediaCount && textCount) return 'archive';
+        if (textCount) return 'comments';
+        const selectedTypeCount = [photos, videos, externalGifs]
+            .filter(value => value > 0).length;
+        if (selectedTypeCount > 1) return 'media';
+        if (videos) return 'videos';
+        if (externalGifs) return 'external_gifs';
+        return 'photos';
+    }
+

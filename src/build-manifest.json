@@ -8,6 +8,8 @@
     "src/shared/workflow-state.user.js.part",
     "src/shared/selection-store.user.js.part",
     "src/shared/naming-service.user.js.part",
+    "src/shared/generated-document-naming.user.js.part",
+    "src/shared/comment-export.user.js.part",
     "src/shared/diagnostics-metrics.user.js.part",
     "src/core/08-shared-services.user.js.part",
     "src/core/09-userscript-runtime.user.js.part"
@@ -15,6 +17,7 @@
   "afterAdapters": [
     "src/core/10-activate-adapter.user.js.part",
     "src/core/20-selection.user.js.part",
+    "src/core/21-general-item-eligibility.user.js.part",
     "src/core/30-scanner-position.user.js.part",
     "src/core/31-scanner-boundaries.user.js.part",
     "src/core/40-download-manifest.user.js.part",
