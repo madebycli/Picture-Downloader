@@ -1,0 +1,37 @@
+name: Apply v6 refactor
+
+on:
+  push:
+    branches:
+      - refactor/modular-ui
+    paths:
+      - ".github/workflows/apply-v6-refactor.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Apply prepared refactor
+        run: |
+          cat .migration/v6-part-* > /tmp/v6-refactor.tar.gz
+          tar -xzf /tmp/v6-refactor.tar.gz
+          rm -rf .migration
+          rm -f .github/workflows/apply-v6-refactor.yml
+          rm -f .github/workflows/export-source.yml
+          rm -f discord-media-archiver.user.js
+          rm -rf src/parts
+          npm test
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor: modularize Media Archiver UI and site adapters"
+          git push origin HEAD:refactor/modular-ui
