@@ -20,7 +20,6 @@
                     (crc >>> 8);
             }
 
-            // Keep Firefox responsive while checksumming large videos.
             await sleep(0);
         }
 
@@ -227,6 +226,13 @@
             };
         }
 
+        diagnostics.warn(
+            'ZIP_FALLBACK_ACTIVE',
+            'The optional ZIP library is unavailable; using the built-in ZIP writer.',
+            {},
+            { category: 'zip', userMessage: 'Using the built-in ZIP fallback; archive creation may take longer.' }
+        );
+
         return {
             blob: await buildFallbackStoredZip(
                 files,
@@ -237,16 +243,6 @@
     }
 
     function downloadZipBlob(blob, filename) {
-        const blobUrl = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = blobUrl;
-        anchor.download = filename;
-        anchor.style.display = 'none';
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-
-        // Allow enough time for a possible browser permission prompt.
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 120_000);
+        return runtime.saveBlob(blob, filename);
     }
 

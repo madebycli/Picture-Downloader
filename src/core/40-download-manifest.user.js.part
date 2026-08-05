@@ -1,103 +1,48 @@
     function abortActiveRequests() {
-        for (const request of activeRequests) {
-            try {
-                request.abort();
-            } catch {
-                // Ignore already-finished requests.
-            }
-        }
+        runtime.abortAllRequests();
         activeRequests.clear();
     }
 
-    function requestArrayBuffer(url, attempt = 1) {
-        return new Promise((resolve, reject) => {
-            if (!activeSiteAdapter.isDownloadUrlAllowed(url)) {
-                reject(new Error('The active site adapter blocked this download URL.'));
-                return;
-            }
+    async function requestArrayBuffer(url, attempt = 1) {
+        if (stopRequested) {
+            const error = new Error('Stopped by user');
+            error.code = 'NETWORK_ABORTED';
+            throw error;
+        }
 
-            if (stopRequested) {
-                reject(new Error('Stopped by user'));
-                return;
-            }
-
-            let requestHandle;
-
-            requestHandle = GM_xmlhttpRequest({
-                method: 'GET',
-                url,
-                responseType: 'arraybuffer',
-                timeout: 120000,
-                anonymous: true,
-                headers: {
-                    'Accept': 'video/*,image/*,*/*;q=0.8'
-                },
-                onload: async response => {
-                    activeRequests.delete(requestHandle);
-
-                    if (
-                        response.status >= 200 &&
-                        response.status < 300 &&
-                        response.response
-                    ) {
-                        resolve(response.response);
-                        return;
-                    }
-
-                    const retryable =
-                        response.status === 429 ||
-                        response.status >= 500 ||
-                        response.status === 0;
-
-                    if (
-                        retryable &&
-                        attempt < REQUEST_RETRIES &&
-                        !stopRequested
-                    ) {
-                        await sleep(700 * attempt);
-                        try {
-                            resolve(await requestArrayBuffer(url, attempt + 1));
-                        } catch (error) {
-                            reject(error);
-                        }
-                        return;
-                    }
-
-                    reject(new Error(`HTTP ${response.status || 'unknown'}`));
-                },
-                onerror: async () => {
-                    activeRequests.delete(requestHandle);
-
-                    if (attempt < REQUEST_RETRIES && !stopRequested) {
-                        await sleep(700 * attempt);
-                        try {
-                            resolve(await requestArrayBuffer(url, attempt + 1));
-                        } catch (error) {
-                            reject(error);
-                        }
-                        return;
-                    }
-
-                    reject(new Error('Network error'));
-                },
-                ontimeout: async () => {
-                    activeRequests.delete(requestHandle);
-
-                    if (attempt < REQUEST_RETRIES && !stopRequested) {
-                        try {
-                            resolve(await requestArrayBuffer(url, attempt + 1));
-                        } catch (error) {
-                            reject(error);
-                        }
-                        return;
-                    }
-
-                    reject(new Error('Request timed out'));
-                }
+        const requestId = `archive-${Date.now().toString(36)}-${attempt}-${Math.random().toString(36).slice(2, 8)}`;
+        try {
+            return await runtime.fetchBinary(url, {
+                requestId,
+                timeoutMs: 120_000,
+                accept: 'video/*,image/*,*/*;q=0.8'
             });
+        } catch (error) {
+            const retryable = error?.retryable === true;
+            if (retryable && attempt < REQUEST_RETRIES && !stopRequested) {
+                diagnostics.warn(
+                    error.code || 'NETWORK_RETRY_EXHAUSTED',
+                    `Download attempt ${attempt} failed; retrying.`,
+                    { attempt, maximumAttempts: REQUEST_RETRIES },
+                    { category: 'network', adapterId: activeSiteAdapter?.id }
+                );
+                await sleep(700 * attempt);
+                return requestArrayBuffer(url, attempt + 1);
+            }
 
-            activeRequests.add(requestHandle);
-        });
+            diagnostics.error(
+                error?.code || 'NETWORK_RETRY_EXHAUSTED',
+                'Original-file download failed.',
+                error,
+                {
+                    attempt,
+                    maximumAttempts: REQUEST_RETRIES,
+                    continued: true
+                },
+                { category: 'network', adapterId: activeSiteAdapter?.id }
+            );
+            throw error;
+        }
     }
 
     async function runWorkerPool(items, concurrency, worker) {
@@ -240,8 +185,6 @@
     function resolveFflateLibrary() {
         const candidates = [];
 
-        // On Firefox/Tampermonkey, an @require UMD global can exist in the
-        // userscript scope without appearing as globalThis.fflate.
         try {
             if (typeof fflate !== 'undefined') {
                 candidates.push(fflate);
@@ -287,10 +230,6 @@
         return new TextEncoder().encode(String(value));
     }
 
-    // Built-in ZIP32 STORE writer. This is used only when the optional
-    // external fflate library is unavailable. Media files are already
-    // compressed, so storing them without DEFLATE is appropriate and avoids
-    // depending on a CDN.
     const FALLBACK_CRC32_TABLE = (() => {
         const table = new Uint32Array(256);
 

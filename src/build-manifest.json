@@ -9,7 +9,8 @@
     "src/shared/selection-store.user.js.part",
     "src/shared/naming-service.user.js.part",
     "src/shared/diagnostics-metrics.user.js.part",
-    "src/core/08-shared-services.user.js.part"
+    "src/core/08-shared-services.user.js.part",
+    "src/core/09-userscript-runtime.user.js.part"
   ],
   "afterAdapters": [
     "src/core/10-activate-adapter.user.js.part",
