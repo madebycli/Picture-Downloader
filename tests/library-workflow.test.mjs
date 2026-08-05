@@ -89,6 +89,44 @@ test('selection toggle path updates card state without rebuilding the Library', 
     assert.doesNotMatch(updateStates, /replaceChildren|createLibraryCard/);
 });
 
+test('plain card clicks toggle repeatedly without clearing other selections', async () => {
+    const context = vm.createContext({
+        Map,
+        Set,
+        Object,
+        Array,
+        String,
+        Number,
+        Boolean,
+        TypeError,
+        Error
+    });
+    for (const path of [
+        'src/shared/domain.user.js.part',
+        'src/shared/selection-store.user.js.part'
+    ]) {
+        vm.runInContext(await read(path), context, { filename: path });
+    }
+
+    const items = ['one', 'two', 'three'].map(key => ({
+        key,
+        canonical: true,
+        eligibility: { adapter: true, type: true, date: true }
+    }));
+    const store = context.MediaArchiverSelection.createSelectionStore();
+    store.ensureItems(items);
+    assert.equal(store.count, 3);
+
+    store.applyClick({ key: 'two', viewItems: items });
+    assert.equal(store.count, 2);
+    assert.equal(store.isSelected('one'), true);
+    assert.equal(store.isSelected('two'), false);
+
+    store.applyClick({ key: 'two', viewItems: items });
+    assert.equal(store.count, 3);
+    assert.equal(store.isSelected('two'), true);
+});
+
 test('selection store handles 2,000 synthetic items without rebuilding state', async () => {
     const context = vm.createContext({
         Map,
@@ -125,6 +163,21 @@ test('selection store handles 2,000 synthetic items without rebuilding state', a
     assert.ok(elapsed < 1_000, `2,000-item selection operations took ${elapsed.toFixed(1)}ms`);
 });
 
+test('large Library uses fixed scroll rows and bounded render batches', async () => {
+    const hotfix = await read('src/core/61-library-performance-hotfix.user.js.part');
+    const manifest = JSON.parse(await read('src/build-manifest.json'));
+
+    assert.ok(manifest.afterAdapters.includes('src/core/61-library-performance-hotfix.user.js.part'));
+    assert.match(hotfix, /LIBRARY_INITIAL_RENDER_COUNT = 240/);
+    assert.match(hotfix, /LIBRARY_RENDER_BATCH_COUNT = 160/);
+    assert.match(hotfix, /appendLibraryRenderBatch/);
+    assert.match(hotfix, /overflow-y:\s*auto/);
+    assert.match(hotfix, /grid-auto-rows:\s*232px/);
+    assert.match(hotfix, /input\[type="checkbox"\]/);
+    assert.match(hotfix, /fetchPriority = 'low'/);
+    assert.doesNotMatch(hotfix, /document\.createElement\(['"]video['"]\)/);
+});
+
 test('immutable naming plan is reused across downloads and ZIP parts', async () => {
     const archive = await read('src/core/42-archive-workflow.user.js.part');
     assert.match(archive, /planArchiveNames\(/);
@@ -137,6 +190,7 @@ test('Activity and Developer logs expose copy, Markdown, filtering, and selectab
     const markup = await read('src/core/60-library-markup.user.js.part');
     const controller = await read('src/core/55-library-controller.user.js.part');
     const style = await read('src/core/61-library-style.user.js.part');
+    const hotfix = await read('src/core/61-library-performance-hotfix.user.js.part');
 
     for (const marker of [
         'ma-copy-activity',
@@ -155,4 +209,6 @@ test('Activity and Developer logs expose copy, Markdown, filtering, and selectab
     assert.match(controller, /text\/markdown;charset=utf-8/);
     assert.match(controller, /diagnostics\.events/);
     assert.match(style, /user-select: text !important/);
+    assert.match(hotfix, /width:\s*15px !important/);
+    assert.match(hotfix, /min-height:\s*0 !important/);
 });

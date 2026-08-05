@@ -147,10 +147,14 @@
                 if (shiftKey) {
                     return applyRange(viewItems, key, { additive });
                 }
-                if (checkmark || additive) {
-                    return toggle(key);
-                }
-                return selectOnly(key);
+
+                // File-manager range modifiers remain available, but the
+                // primary interaction is deliberately simple: every normal
+                // card or checkmark click toggles the clicked item in place.
+                // This avoids the surprising former behavior where a plain
+                // click cleared the complete selection first.
+                void checkmark;
+                return toggle(key);
             }
 
             function removeMissing(validKeys) {
@@ -213,4 +217,3 @@
             writable: false
         });
     })();
-

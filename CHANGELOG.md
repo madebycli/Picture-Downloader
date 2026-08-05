@@ -1,5 +1,36 @@
 # Changelog
 
+## 7.2.0 — 2026-08-05
+
+### Fixed
+
+- Discord scanning no longer advances only a fraction of a viewport per pass. It jumps to the currently loaded virtual edge and waits for Discord to load the next chunk.
+- Each Discord jump verifies the previous edge message ID and performs a bounded recovery overlap scan when virtualization hides that anchor.
+- Large Review Libraries no longer compress hundreds of selected cards into unusable horizontal lines.
+- The Library now has fixed card/list heights, a stable vertical scrollbar, and batched DOM rendering for 1,000+ candidates.
+- Plain card/checkmark clicks now toggle select/deselect without clearing every other selected item.
+- Developer-log level/category checkboxes use compact native dimensions instead of inheriting full-width toolbar input sizing.
+- Reddit date filtering is disabled and its scan controls are reduced to the provider-appropriate complete downward comment-thread scan.
+
+### Added
+
+- Reddit DOM-only expansion for visible **View/Load/Show more comments or replies**, **More replies**, and **Continue this thread** controls.
+- Expansion safety filters, an eight-control pass limit, an eight-second per-element cooldown, and post-click rendered-list settling.
+- Scanner navigation regression tests for Discord edge jumps, overlap recovery, canonical deduplication, and Reddit expansion ordering.
+- Chromium/Firefox Playwright coverage for a synthetic 1,100-item Library, scroll batching, repeated click toggles, and compact Developer filters.
+
+### Performance
+
+- The Library initially attaches at most 240 cards and appends blocks of 160 near the scroll boundary.
+- Image previews are lazy, asynchronous, and low priority.
+- Video/GIF cards never instantiate a video player in the Library and use only an already available static poster when possible.
+
+### Safety
+
+- Reddit expansion remains restricted to rendered comment-loading controls and rejects login, signup, awards, sharing, reporting, saving, following, joining, and voting controls.
+- No Reddit/Discord private APIs, tokens, cookies, or Authorization headers are used.
+- Review mode still makes no original media request before **Archive selected**.
+
 ## 7.1.0 — 2026-08-05
 
 ### Added

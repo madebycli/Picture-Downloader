@@ -63,3 +63,112 @@
         };
     }
 
+    function redditExpansionControlText(element) {
+        return [
+            element?.innerText,
+            element?.textContent,
+            element?.getAttribute?.('aria-label'),
+            element?.getAttribute?.('title')
+        ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    }
+
+    function redditExpansionControlEligible(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        if (element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+        if (element.matches(':disabled, [disabled], [aria-disabled="true"]')) return false;
+        if (!element.getClientRects().length) return false;
+
+        const text = redditExpansionControlText(element).toLocaleLowerCase();
+        if (!text) return false;
+
+        const expansionText =
+            /\b(?:view|load|show)\s+(?:\d+\s+)?(?:more\s+)?(?:comments?|repl(?:y|ies))\b/i.test(text) ||
+            /\bmore\s+(?:comments?|repl(?:y|ies))\b/i.test(text) ||
+            /\bcontinue\s+this\s+thread\b/i.test(text);
+        if (!expansionText) return false;
+
+        if (/\b(?:log\s*in|sign\s*up|award|share|report|save|follow|join|vote|upvote|downvote)\b/i.test(text)) {
+            return false;
+        }
+
+        const withinThread = Boolean(element.closest([
+            'shreddit-comment',
+            '[data-testid="comment"]',
+            '[data-comment-id]',
+            '.commentarea',
+            '.sitetable.nestedlisting',
+            'main',
+            '[role="main"]'
+        ].join(',')));
+        return withinThread;
+    }
+
+    function redditExpansionCandidates() {
+        const selector = [
+            'button',
+            '[role="button"]',
+            'a',
+            'faceplate-button',
+            'faceplate-tracker',
+            'shreddit-async-loader'
+        ].join(',');
+        const candidates = [];
+        for (const element of document.querySelectorAll(selector)) {
+            const clickable = element.matches('button, a, [role="button"]')
+                ? element
+                : element.querySelector('button, a, [role="button"]') || element;
+            if (redditExpansionControlEligible(clickable)) candidates.push(clickable);
+        }
+        return [...new Set(candidates)];
+    }
+
+    async function expandRedditRenderedComments({ scroller, direction }) {
+        if (direction !== 'newer') return 0;
+        const now = Date.now();
+        const candidates = redditExpansionCandidates()
+            .filter(element => {
+                const lastAttempt = Number(element.dataset.maRedditExpandAttempt || 0);
+                return !lastAttempt || now - lastAttempt >= 8_000;
+            })
+            .slice(0, 8);
+
+        if (!candidates.length) return 0;
+
+        const beforeHeight = scrollPosition(scroller).height;
+        const beforeCommentCount = redditCommentElements().length;
+        let activated = 0;
+
+        for (const control of candidates) {
+            control.dataset.maRedditExpandAttempt = String(now);
+            try {
+                control.click();
+                activated++;
+            } catch {
+                // One stale/replaced control must not stop the remaining pass.
+            }
+            await sleep(90);
+        }
+
+        if (!activated) return 0;
+
+        const startedAt = performance.now();
+        let stableRounds = 0;
+        let previousHeight = beforeHeight;
+        while (!stopRequested && performance.now() - startedAt < 2_800) {
+            await sleep(280);
+            scanVisiblePage();
+            const currentHeight = scrollPosition(scroller).height;
+            const currentCommentCount = redditCommentElements().length;
+            const changed =
+                currentCommentCount > beforeCommentCount ||
+                Math.abs(currentHeight - beforeHeight) >= 3;
+            stableRounds = changed && Math.abs(currentHeight - previousHeight) < 3
+                ? stableRounds + 1
+                : 0;
+            previousHeight = currentHeight;
+            if (stableRounds >= 2) break;
+        }
+
+        return activated;
+    }
+

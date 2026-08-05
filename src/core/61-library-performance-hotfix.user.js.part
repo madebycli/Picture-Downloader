@@ -1,0 +1,206 @@
+    // Large-library hardening. Keep the complete filtered model in memory, but
+    // create cards in bounded batches so opening a 1,000+ item review does not
+    // synchronously attach every preview and event listener at once.
+    let libraryRenderedCount = 0;
+    const LIBRARY_INITIAL_RENDER_COUNT = 240;
+    const LIBRARY_RENDER_BATCH_COUNT = 160;
+
+    function staticLibraryPosterUrl(entry) {
+        const raw = entry?.previewUrl;
+        if (!raw || raw === entry?.url) return '';
+        try {
+            const extension = extensionFromPath(new URL(raw, location.href).pathname);
+            return ['.jpg', '.jpeg', '.png', '.webp', '.avif', '.bmp'].includes(extension)
+                ? raw
+                : '';
+        } catch {
+            return '';
+        }
+    }
+
+    createLibraryPreview = function createLibraryPreviewOptimized(entry) {
+        if (entry.kind === 'comment') {
+            const text = document.createElement('div');
+            text.className = 'ma-library-comment-preview';
+            text.textContent = entry.payload?.bodyText || 'Comment';
+            return text;
+        }
+
+        if (entry.mediaType === 'video' || entry.mediaType === 'external-gif') {
+            const tile = document.createElement('div');
+            tile.className = 'ma-library-video-preview';
+            tile.textContent = entry.mediaType === 'external-gif' ? 'GIF' : '▶';
+            const poster = staticLibraryPosterUrl(entry);
+            if (poster) {
+                tile.style.backgroundImage = `url("${String(poster).replace(/"/g, '%22')}")`;
+            }
+            return tile;
+        }
+
+        const image = document.createElement('img');
+        image.className = 'ma-library-image';
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        image.fetchPriority = 'low';
+        image.referrerPolicy = 'no-referrer';
+        image.alt = '';
+        image.src = entry.previewUrl || entry.url;
+        return image;
+    };
+
+    function appendLibraryRenderBatch(minimumTargetIndex = null) {
+        if (!libraryItemsElement || libraryRenderedCount >= libraryViewItems.length) return;
+        const requestedEnd = minimumTargetIndex === null
+            ? libraryRenderedCount + (
+                libraryRenderedCount === 0
+                    ? LIBRARY_INITIAL_RENDER_COUNT
+                    : LIBRARY_RENDER_BATCH_COUNT
+            )
+            : minimumTargetIndex + 1;
+        const end = Math.min(
+            libraryViewItems.length,
+            Math.max(requestedEnd, libraryRenderedCount + 1)
+        );
+        const fragment = document.createDocumentFragment();
+        for (let index = libraryRenderedCount; index < end; index++) {
+            fragment.appendChild(createLibraryCard(libraryViewItems[index], index));
+        }
+        libraryItemsElement.appendChild(fragment);
+        libraryRenderedCount = end;
+        updateLibraryRovingTabIndex();
+    }
+
+    renderLibrary = function renderLibraryBatched() {
+        if (typeof libraryItemsElement === 'undefined' || !libraryItemsElement) return;
+        libraryViewItems = libraryFilteredEntries();
+        if (!libraryViewItems.some(entry => entry.key === libraryFocusedKey)) {
+            libraryFocusedKey = libraryViewItems[0]?.key || null;
+        }
+
+        libraryItemsElement.replaceChildren();
+        libraryRenderedCount = 0;
+        libraryItemsElement.classList.toggle(
+            'ma-list-view',
+            libraryViewToggle?.dataset.view === 'list'
+        );
+        appendLibraryRenderBatch();
+        libraryEmptyElement.hidden = libraryViewItems.length > 0;
+        updateLibrarySelectionSummary();
+    };
+
+    handleLibraryCardKeydown = function handleLibraryCardKeydownBatched(event, key) {
+        if (event.key === ' ') {
+            event.preventDefault();
+            selectionStore.toggle(key);
+            selectionStore.syncItems([...mediaEntries.values()]);
+            updateAllLibraryCardStates();
+            return;
+        }
+
+        const index = libraryViewItems.findIndex(entry => entry.key === key);
+        if (index < 0) return;
+        let target = index;
+        const grid = libraryViewToggle?.dataset.view !== 'list';
+        const firstCard = libraryItemsElement.querySelector('[data-ma-item-key]');
+        const columns = grid && firstCard
+            ? Math.max(1, Math.floor(
+                libraryItemsElement.clientWidth /
+                Math.max(190, firstCard.getBoundingClientRect().width)
+            ))
+            : 1;
+
+        if (event.key === 'ArrowLeft') target = index - 1;
+        else if (event.key === 'ArrowRight') target = index + 1;
+        else if (event.key === 'ArrowUp') target = index - columns;
+        else if (event.key === 'ArrowDown') target = index + columns;
+        else if (event.key === 'Home') target = 0;
+        else if (event.key === 'End') target = libraryViewItems.length - 1;
+        else return;
+
+        event.preventDefault();
+        target = Math.max(0, Math.min(libraryViewItems.length - 1, target));
+        if (target >= libraryRenderedCount) appendLibraryRenderBatch(target);
+        libraryFocusedKey = libraryViewItems[target]?.key || key;
+        updateLibraryRovingTabIndex();
+        const targetCard = [...libraryItemsElement.querySelectorAll('[data-ma-item-key]')]
+            .find(card => card.dataset.maItemKey === libraryFocusedKey);
+        targetCard?.focus();
+        targetCard?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    };
+
+    libraryItemsElement.addEventListener('scroll', () => {
+        const remaining =
+            libraryItemsElement.scrollHeight -
+            (libraryItemsElement.scrollTop + libraryItemsElement.clientHeight);
+        if (remaining < 720) appendLibraryRenderBatch();
+    }, { passive: true });
+
+    const shortcutHint = libraryOverlay.querySelector('.ma-library-shortcuts');
+    if (shortcutHint) {
+        shortcutHint.textContent =
+            'Click/check: toggle · Shift: range · Ctrl/Cmd+Shift: additive range · Ctrl/Cmd+A: visible · Space: toggle';
+    }
+
+    libraryStyle.textContent += `
+        .ma-library-dialog,
+        .ma-developer-dialog { min-height: 0; }
+        .ma-library-items {
+            grid-auto-rows: 232px;
+            min-height: 0;
+            height: 100%;
+            overflow-x: hidden;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-gutter: stable;
+            align-content: start;
+        }
+        .ma-library-card {
+            height: 232px;
+            min-height: 232px;
+            grid-template-rows: minmax(0, 1fr) auto;
+            contain-intrinsic-size: 232px;
+        }
+        .ma-library-image,
+        .ma-library-video-preview,
+        .ma-library-comment-preview {
+            min-width: 0;
+            min-height: 0;
+        }
+        .ma-library-items.ma-list-view {
+            grid-auto-rows: 96px;
+        }
+        .ma-library-items.ma-list-view .ma-library-card {
+            height: 96px;
+            min-height: 96px;
+            grid-template-columns: 112px minmax(0, 1fr);
+            grid-template-rows: 96px;
+            contain-intrinsic-size: 96px;
+        }
+        .ma-developer-toolbar > input[type="search"] {
+            width: 100%;
+        }
+        .ma-developer-toolbar fieldset label {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            min-height: 24px;
+            padding: 2px 5px;
+            border: 1px solid rgba(255,255,255,.08);
+            border-radius: 6px;
+            background: rgba(0,0,0,.12);
+        }
+        .ma-developer-toolbar input[type="checkbox"] {
+            appearance: auto !important;
+            width: 15px !important;
+            min-width: 15px !important;
+            height: 15px !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            accent-color: #4f8cff;
+        }
+        @media (max-width: 560px) {
+            .ma-library-items { grid-auto-rows: 200px; }
+            .ma-library-card { height: 200px; min-height: 200px; }
+        }
+    `;

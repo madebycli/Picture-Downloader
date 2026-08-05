@@ -1,0 +1,27 @@
+    function applyProviderPreferredScanMode({ forDateFilter = false } = {}) {
+        const preferred = forDateFilter
+            ? activeSiteAdapter.preferredDateScanMode || activeSiteAdapter.preferredScanMode
+            : activeSiteAdapter.preferredScanMode;
+        if (!preferred) return false;
+
+        const option = [...scanDirectionSelect.options]
+            .find(candidate => candidate.value === preferred && !candidate.disabled);
+        if (!option || scanDirectionSelect.value === preferred) return false;
+
+        scanDirectionSelect.value = preferred;
+        addLog(
+            `${activeSiteAdapter.label} selected its optimized scan mode: ${scanModeDescription(preferred)}.`
+        );
+        return true;
+    }
+
+    dateFilterCheckbox.addEventListener('change', () => {
+        if (
+            dateFilterCheckbox.checked &&
+            activeSiteAdapter.capabilities?.dateFilter !== false
+        ) {
+            applyProviderPreferredScanMode({ forDateFilter: true });
+        }
+    });
+
+    applyProviderPreferredScanMode();

@@ -121,17 +121,16 @@
             id: 'reddit-comments',
             label: 'Reddit comment media',
             archivePrefix: 'reddit',
+            preferredScanMode: 'current-to-newest',
+            boundaryConfirmMs: 5_000,
             capabilities: {
                 media: true,
                 textRecords: false,
                 virtualTimeline: true,
-                dateFilter: true,
+                dateFilter: false,
                 hostPageSelection: false,
                 scanModes: [
-                    'newest-to-oldest',
-                    'current-to-oldest',
-                    'current-to-newest',
-                    'full-finish-down'
+                    'current-to-newest'
                 ],
                 views: ['grid', 'list']
             },
@@ -146,6 +145,7 @@
                 return Boolean(redditCommentThreadPageType(currentLocation));
             },
             scanVisibleMedia: scanRedditRenderedThread,
+            expandRenderedContent: expandRedditRenderedComments,
             findScroller: findRedditThreadScroller,
             visibleItemIds: redditVisibleCommentIds,
             visibleItemTimeRange: redditVisibleCommentTimeRange,

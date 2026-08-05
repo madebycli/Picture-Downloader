@@ -88,17 +88,17 @@ test('selection survives filtering, sorting, rerendering, and explicit deselecti
     assert.deepEqual([...store.selectedKeys()].sort(), ['a', 'b', 'c']);
 });
 
-test('file-manager click semantics support plain, additive, and range selection', async () => {
+test('file-manager clicks toggle normally and preserve range selection', async () => {
     const context = await load();
     const store = context.MediaArchiverSelection.createSelectionStore();
     const items = ['a', 'b', 'c', 'd'].map(key => mediaItem(key, `${key}.jpg`));
     store.ensureItems(items);
 
     store.applyClick({ key: 'b', viewItems: items });
-    assert.deepEqual([...store.selectedKeys()], ['b']);
+    assert.deepEqual([...store.selectedKeys()].sort(), ['a', 'c', 'd']);
 
     store.applyClick({ key: 'd', viewItems: items, ctrlKey: true });
-    assert.deepEqual([...store.selectedKeys()].sort(), ['b', 'd']);
+    assert.deepEqual([...store.selectedKeys()].sort(), ['a', 'c']);
 
     store.applyClick({ key: 'c', viewItems: items, shiftKey: true });
     assert.deepEqual([...store.selectedKeys()].sort(), ['c', 'd']);
