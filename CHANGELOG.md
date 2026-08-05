@@ -1,5 +1,34 @@
 # Changelog
 
+## 7.1.0 — 2026-08-05
+
+### Added
+
+- Optional VirusTotal integration with locally stored user API keys.
+- Hash-first SHA-256 report lookup that avoids uploading files VirusTotal already knows.
+- Consent-gated upload mode for unknown files, including the large-file upload flow and a 650 MB hard limit.
+- Configurable suspicious/malicious block threshold and unknown/error allow-or-block policy.
+- Public-API request serialization, per-hash caching, sanitized diagnostics, and API-key redaction tests.
+- Automatic GitHub Release publishing with userscript, Chromium ZIP, Firefox ZIP, and SHA-256 checksums.
+
+### Changed
+
+- Reddit support is now focused exclusively on media rendered inside post-detail comments.
+- Reddit comment text is no longer represented as an archive item and `comments.json`, `comments.md`, and `comments.csv` are no longer produced.
+- Reddit comment media discovery now covers rendered `img`, `srcset`, `picture`, `video`, `source`, and direct media links.
+- Reviewed external media hosts include Imgur, Giphy, Tenor, Streamable, Redgifs, Gfycat, Discord CDN, X/Twitter media, Tumblr media, and additional native Reddit media hosts.
+- Reddit canonical keys use media host/path rather than comment ID so repeated memes across comments deduplicate globally.
+- Extension background host checks now support reviewed wildcard CDN permissions.
+- Runtime contracts now include an isolated external-service request operation used only by the VirusTotal allowlist.
+
+### Safety
+
+- VirusTotal remains disabled by default.
+- No original binary is requested before Review mode confirmation.
+- VirusTotal scanning occurs after confirmed source download and before ZIP acceptance.
+- Uploading unknown files requires explicit current-session consent.
+- VirusTotal API keys are never included in diagnostics, generated reports, archive manifests, or service results.
+
 ## 7.0.0 — 2026-08-05
 
 ### Added
@@ -13,7 +42,7 @@
 - Structured Activity/Developer diagnostics, stable codes, sanitized copy/Markdown export, and privacy redaction.
 - 750 ms live-stat heartbeat with DOM-visible one-second staleness regression coverage.
 - Pinterest rendered-media adapter for pin detail, boards, visible profile grids, and pin search results.
-- Reddit post-comment-thread adapter with selected-only JSON/Markdown/CSV export and independent rendered comment media.
+- Reddit post-comment-thread adapter with rendered comment media.
 - Deterministic extension packaging, generated host permissions, toolbar actions, content/background messaging, and reproducibility checks.
 - Sanitized adapter fixtures, unit suites, and Chromium/Firefox Playwright UI tests.
 

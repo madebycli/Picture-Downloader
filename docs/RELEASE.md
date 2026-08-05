@@ -9,7 +9,8 @@ Update together:
 - `package.json` version;
 - generated Chromium manifest;
 - generated Firefox manifest;
-- `CHANGELOG.md`.
+- `CHANGELOG.md`;
+- release filenames and notes.
 
 Do not place changelog or release notes inside the runtime UI.
 
@@ -22,7 +23,7 @@ npx playwright install chromium firefox
 npm run test:ui
 ```
 
-Review generated permissions and packages:
+Review generated packages:
 
 ```text
 media-archiver.user.js
@@ -30,7 +31,22 @@ dist/media-archiver-chromium-<version>.zip
 dist/media-archiver-firefox-<version>.zip
 ```
 
-Run `npm run check:reproducible` and record the package hashes.
+Run `npm run check:reproducible` and record package hashes.
+
+## VirusTotal release gate
+
+Before enabling a release version, confirm automatically that:
+
+- VirusTotal defaults to off;
+- missing API keys block the archive before any original request begins;
+- hash-only mode never creates an upload request;
+- upload-unknown requires current-session consent;
+- API keys are absent from diagnostics and result objects;
+- malicious/suspicious/unknown policies behave as configured;
+- the scan hook runs after the confirmed source download and before ZIP acceptance;
+- userscript and extension service hosts are generated from `runtimeConnect` rather than adapter media hosts.
+
+A real API key and real private file must never be placed in repository fixtures or CI secrets merely to exercise this feature. Live VirusTotal testing should use a harmless public fixture and a separately controlled account.
 
 ## Manual release gate
 
@@ -41,44 +57,36 @@ Before marking a production release complete, execute and document:
 - packaged Firefox extension;
 - packaged Chromium extension;
 - Discord, Pinterest, and Reddit live regression matrices;
+- Reddit native and external comment photos/GIFs/videos;
+- optional VirusTotal hash-only lookup with a harmless file;
+- optional consent-gated upload with a harmless test file;
 - >50 MB single video;
 - >=300 MB combined selection;
-- cancellation during download;
+- cancellation during download and VirusTotal polling;
 - Firefox and Chromium memory behavior;
 - ZIP save/download permission behavior;
 - all final-position choices on real virtualized pages.
 
-Unrun checks must remain **Blocked with evidence** or **Deferred with reason**; they must never be represented as passed.
+Unrun checks remain **Blocked with evidence** or **Deferred with reason** and must not be represented as passed.
 
-## Checklist gate
+## Automated GitHub Release
 
-Review `docs/ROADMAP_REQUIREMENTS_CHECKLIST.md` point by point. Every requirement must carry one or more visible statuses:
+`.github/workflows/publish-userscript.yml` runs after a qualifying push to `main`:
 
-```text
-Implemented
-Tested automatically
-Tested manually
-Deferred with reason
-Out of scope with approval
-Blocked with evidence
-```
+1. installs tooling;
+2. runs `npm test`;
+3. refreshes and commits `media-archiver.user.js` when necessary;
+4. derives tag `v<package version>`;
+5. creates the tag when absent;
+6. creates or refreshes the GitHub Release;
+7. uploads:
+   - `media-archiver.user.js`;
+   - Chromium ZIP;
+   - Firefox ZIP;
+   - `SHA256SUMS.txt`.
+
+The workflow is idempotent for an existing version and replaces assets with the newly validated builds. Store publication and permanent Firefox signing remain separate steps requiring the appropriate store accounts and reviews.
 
 ## Pull request contents
 
-The PR body must include:
-
-- architecture changes;
-- user-facing behavior;
-- adapter scopes and exclusions;
-- permission changes;
-- security/privacy review;
-- automated command results;
-- manual browser matrix;
-- known limitations and risks;
-- screenshots or recordings where available;
-- links to userscript, Chromium, and Firefox CI artifacts;
-- complete requirements status.
-
-## Publishing
-
-The main-branch workflow runs full validation, refreshes the generated userscript when necessary, and uploads all three installable artifacts. Chromium store publication and permanent Firefox signing remain separate distribution steps requiring the relevant store accounts and review processes.
+The PR body must include architecture changes, user-facing behavior, adapter scopes/exclusions, permission changes, VirusTotal privacy implications, automated results, manual blockers, known risks, artifact links, and the complete requirements status.

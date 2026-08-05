@@ -1,12 +1,25 @@
 # Media Archiver
 
-Media Archiver archives content that supported web applications have already rendered in the browser. Version 7 produces three first-class targets from one shared source tree:
+Media Archiver archives media that supported web applications have already rendered in the browser. Version 7.1 produces three first-class targets from one shared source tree:
 
 1. universal Tampermonkey userscript;
 2. Chromium extension;
 3. Firefox extension.
 
-The product and shared UI remain site-neutral. Discord, Pinterest, and Reddit behavior lives in isolated adapters.
+The shared scanner, Review Library, naming, ZIP creation, diagnostics, and optional VirusTotal checks are site-neutral. Discord, Pinterest, and Reddit behavior lives in isolated adapters.
+
+## Download
+
+Open the repository **Releases** tab and download one of these files:
+
+```text
+media-archiver.user.js
+media-archiver-chromium-7.1.0.zip
+media-archiver-firefox-7.1.0.zip
+SHA256SUMS.txt
+```
+
+The main-branch publish workflow validates all targets, creates tag `v7.1.0`, and creates or refreshes the GitHub Release automatically.
 
 ## Supported sources
 
@@ -16,7 +29,7 @@ Channels and threads, including rendered photos/native GIFs, Discord-hosted vide
 
 ### Pinterest
 
-Initial deterministic scope:
+Deterministic scope:
 
 - pin detail pages;
 - boards;
@@ -25,9 +38,18 @@ Initial deterministic scope:
 
 The personalized home feed is intentionally excluded. The adapter uses only rendered image/video attributes and does not call private Pinterest APIs.
 
-### Reddit comments
+### Reddit comment media
 
-Post-detail comment threads only. Home, Popular, subreddit/search feeds, recommendations, and For You surfaces are rejected. Selected rendered comments export as `comments.json`, `comments.md`, and `comments.csv`; rendered media inside comments remains independently selectable.
+Only post-detail comment threads under `/r/<subreddit>/comments/<post>/...` are supported. Home, Popular, subreddit/search feeds, recommendations, and For You surfaces are rejected.
+
+Comments are used only as rendered containers and timeline anchors. **Comment text is not exported.** The adapter collects independently selectable media rendered inside comments:
+
+- photos and native GIF files;
+- animated GIF previews;
+- Reddit-hosted videos;
+- rendered external images, GIFs, and videos from reviewed media CDNs such as Imgur, Giphy, Tenor, Streamable, Redgifs, Discord CDN, X/Twitter media, and Tumblr media.
+
+Masonry/re-render duplicates are merged by canonical media host and path, even when the same meme appears in more than one comment.
 
 ## Archive modes
 
@@ -41,9 +63,29 @@ Scans and deduplicates first, then opens the near-fullscreen Library. No origina
 
 The Library provides grid/list views, search, filters, sorting, select-all/none/invert actions, plain-click exclusive selection, checkmark/Ctrl/Cmd additive toggles, Shift ranges, Ctrl/Cmd+Shift additive ranges, Ctrl/Cmd+A, Space, Escape, and arrow-key focus navigation.
 
+## Optional VirusTotal checks
+
+VirusTotal is disabled by default and requires the user's own API key.
+
+Available modes:
+
+- **Off** — no hash or file is sent.
+- **SHA-256 report lookup only** — computes the file hash locally and checks whether VirusTotal already has a report. Unknown files are not uploaded.
+- **Lookup, then upload unknown files** — unknown files are uploaded only after the current-session consent checkbox is selected.
+
+The check occurs after the user confirms Review mode and after the original file is downloaded, but before that file is accepted into a ZIP. Malicious results are blocked; suspicious and unknown/error handling are configurable.
+
+Important privacy and quota notes:
+
+- standard VirusTotal uploads may be shared with security partners;
+- the public API is rate-limited, so large selections can take substantially longer;
+- uploads larger than 32 MB use VirusTotal's large-file upload URL;
+- files larger than 650 MB cannot be uploaded through this integration;
+- the API key is stored only in the current browser profile and is never written to diagnostics, reports, or ZIP manifests.
+
 ## Naming
 
-All final names are planned once over the complete confirmed selection and reused for previews, retries, downloads, manifests, generated comment documents, workers, ZIP parts, and all three targets.
+All final names are planned once over the complete confirmed selection and reused for previews, retries, downloads, workers, manifests, and ZIP parts.
 
 Default output is global six-digit numbering, newest to oldest:
 
@@ -55,31 +97,28 @@ Default output is global six-digit numbering, newest to oldest:
 
 The old ambiguous duplicate-stem output (`000001.jpg`, `000001.jpeg`, `000001.png`) is permanently forbidden and tested. Other presets include source date/time, source + date + number, original + number, and a safe advanced token template.
 
-## Diagnostics and live statistics
-
-Active foreground work uses a 750 ms lightweight metrics heartbeat. DOM-visible Found, Eligible, Selected, Downloaded, Saved, Errors, bytes, item/ZIP progress, and elapsed time are refreshed without rebuilding the Library or reloading thumbnails. Phase completion and visibility return perform exact flushes.
-
-Activity remains concise. **Copy**, **Download .md**, **Developer logs**, and **Clear** use a structured event store. Sanitized reports redact signed parameters, credentials, private text, source labels, local paths, and unnecessary extension IDs by default.
-
 ## Install
 
-### Userscript
+### Tampermonkey userscript
 
 1. Install Tampermonkey in a current Firefox- or Chromium-based browser.
-2. Open `media-archiver.user.js` in this repository.
-3. Choose **Raw** and confirm installation.
+2. Download `media-archiver.user.js` from GitHub Releases.
+3. Open the file and confirm installation.
 
 ### Chromium extension
 
-1. Build with `npm run build:extension:chromium` or download the CI artifact.
-2. Extract `dist/media-archiver-chromium-7.0.0.zip`.
-3. Open the browser extension page, enable Developer mode, choose **Load unpacked**, and select the extracted directory.
+1. Download and extract `media-archiver-chromium-7.1.0.zip`.
+2. Open the browser extension page.
+3. Enable Developer mode.
+4. Choose **Load unpacked** and select the extracted directory.
 
 ### Firefox extension
 
-1. Build with `npm run build:extension:firefox` or download the CI artifact.
-2. For temporary development installation, open `about:debugging`, choose **This Firefox**, then **Load Temporary Add-on** and select the extracted `manifest.json`.
-3. Permanent distribution requires normal Firefox add-on signing.
+1. Download and extract `media-archiver-firefox-7.1.0.zip`.
+2. Open `about:debugging` → **This Firefox** → **Load Temporary Add-on**.
+3. Select the extracted `manifest.json`.
+
+Permanent Firefox distribution still requires normal add-on signing.
 
 ## Build and test
 
@@ -89,16 +128,16 @@ npm test
 npm run test:ui
 ```
 
-`npm test` builds and validates the userscript and both extension packages, runs unit/fixture tests, checks generated permissions, rejects remote executable JavaScript, and verifies reproducible extension ZIPs. Playwright runs the Review request gate and twelve-second DOM-visible live-stat regression in Chromium and Firefox.
+`npm test` builds and validates the userscript and both extension packages, runs unit/fixture tests, checks generated permissions, rejects remote executable JavaScript, verifies VirusTotal consent/hash/upload behavior, and checks reproducible extension ZIPs. Playwright runs the Review request gate and twelve-second DOM-visible live-stat regression in Chromium and Firefox.
 
 Generated outputs:
 
 ```text
 media-archiver.user.js
-dist/media-archiver-chromium-7.0.0.zip
-dist/media-archiver-firefox-7.0.0.zip
+dist/media-archiver-chromium-7.1.0.zip
+dist/media-archiver-firefox-7.1.0.zip
 ```
 
 ## Safety
 
-Media Archiver never extracts tokens, cookies, credentials, or Authorization headers; never enumerates content through undocumented authenticated APIs; never votes, posts, reacts, follows, joins, or messages; and never scrapes linked third-party pages. Every download URL must pass both generated build permissions and the active adapter runtime allowlist. See `SECURITY.md`.
+Media Archiver never extracts tokens, cookies, account credentials, or Authorization headers; never enumerates site content through undocumented authenticated APIs; never votes, posts, reacts, follows, joins, or messages; and never scrapes arbitrary linked pages. Every media URL must pass generated permissions plus the active adapter runtime allowlist. VirusTotal is a separate opt-in service boundary with its own explicit host allowlist and consent controls. See `SECURITY.md`.

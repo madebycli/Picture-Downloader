@@ -1,4 +1,4 @@
-name: Publish Media Archiver artifacts
+name: Publish Media Archiver release
 
 on:
   push:
@@ -9,6 +9,10 @@ on:
       - "tests/**"
       - "playwright.config.mjs"
       - "package.json"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "SECURITY.md"
+      - "docs/**"
       - ".github/workflows/publish-userscript.yml"
   workflow_dispatch:
 
@@ -17,12 +21,12 @@ permissions:
 
 concurrency:
   group: publish-media-archiver-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
         with:
@@ -47,13 +51,77 @@ jobs:
           git commit -m "build: assemble userscript"
           git pull --rebase origin main
           git push origin HEAD:main
-      - name: Upload installable artifacts
+      - name: Prepare release metadata
+        id: release
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          sha256sum \
+            media-archiver.user.js \
+            dist/media-archiver-chromium-${VERSION}.zip \
+            dist/media-archiver-firefox-${VERSION}.zip \
+            > SHA256SUMS.txt
+          cat > RELEASE_NOTES.md <<EOF
+          # Media Archiver ${VERSION}
+
+          Installable builds:
+
+          - **media-archiver.user.js** — Tampermonkey userscript
+          - **media-archiver-chromium-${VERSION}.zip** — Chromium extension package
+          - **media-archiver-firefox-${VERSION}.zip** — Firefox extension package
+          - **SHA256SUMS.txt** — integrity checksums
+
+          Highlights:
+
+          - Quick archive and Review before archive workflows
+          - Fullscreen file-manager Library with persistent multi-selection
+          - Discord and Pinterest rendered-media archiving
+          - Reddit post-detail comment-media support for photos, GIFs and videos; comment text is not exported
+          - Optional VirusTotal SHA-256 lookup and consent-gated upload of unknown files before ZIP creation
+          - Chromium and Firefox packages generated from the same shared source
+
+          VirusTotal is disabled by default. Standard uploads may be shared with VirusTotal security partners. Configure an API key and explicit upload consent inside Media Archiver only when that trade-off is acceptable.
+          EOF
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          git fetch --tags --force
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag "$TAG" HEAD
+            git push origin "$TAG"
+          fi
+          ASSETS=(
+            media-archiver.user.js
+            "dist/media-archiver-chromium-${VERSION}.zip"
+            "dist/media-archiver-firefox-${VERSION}.zip"
+            SHA256SUMS.txt
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "Media Archiver ${VERSION}" \
+              --notes-file RELEASE_NOTES.md
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --verify-tag \
+              --title "Media Archiver ${VERSION}" \
+              --notes-file RELEASE_NOTES.md
+          fi
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: media-archiver-${{ github.sha }}
+          name: media-archiver-${{ steps.release.outputs.version }}
           path: |
             media-archiver.user.js
             dist/media-archiver-chromium-*.zip
             dist/media-archiver-firefox-*.zip
+            SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 90
