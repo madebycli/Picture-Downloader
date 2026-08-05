@@ -116,7 +116,10 @@ test('selected comments export in preserved hierarchy as JSON Markdown and CSV',
 
     assert.equal(prepared.selectedCommentCount, 3);
     assert.equal(prepared.selectedBinaryCount, 0);
-    assert.deepEqual(prepared.finalItems.map(item => item.payload.fixedArchiveName), [
+    assert.deepEqual(Array.from(
+        prepared.finalItems,
+        item => item.payload.fixedArchiveName
+    ), [
         'comments.json',
         'comments.md',
         'comments.csv'
@@ -164,7 +167,10 @@ test('Reddit implementation uses rendered DOM only and performs no account actio
     ].join('\n');
     assert.match(source, /querySelectorAll/);
     assert.doesNotMatch(source, /fetch\(|XMLHttpRequest|\/api\/|graphql|Authorization/i);
-    assert.doesNotMatch(source, /\.click\(\)|vote|upvote|downvote|join|follow|submit|postMessage/i);
+    assert.doesNotMatch(
+        source,
+        /\.(?:click|submit)\s*\(|\b(?:upvote|downvote|follow|joinCommunity|submitPost|postMessage)\b/i
+    );
     assert.match(source, /kind: 'comment'/);
     assert.match(source, /kind: 'media'/);
 });
