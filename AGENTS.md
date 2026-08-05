@@ -19,6 +19,8 @@ Before implementing roadmap work, read:
 - `docs/CURRENT_STATE_AUDIT.md`
 - `docs/IMPLEMENTATION_PLAN.md`
 - `docs/NAMING_SYSTEM.md`
+- `docs/DIAGNOSTICS_AND_LIVE_STATS.md`
+- `docs/ROADMAP_REQUIREMENTS_CHECKLIST.md`
 - `docs/PROJECT_CONTEXT.md`
 - `docs/ARCHITECTURE.md`
 - `docs/ADAPTERS.md`
@@ -35,7 +37,7 @@ Current userscript layout:
 - `src/build-manifest.json` defines assembly order and the generated output name.
 - `npm run build` assembles `media-archiver.user.js`.
 
-The roadmap migrates this incrementally toward shared domain, runtime, UI, archive, selection, and adapter modules. Never edit a generated release artifact without making the equivalent source-module change.
+The roadmap migrates this incrementally toward shared domain, runtime, UI, archive, selection, diagnostics, and adapter modules. Never edit a generated release artifact without making the equivalent source-module change.
 
 ## Architecture boundaries
 
@@ -45,6 +47,7 @@ Shared/core code owns:
 - filtering, ordering, and final manual selection
 - generic virtual-timeline scanning
 - collision-safe archive naming
+- structured diagnostics and live session metrics
 - downloads, retries, and ZIP creation through a runtime contract
 - workflow state
 - the shared launcher and library interface
@@ -59,13 +62,16 @@ An adapter owns:
 - source URL normalization
 - allowed download hosts
 - archive context, safe source labels, and site terminology
+- sanitized adapter-specific diagnostic context
 
 A runtime owns:
 
 - cross-origin binary transport
 - cancellation
 - downloads/blob saving
+- clipboard implementation
 - settings storage
+- safe browser/platform metadata
 - extension/content/background messaging where applicable
 
 Do not add site selectors, URL rules, epochs, or host checks to shared/core modules. Do not add Tampermonkey, Chromium, or Firefox globals to shared modules.
@@ -88,6 +94,11 @@ Do not add site selectors, URL rules, epochs, or host checks to shared/core modu
 14. Keep current Firefox and Chromium-based browsers supported.
 15. Produce and validate the universal userscript, Chromium extension, and Firefox extension from shared source.
 16. Keep release notes in repository documentation, not in the runtime interface.
+17. Treat the observed slow visible counters in the current 6.0 userscript as a regression.
+18. During foreground scanning, downloading, and ZIP creation, visible primary statistics must never remain stale for more than one second under normal operation.
+19. The one-second metric heartbeat must not rebuild the complete media library or reload thumbnails.
+20. User-facing and developer logs must be selectable, copyable, and downloadable as a sanitized Markdown report.
+21. Diagnostic exports must redact signed URL parameters, credentials, private page content, and other sensitive data by default.
 
 ## Naming rules
 
@@ -100,16 +111,35 @@ Do not add site selectors, URL rules, epochs, or host checks to shared/core modu
 - Preview, retries, manifests, downloads, and all ZIP parts must use the same immutable naming plan.
 - Same input order and settings must produce the same names in all three runtime targets.
 
+## Diagnostics and live-stat rules
+
+`docs/DIAGNOSTICS_AND_LIVE_STATS.md` is authoritative.
+
+- Update visible lightweight statistics at least once per second during active foreground work.
+- Acceptance tests measure DOM-visible values, not only internal function calls.
+- Keep live metrics in a runtime-neutral source-of-truth model.
+- Separate metric refresh from media-card rendering.
+- Do not re-sort or replace the complete library on the heartbeat.
+- Perform an immediate exact refresh at phase completion and when a hidden tab becomes visible again.
+- Keep ordinary Activity concise and put structured details behind **Developer logs**.
+- Use stable diagnostic codes for important failures.
+- Provide one-click Copy activity, Copy developer report, and Download `.md` actions.
+- Make log text explicitly selectable regardless of host-page CSS.
+- Redact sensitive URLs, parameters, credentials, private content, source labels, and local paths from exported diagnostics.
+- The same diagnostic event schema and Markdown report structure must work in all three runtime targets.
+
 ## UI rules
 
 - Group controls by user task, not implementation detail.
 - Keep the primary status visible while setup, library/media, and activity are separated.
 - Keep ordinary controls simple and expose power-user options progressively.
 - The File naming control must show a preset and live preview; template editing is advanced.
+- Keep Activity readable and concise; expose raw technical context only through Developer logs.
+- Activity must provide Copy, Download `.md`, Developer logs, and Clear actions, using an overflow menu where space is limited.
 - Avoid long explanatory paragraphs in the runtime UI.
 - Use adapter labels only for current-site context; never put a site name in the product title.
 - Keep UI strings and logs in English until a localization system exists.
-- Preserve keyboard-accessible controls, meaningful labels, focus management, and reduced-motion behavior.
+- Preserve keyboard-accessible controls, meaningful labels, focus management, selectable logs, and reduced-motion behavior.
 
 ## Change rules
 
@@ -132,6 +162,13 @@ Always test at least:
 - identical naming fixtures across all three outputs
 - old Windows duplicate-stem regression with `.jpg`, `.jpeg`, and `.png`
 - sequence continuity across media types and multiple ZIP parts
+- visible statistics no more than one second stale during a synthetic active scan
+- one-second heartbeat does not rebuild the media grid or reload thumbnails
+- immediate live-stat refresh after returning from a throttled background tab
+- selectable Activity and Developer log text
+- Copy activity, Copy developer report, and Download `.md`
+- sanitization/redaction of signed URLs and private content in diagnostic exports
+- stable error codes for scan, network, naming, ZIP, runtime, and adapter failures
 - each enabled media category alone and mixed
 - fixed date range and latest-available mode
 - all supported scan directions
@@ -141,4 +178,4 @@ Always test at least:
 - unsupported pages do not inject the interface
 - adapter host restrictions block undeclared download URLs
 
-See `docs/TESTING.md` and `docs/NAMING_SYSTEM.md` for the complete matrices.
+See `docs/TESTING.md`, `docs/NAMING_SYSTEM.md`, `docs/DIAGNOSTICS_AND_LIVE_STATS.md`, and `docs/ROADMAP_REQUIREMENTS_CHECKLIST.md` for the complete matrices.
