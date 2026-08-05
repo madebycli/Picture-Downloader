@@ -7,7 +7,7 @@ Maintain a browser-only, adapter-driven Tampermonkey userscript that archives me
 ## Canonical source
 
 - `src/core/*.user.js.part` contains site-neutral runtime modules.
-- `src/adapters/*.user.js.part` contains site integrations.
+- `src/adapters/**/*.user.js.part` contains site integrations.
 - `src/adapters/manifest.json` declares adapter modules, `@match` patterns, and allowed download hosts.
 - `src/build-manifest.json` defines assembly order and the generated output name.
 - `npm run build` assembles `media-archiver.user.js`.
