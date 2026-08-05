@@ -110,7 +110,7 @@ test('compact panel exposes four tabs and hides chronology in date mode', async 
 
     await page.locator('label.ma-switch').click();
     await expect(page.locator('#ma-date-filter')).toBeChecked();
-    await expect(page.locator('#ma-scan-direction').closest('label')).toBeHidden();
+    await expect(page.locator('#ma-scan-direction').locator('xpath=..')).toBeHidden();
     await expect(page.locator('#ma-start')).toContainText('interval');
 
     await page.locator('[data-ma-tab="archive"]').click();
