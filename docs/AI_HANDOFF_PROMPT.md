@@ -1,28 +1,41 @@
 # AI handoff prompt
 
-Copy the prompt below into a new coding-agent conversation. The agent must have access to the repository `madebycli/Picture-Downloader`.
+Copy the prompt below into a fresh coding-agent conversation. The agent must have read/write access to `madebycli/Picture-Downloader`.
 
 ---
 
-## Prompt
+## Prompt for the new implementation agent
 
 Du arbeitest am privaten GitHub-Repository:
 
 `https://github.com/madebycli/Picture-Downloader`
 
-Dein Auftrag ist, die in `docs/IMPLEMENTATION_PLAN.md` beschriebene nächste Produktphase vollständig und schrittweise umzusetzen:
+Dein Auftrag ist, die nächste Media-Archiver-Produktphase vollständig, schrittweise und testbar umzusetzen.
 
-- bestehendes Tampermonkey-Userscript weiterhin unterstützen;
-- zusätzliche Chromium- und Firefox-Extension-Builds erstellen;
-- eine echte manuelle Dateimanager-Auswahl mit großem Grid-/Listen-Modal implementieren;
-- Pinterest als neuen Adapter implementieren;
-- Reddit-Post-Kommentarthreads unterstützen und ausgewählte Kommentare exportieren;
-- Discord-Regressionsfreiheit bewahren;
-- alle Sicherheits- und Architekturgrenzen einhalten.
+Die drei gleichwertigen Zielartefakte sind:
 
-### Zwingende Kontextphase — noch nichts ändern
+1. universelles Userscript;
+2. Chromium-Extension;
+3. Firefox-Extension.
 
-Bevor du Code, Dokumentation, Manifeste oder Workflows veränderst, musst du **alle** folgenden Dateien vollständig lesen:
+Das Userscript bleibt dauerhaft unterstützt und darf durch den Extension-Ausbau nicht ersetzt oder beschädigt werden.
+
+Die Produktphase umfasst mindestens:
+
+- gemeinsame Runtime-/Domain-Architektur;
+- bestehende Discord-Regressionsfreiheit;
+- Pinterest-Adapter;
+- Reddit-Kommentar-Thread-Adapter, nicht Reddit-Feeds oder For You;
+- großes Library-Modal mit Grid/List und Dateimanager-Auswahl;
+- kollisionssicheres, konfigurierbares Benennungssystem;
+- strukturierte Activity- und Developer-Logs;
+- Copy- und Markdown-Diagnoseexport;
+- sichtbare Live-Statistiken mit höchstens einer Sekunde Verzögerung;
+- Tests, CI, Dokumentation und reproduzierbare Builds für alle drei Ziele.
+
+## Zwingende Kontextphase — noch nichts verändern
+
+Bevor du Code, Dokumentation, Manifeste, Workflows oder generierte Artefakte veränderst, musst du **alle** folgenden Dateien vollständig lesen:
 
 1. `AGENTS.md`
 2. `.github/copilot-instructions.md`
@@ -32,53 +45,72 @@ Bevor du Code, Dokumentation, Manifeste oder Workflows veränderst, musst du **a
 6. `docs/PROJECT_CONTEXT.md`
 7. `docs/CURRENT_STATE_AUDIT.md`
 8. `docs/IMPLEMENTATION_PLAN.md`
-9. `docs/ARCHITECTURE.md`
-10. `docs/ADAPTERS.md`
-11. `docs/DECISIONS.md`
-12. `docs/TESTING.md`
-13. `docs/RELEASE.md`
-14. `docs/TROUBLESHOOTING.md`
-15. `src/build-manifest.json`
-16. `src/adapters/manifest.json`
-17. `scripts/assemble-userscript.mjs`
-18. `scripts/check-userscript.mjs`
-19. `scripts/smoke-unsupported-page.mjs`
-20. `package.json`
+9. `docs/NAMING_SYSTEM.md`
+10. `docs/DIAGNOSTICS_AND_LIVE_STATS.md`
+11. `docs/ROADMAP_REQUIREMENTS_CHECKLIST.md`
+12. `docs/ARCHITECTURE.md`
+13. `docs/ADAPTERS.md`
+14. `docs/DECISIONS.md`
+15. `docs/TESTING.md`
+16. `docs/RELEASE.md`
+17. `docs/TROUBLESHOOTING.md`
+18. `src/build-manifest.json`
+19. `src/adapters/manifest.json`
+20. `scripts/assemble-userscript.mjs`
+21. `scripts/check-userscript.mjs`
+22. `scripts/smoke-unsupported-page.mjs`
+23. `package.json`
 
-Danach musst du außerdem die aktuellen Module unter diesen Verzeichnissen lesen:
+Danach liest du außerdem vollständig:
 
-- `src/core/`
-- `src/adapters/discord/`
-- `.github/workflows/`
+- alle aktuellen Module unter `src/core/`;
+- alle aktuellen Module unter `src/adapters/discord/`;
+- alle Dateien unter `.github/workflows/`;
+- bestehende Tests und Fixtures, falls inzwischen vorhanden.
 
-Deine **erste Antwort** muss ausschließlich enthalten:
+### Deine erste Antwort
 
-1. eine Checkliste aller gelesenen Dateien;
+Deine erste Antwort darf ausschließlich enthalten:
+
+1. eine Checkliste aller gelesenen Dateien und Verzeichnisse;
 2. eine Zusammenfassung der aktuellen Architektur in höchstens 15 Punkten;
-3. die wichtigsten fünf Risiken der geplanten Änderung;
-4. den von dir vorgesehenen Branch-Namen und die geplante Commit-Reihenfolge;
-5. offene Punkte, die tatsächlich blockieren würden.
+3. eine Bestätigung, dass du die drei Zielartefakte verstanden hast;
+4. eine Bestätigung, dass `NAMING_SYSTEM.md`, `DIAGNOSTICS_AND_LIVE_STATS.md` und `ROADMAP_REQUIREMENTS_CHECKLIST.md` verbindlich sind;
+5. die wichtigsten fünf technischen Risiken;
+6. den vorgesehenen Branch-Namen;
+7. die geplante Commit-Reihenfolge;
+8. echte Blocker oder offene Entscheidungen, die vor einem Edit geklärt werden müssen.
 
 Erst nach dieser Kontextbestätigung darfst du Dateien verändern.
 
-Wenn Prompt und Repository-Dokumentation widersprechen, gilt folgende Priorität:
+### Priorität bei Widersprüchen
 
 1. `AGENTS.md` und `SECURITY.md`;
-2. `docs/IMPLEMENTATION_PLAN.md`;
-3. `docs/ARCHITECTURE.md`, `docs/ADAPTERS.md`, `docs/TESTING.md`;
-4. dieser Prompt.
+2. `docs/ROADMAP_REQUIREMENTS_CHECKLIST.md`;
+3. `docs/IMPLEMENTATION_PLAN.md`, `docs/NAMING_SYSTEM.md` und `docs/DIAGNOSTICS_AND_LIVE_STATS.md`;
+4. `docs/ARCHITECTURE.md`, `docs/ADAPTERS.md` und `docs/TESTING.md`;
+5. dieser Prompt.
 
-### Vor dem ersten Edit
+## Vor dem ersten Edit
 
-Führe auf dem unveränderten `main` aus:
+Führe auf unverändertem `main` aus:
 
 ```bash
 npm test
 ```
 
-Dokumentiere den Ausgangszustand. Wenn der Test bereits fehlschlägt, untersuche und dokumentiere die Ursache, bevor du Roadmap-Code hinzufügst.
+Dokumentiere:
 
-Erstelle danach einen Arbeitsbranch:
+- Commit-SHA;
+- Testergebnis;
+- aktuellen Userscript-Build;
+- aktuelle Version;
+- vorhandene Warnungen;
+- welche manuellen Browsertests nicht ausführbar waren.
+
+Wenn der Baseline-Test fehlschlägt, untersuche und dokumentiere zuerst die Ursache. Verstecke bestehende Fehler nicht hinter Roadmap-Änderungen.
+
+Erstelle danach einen Arbeitsbranch, beispielsweise:
 
 ```text
 feature/extension-pinterest-reddit-picker
@@ -86,123 +118,222 @@ feature/extension-pinterest-reddit-picker
 
 Arbeite nicht direkt auf `main`.
 
-### Nicht verhandelbare Regeln
+## Nicht verhandelbare Sicherheits- und Architekturregeln
 
-- Bearbeite `media-archiver.user.js` niemals direkt. Es ist ein generiertes Artefakt.
+- Bearbeite `media-archiver.user.js` niemals direkt; es ist generiert.
 - Ändere Quellen unter `src/`, Buildskripte, Tests und Dokumentation.
 - Extrahiere, lies, logge oder speichere niemals Tokens, Cookies, Zugangsdaten oder Authorization-Header.
 - Verwende keine undokumentierten authentifizierten Discord-, Pinterest- oder Reddit-APIs zur Inhaltserfassung.
-- Sammle nur Inhalte, die die unterstützte Seite für den angemeldeten Browser bereits gerendert oder durch eine ausdrückliche, sichere Benutzeraktion nachgeladen hat.
+- Sammle nur Inhalte, die die unterstützte Seite bereits gerendert oder durch eine ausdrückliche sichere DOM-Aktion nachgeladen hat.
 - Führe keine Account-Aktionen aus: kein Posten, Voten, Reagieren, Folgen, Beitreten oder Messaging.
-- Site-spezifische Selektoren, Hosts, IDs, Zeitregeln und Terminologie gehören ausschließlich in Adapter.
-- Shared/Core-Code darf keine Discord-, Pinterest- oder Reddit-Hostnamen oder DOM-Selektoren enthalten.
-- Jede Download-URL muss sowohl durch Build-Permissions als auch zur Laufzeit durch den aktiven Adapter erlaubt sein.
+- Site-spezifische Selektoren, Hosts, IDs, Zeitregeln, URL-Regeln und Terminologie gehören ausschließlich in Adapter.
+- Shared-Code darf keine Discord-, Pinterest- oder Reddit-Hosts/Selektoren enthalten.
+- Jede Download-URL muss durch Build-Permissions und aktive Runtime-Allowlist erlaubt sein.
 - Behalte den eingebauten ZIP-Fallback bei.
-- UI-Strings und Logs bleiben vorerst Englisch.
-- Changelog- oder Release-Notizen dürfen nicht in die Runtime-UI gelangen.
-- Beachte `prefers-reduced-motion` und vollständige Tastaturbedienung.
-- Halte Firefox und Chromium funktionsfähig.
+- Runtime-UI bleibt site-neutral und vorerst englisch.
+- Changelog- oder Release-Inhalte dürfen nicht in die Runtime-UI gelangen.
+- Beachte Tastaturzugänglichkeit, Focus Management und `prefers-reduced-motion`.
+- Halte Userscript, Chromium und Firefox funktional und verhaltensgleich.
 
-### Vorgehensweise
+## Verbindliche Produktanforderungen
 
-Setze die Roadmap in den Phasen aus `docs/IMPLEMENTATION_PLAN.md` um. Überspringe keine Phase und halte das Userscript nach jedem Meilenstein lauffähig.
+### 1. Gemeinsame Runtime und drei Builds
 
-#### Phase 0: Fixtures und Baseline
+Führe einen Runtime-Contract ein für:
 
-- Erstelle nur sanitierte, minimale DOM-Fixtures.
-- Übernimm keine vollständigen privaten Browser-Snapshots in das Repository.
-- Entferne Benutzernamen, Servernamen, private Texte, Tokens und irrelevante Skripte.
-- Lege erwartete Adapterergebnisse als Tests fest.
-
-#### Phase 1: Shared Runtime und Domain
-
-- Führe einen Runtime-Contract ein.
-- Verschiebe `GM_xmlhttpRequest` und Runtime-spezifische Downloads aus Shared/Core-Code in den Userscript-Bridge.
-- Führe den allgemeinen Archive-Item-Contract ein.
-- Führe Adapter-Capabilities ein.
-- Bewahre die aktuelle Discord-Funktionalität.
-
-#### Phase 2: Manuelle Auswahl und Library-Modal
-
-Implementiere eine vom Typ-/Datumsfilter unabhängige manuelle Auswahl.
-
-Verhalten:
-
-- Alle geeigneten Einträge starten ausgewählt, damit das aktuelle Verhalten erhalten bleibt.
-- Plain click: nur dieses Element auswählen und Range-Anchor setzen.
-- Checkbox/Checkmark click: Element toggeln, ohne andere zu löschen.
-- Ctrl+click unter Windows/Linux: additive Einzelumschaltung.
-- Cmd+click unter macOS: additive Einzelumschaltung.
-- Shift+click: zusammenhängenden Bereich auswählen.
-- Ctrl/Cmd+Shift+click: Bereich additiv auswählen.
-- Ctrl/Cmd+A: alle geeigneten Elemente der aktuellen Ansicht auswählen.
-- Space: fokussiertes Element toggeln.
-- Escape: Modal schließen.
-
-Verwende **nicht Alt** für Bereichsauswahl.
-
-Baue:
-
-- kompakten Launcher/Status;
-- großes zentriertes Library-Modal;
-- Grid-/Listen-Umschaltung;
-- Suche, Sortierung und Filter;
-- Select all visible, select all eligible, none und invert;
-- Download/archive selected;
-- rote, hochwertige Auswahlmarkierung mit Ring, Overlay, Check-Badge und kurzer Animation;
-- reduzierte Animation bei `prefers-reduced-motion`;
-- Focus Trap, ARIA-Dialog und Tastaturnavigation;
-- performante Darstellung für mindestens 2.000 synthetische Einträge.
-
-Die Auswahlmarkierung darf nur in der Media-Archiver-UI erscheinen, nicht direkt auf Discord, Pinterest oder Reddit.
-
-#### Phase 3: Extension Builds
+```js
+runtime.fetchBinary(url, options)
+runtime.abortRequest(requestId)
+runtime.abortAllRequests()
+runtime.saveBlob(blob, filename)
+runtime.copyText(text)
+runtime.getSetting(key, fallback)
+runtime.setSetting(key, value)
+runtime.getPlatformInfo()
+runtime.openUi()
+runtime.closeUi()
+```
 
 Erzeuge aus derselben Shared-Source:
 
-- Tampermonkey-Userscript;
+- Userscript;
 - Chromium-Extension;
 - Firefox-Extension.
 
-Implementiere:
+Die Extensions benötigen Content Script, Background Runtime, Messaging, Settings Storage, Toolbar Action und minimale generierte Host-Permissions. Es darf kein remote ausgeführtes JavaScript enthalten sein.
 
-- Content Script;
-- Background Runtime;
-- Runtime-Messaging;
-- Cross-Origin-Binary-Fetch mit Cancellation;
-- Settings Storage;
-- Toolbar Action zum Öffnen der Shared UI;
-- generierte minimale Host-Permissions aus dem Adaptermanifest;
-- reproduzierbare Extension-ZIP-Artefakte.
+Vor der endgültigen Transportentscheidung testest du mindestens:
 
-Führe vor der endgültigen Transportentscheidung einen Spike mit mindestens einem 50-MB-Video und mindestens 300 MB Gesamtdaten durch. Dokumentiere Speicherverhalten und Cancellation in Firefox und Chromium.
+- ein Video über 50 MB;
+- mindestens 300 MB Gesamtdaten;
+- Cancellation;
+- Speicherverhalten in Firefox und Chromium;
+- ZIP-Speicherung aus dem gewählten Extension-Kontext.
 
-Die Extension darf kein remote ausgeführtes JavaScript enthalten.
+### 2. Allgemeines Archivobjektmodell
 
-#### Phase 4: Pinterest Adapter
+Reddit-Kommentare dürfen nicht als Medien-Dateityp getarnt werden. Verwende ein allgemeines `ArchiveItem`-Modell mit unterschiedlichen `kind`-Werten und kind-spezifischen Handlern.
 
-Initialer Scope:
+Finale Archivaufnahme ist immer:
 
-- Pin-Detail;
-- Boards;
-- sichtbare Profile-Grids;
-- Suchergebnisse.
+```text
+eligible && manuallySelected
+```
+
+### 3. Manuelle Dateimanager-Auswahl
+
+Implementiere eine unabhängige Auswahlablage mit stabilen Keys.
+
+Verhalten:
+
+- alle geeigneten Einträge starten ausgewählt;
+- Plain click: nur dieses Element auswählen und Range-Anchor setzen;
+- Checkmark click: ein Element toggeln, ohne andere zu löschen;
+- Ctrl+click: additive Einzelumschaltung unter Windows/Linux;
+- Cmd+click: additive Einzelumschaltung unter macOS;
+- Shift+click: zusammenhängenden Bereich auswählen;
+- Ctrl/Cmd+Shift+click: Bereich additiv auswählen;
+- Ctrl/Cmd+A: alle geeigneten Einträge der aktuellen Ansicht;
+- Space: fokussiertes Element toggeln;
+- Escape: Modal schließen;
+- Pfeiltasten: Fokusnavigation.
+
+Verwende nicht Alt für die Bereichsauswahl.
+
+Baue ein großes zentriertes Library-Modal mit:
+
+- Grid/List;
+- Suche;
+- Sortierung;
+- Filtern;
+- Select all visible;
+- Select all eligible;
+- none;
+- invert;
+- archive selected;
+- roter hochwertiger Auswahlmarkierung mit Ring, Overlay, Check-Badge und kurzer Animation;
+- reduzierter Animation bei `prefers-reduced-motion`;
+- ARIA-Dialog, Focus Trap und vollständiger Tastaturbedienung.
+
+Auswahlmarkierungen erscheinen nur in Media Archiver, nie direkt auf Discord, Pinterest oder Reddit.
+
+Die Ansicht muss mit mindestens 2.000 synthetischen Einträgen flüssig bleiben. Ein Toggle darf nicht die komplette Bibliothek neu aufbauen.
+
+### 4. Kollisionssicheres Benennungssystem
+
+`docs/NAMING_SYSTEM.md` ist vollständig umzusetzen.
+
+Wichtigster Regressionstest:
+
+```text
+Forbidden:
+000001.jpg
+000001.jpeg
+000001.png
+
+Required:
+000001.jpg
+000002.jpeg
+000003.png
+```
+
+Plane alle finalen Namen vor Downloads zentral. Verwende denselben unveränderlichen Namensplan für Vorschau, Retries, Downloads, Manifeste und alle ZIP-Teile.
+
+Unterstütze eine saubere File-naming-UI mit:
+
+- Numbered — newest to oldest als Standard;
+- Source date/time;
+- Source + date + number;
+- Original + number;
+- sicherem Advanced-Template hinter Customize;
+- Live-Vorschau;
+- Windows- und plattformübergreifender Sanitization;
+- echten unveränderten Dateiendungen;
+- identischen Ergebnissen in allen drei Zielartefakten.
+
+### 5. Eine Sekunde Live-Statistiken — konkrete 6.0-Regression
+
+`docs/DIAGNOSTICS_AND_LIVE_STATS.md` ist vollständig umzusetzen.
+
+Tester haben in der aktuellen 6.0-Version beobachtet, dass sichtbare Zähler teilweise erst nach ungefähr zehn Sekunden aktualisiert werden. Es reicht nicht, dass intern häufig `updateCounters()` aufgerufen wird.
+
+Verbindliches Ziel:
+
+> Während eines aktiven Vordergrund-Scans, Downloads oder ZIP-Vorgangs darf die DOM-sichtbare Statistik unter normalen Bedingungen höchstens eine Sekunde hinter dem internen Zustand liegen.
 
 Anforderungen:
 
-- nur gerenderte Medien;
-- höchste tatsächlich gerenderte Bild-/Videoquelle, ohne URLs zu erfinden;
-- stabile Pin-/Medienkeys;
-- Deduplizierung bei Masonry-Re-Rendering;
-- minimale Host-Allowlist;
-- keine privaten APIs;
-- nur unterstützte Scanmodi anzeigen;
-- Datumsfilter deaktivieren, wenn kein verlässlicher gerenderter Zeitstempel existiert;
-- Fixture- und Live-Regressionstests.
+- leichte Heartbeat-Aktualisierung alle 500–1000 ms;
+- Found, Eligible/In range, Selected, Downloaded, Saved, Skipped, Errors, Bytes, aktuelles Element/ZIP-Teil und Laufzeit;
+- Test misst DOM-sichtbare Werte;
+- keine komplette Grid/List-Neuerstellung pro Sekunde;
+- keine Thumbnail-Neuladung durch Metrik-Updates;
+- Dirty/Version-Flags für fast leere Heartbeats;
+- Timer nur während aktiver Arbeit;
+- sofortiger exakter Flush bei Phasenende;
+- sofortiger exakter Flush bei Rückkehr aus einem gedrosselten Background-Tab;
+- gemeinsames Runtime-neutrales Metrikmodell für alle drei Targets.
 
-#### Phase 5: Reddit Comments Adapter
+Erstelle einen synthetischen Test über mindestens zwölf Sekunden, bei dem regelmäßig neue Einträge erscheinen. Der sichtbare Zähler darf nie mehr als eine Sekunde veraltet sein.
 
-Aktiviere ausschließlich auf Post-Detail-/Kommentar-Thread-Seiten. Nicht auf Home, Popular, Subreddit-Feed, Search-Feed oder Recommendation-Seiten.
+### 6. Activity und Developer Logs
+
+Ordinary Activity bleibt kurz und nutzerfreundlich.
+
+Aktionsleiste:
+
+```text
+Copy | Download .md | Developer logs | Clear
+```
+
+Anforderungen:
+
+- Logtext explizit markierbar (`user-select: text`);
+- strukturierter Event Store als Quelle, nicht DOM-Text;
+- stabile Fehlercodes;
+- Kategorien und Levels;
+- Such-/Filterfunktionen;
+- expandable details;
+- Copy activity;
+- Copy sanitized developer report;
+- Download sanitized UTF-8 Markdown report;
+- Clipboard-Fallback mit weiterhin auswählbarem Text;
+- begrenzte Event-Speicherung, ohne wichtige Fehler zu verdrängen.
+
+Diagnoseberichte müssen standardmäßig redigieren:
+
+- URL-Query/Fragmente;
+- signierte CDN-Parameter;
+- Tokens/Cookies/Authorization;
+- private Nachrichten- oder Kommentartexte;
+- private Source-Labels/Benutzernamen;
+- lokale Dateipfade;
+- unnötige Extension-IDs.
+
+Fehler müssen sagen:
+
+- was fehlgeschlagen ist;
+- welche Dateien betroffen sind;
+- ob der Lauf fortgesetzt wurde;
+- was der Nutzer versuchen kann;
+- stabiler Referenzcode.
+
+### 7. Pinterest
+
+Initialer Scope:
+
+- Pin detail;
+- Boards;
+- sichtbare Profile-Grids;
+- Search results.
+
+Nicht sofort der personalisierte Homefeed.
+
+Nur gerenderte Medien. Höchste tatsächlich gerenderte Quelle, stabile Keys, Masonry-Deduplizierung, minimale Hosts, keine privaten APIs. Datumsfilter nur bei verlässlichen gerenderten Zeitstempeln.
+
+### 8. Reddit Comments
+
+Aktiviere ausschließlich auf Post-Detail-/Kommentar-Thread-Seiten, niemals auf Home, Popular, Subreddit-Feeds, Suchempfehlungen oder For You.
 
 Sammle gerenderte Kommentare mit:
 
@@ -211,49 +342,93 @@ Sammle gerenderte Kommentare mit:
 - Tiefe;
 - Autor wie gerendert;
 - Body als Plain Text;
-- optional sanitisiertes Body-HTML;
+- optional sanitisiertes HTML;
 - Zeitstempel;
 - sichtbarer Score-Text;
 - Permalink;
-- gerenderte Medien innerhalb des Kommentars.
+- gerenderte Medien im Kommentar.
 
-Exportiere ausgewählte Kommentare als:
+Exportiere nur manuell ausgewählte Kommentare als:
 
 - `comments.json`;
 - `comments.md`;
 - `comments.csv`.
 
-Erhalte die Hierarchie. Behandle gelöschte, eingeklappte, bearbeitete und verschachtelte Kommentare robust. Exportiere nur manuell ausgewählte Kommentare. Account-Aktionen und authentifizierte API-Aufzählung sind verboten.
+Erhalte die Hierarchie und behandle gelöschte, eingeklappte, bearbeitete und verschachtelte Kommentare robust. Keine Account-Aktionen und keine API-Aufzählung.
 
-#### Phase 6: Tests, CI und Dokumentation
+## Umsetzungsphasen
 
-Ergänze:
+Halte das Userscript nach jedem Meilenstein lauffähig.
 
-- Unit-Tests für Auswahl-Reducer, Range Selection und Archive Handler;
-- DOM-Fixture-Tests für Discord, Pinterest und Reddit Comments;
-- Extension-Manifestvalidierung;
-- Userscript- und Extension-Buildjobs;
-- Playwright-Tests für Modal, Grid/List und Tastaturauswahl;
-- CI-Artefakte für Chromium- und Firefox-Pakete;
-- aktualisierte README-, Architektur-, Adapter-, Test-, Security-, Release- und Troubleshooting-Dokumentation.
+### Phase 0 — Baseline und Fixtures
 
-### Technische Qualitätsanforderungen
+- unverändertes `npm test`;
+- aktuelles 6.0-Verhalten dokumentieren;
+- langsame sichtbare Stats als Regression reproduzieren;
+- Windows-Duplicate-Stem-Regression erfassen;
+- minimale anonymisierte Discord-, Pinterest- und Reddit-DOM-Fixtures;
+- keine vollständigen privaten Browser-Snapshots.
 
-- Keine vollständige Listen-Neuerstellung bei jedem einzelnen Selection Toggle.
-- Auswahlzustand lebt außerhalb der DOM-Karten.
-- Stabile Keys und batched updates.
-- Lazy Loading und begrenzte Video-Vorschauen.
-- Keine unbeschränkte Parallelität.
-- Keine unnötig duplizierten großen ArrayBuffer.
-- Finaler Archive-Inhalt basiert auf `eligible && manuallySelected`.
-- Filteränderungen dürfen explizite Auswahl nicht stillschweigend löschen.
-- Shift-Range verwendet die aktuell sichtbare Sortier-/Filterreihenfolge.
-- Sortieränderungen müssen deterministisch sein.
-- Kommentare und Medien sind unterschiedliche Item-Kinds, keine Typ-Tricks.
+### Phase 1 — Shared Contracts
 
-### Tests nach jedem Meilenstein
+- Runtime-/Storage-Contract;
+- ArchiveItem und Adapter-Capabilities;
+- Naming-Service;
+- Diagnostics Store;
+- Live Metrics Store;
+- Userscript Runtime Bridge;
+- aktuelle Discord-Funktionalität bewahren.
 
-Führe mindestens aus:
+### Phase 2 — Shared UI
+
+- unabhängiger Selection Store;
+- Library Modal;
+- Grid/List und Range Selection;
+- File-naming-UI;
+- Activity actions;
+- Developer Logs;
+- one-second status heartbeat;
+- incremental card rendering;
+- Accessibility und reduced motion.
+
+### Phase 3 — Extension Builds
+
+- Chromium;
+- Firefox;
+- Messaging, Clipboard, Storage, Downloads;
+- identische Naming-/Diagnostics-/Metrics-Fixtures;
+- reproduzierbare Artefakte.
+
+### Phase 4 — Pinterest
+
+- deterministische Seiten;
+- Fixtures;
+- minimal permissions;
+- Live Regression Checklist.
+
+### Phase 5 — Reddit Comments
+
+- Post-thread only;
+- comments hierarchy and exports;
+- comment media;
+- Fixtures;
+- no feeds or account actions.
+
+### Phase 6 — Tests, CI, Dokumentation
+
+- Unit Tests;
+- DOM Fixtures;
+- Playwright UI Tests;
+- 1-second DOM-visible stats test;
+- diagnostics/redaction/copy/Markdown tests;
+- Windows naming regression;
+- all three build targets;
+- browser matrix;
+- README/Architecture/Adapters/Testing/Security/Release/Troubleshooting updates.
+
+## Tests nach jedem Meilenstein
+
+Mindestens:
 
 ```bash
 npm test
@@ -270,50 +445,66 @@ npm run build:extension:chromium
 npm run build:extension:firefox
 ```
 
-Behaupte niemals, dass etwas funktioniert, wenn der entsprechende Test nicht gelaufen ist. Liste nicht ausführbare manuelle Browserprüfungen ausdrücklich als noch offen auf.
+Behaupte niemals eine Funktion, ohne den passenden Test ausgeführt zu haben. Nicht ausführbare manuelle Browserprüfungen bleiben ausdrücklich offen.
 
-### Commits und Pull Request
+## Empfohlene Commit-Reihenfolge
 
-Nutze fokussierte Commits in dieser Reihenfolge:
+1. `test: add sanitized fixtures and 6.0 regression baselines`
+2. `refactor: introduce runtime archive and adapter contracts`
+3. `feat: add shared naming diagnostics and live metrics`
+4. `refactor: isolate userscript runtime bridge`
+5. `feat: add manual selection store and library modal`
+6. `feat: add naming and diagnostics UI`
+7. `build: add Chromium and Firefox extension targets`
+8. `feat: add Pinterest adapter`
+9. `feat: add Reddit comments adapter`
+10. `test: add cross-target UI timing and adapter suites`
+11. `docs: complete release and migration documentation`
 
-1. Fixtures/Baseline
-2. Runtime- und Domain-Contracts
-3. Userscript Runtime Bridge
-4. Selection Store
-5. Library Modal
-6. Extension Builds
-7. Pinterest Adapter
-8. Reddit Comments Adapter
-9. Tests/CI
-10. Dokumentation/Releasevorbereitung
+## Pull Request completeness gate
 
-Erstelle anschließend einen Pull Request gegen `main`.
+Vor dem PR musst du `docs/ROADMAP_REQUIREMENTS_CHECKLIST.md` Punkt für Punkt prüfen.
 
-Der PR-Body muss enthalten:
+Jeder nicht erledigte Punkt erhält einen sichtbaren Status:
+
+```text
+Implemented
+Tested automatically
+Tested manually
+Deferred with reason
+Out of scope with approval
+Blocked with evidence
+```
+
+Kein Punkt darf stillschweigend verschwinden.
+
+Der PR-Body enthält:
 
 - Architekturänderungen;
 - Nutzerfunktionen;
 - Adapter-Scope;
 - Permission-Änderungen;
 - Sicherheitsprüfung;
-- ausgeführte automatisierte Tests;
+- ausgeführte Tests;
 - manuelle Browsermatrix;
 - bekannte Einschränkungen;
-- Screenshots oder kurze Aufnahmen der Grid-/Listen-Auswahl;
-- Extension-Artefakte oder Workflow-Links.
+- Screenshots oder kurze Aufnahmen;
+- Links zu Userscript-, Chromium- und Firefox-Artefakten;
+- ausgefüllte Requirements-Checkliste.
 
-### Abschlussbericht
+## Abschlussbericht
 
 Deine letzte Antwort muss enthalten:
 
 1. PR-Link;
 2. Commit-Liste;
-3. geänderte Architektur;
+3. Architekturänderungen;
 4. umgesetzte Funktionen;
 5. Testergebnisse;
-6. noch offene manuelle Prüfungen;
+6. offene manuelle Prüfungen;
 7. bekannte Risiken;
-8. Installationswege für Userscript, Chromium und Firefox.
+8. Installationswege für Userscript, Chromium und Firefox;
+9. Status aller Punkte aus `ROADMAP_REQUIREMENTS_CHECKLIST.md`.
 
 Beginne jetzt ausschließlich mit der zwingenden Kontextphase. Verändere noch keine Datei.
 
