@@ -1,6 +1,6 @@
 name: Apply v6 refactor
 
-# Retry 2: corrected archive segment.
+# Retry 3: preserve workflow files during the Actions-authored commit.
 on:
   push:
     branches:
@@ -26,10 +26,9 @@ jobs:
           cat .migration/v6-part-* > /tmp/v6-refactor.tar.gz
           tar -xzf /tmp/v6-refactor.tar.gz
           rm -rf .migration
-          rm -f .github/workflows/apply-v6-refactor.yml
-          rm -f .github/workflows/export-source.yml
           rm -f discord-media-archiver.user.js
           rm -rf src/parts
+          git checkout -- .github/workflows/publish-userscript.yml
           npm test
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
