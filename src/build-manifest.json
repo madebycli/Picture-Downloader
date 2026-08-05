@@ -21,8 +21,13 @@
     "src/core/41-zip-engine.user.js.part",
     "src/core/42-archive-workflow.user.js.part",
     "src/core/50-workflow.user.js.part",
+    "src/core/55-library-controller.user.js.part",
     "src/core/60-ui-markup.user.js.part",
+    "src/core/60-library-markup.user.js.part",
+    "src/core/60-library-elements.user.js.part",
     "src/core/61-ui-style.user.js.part",
-    "src/core/62-ui-bindings.user.js.part"
+    "src/core/61-library-style.user.js.part",
+    "src/core/62-ui-bindings.user.js.part",
+    "src/core/63-library-bindings.user.js.part"
   ]
 }

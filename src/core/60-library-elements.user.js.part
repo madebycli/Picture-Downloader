@@ -1,0 +1,49 @@
+    const reviewBeforeRadio = panel.querySelector('#ma-review-before');
+    const openLibraryButton = panel.querySelector('#ma-open-library');
+    const duplicateCountElement = panel.querySelector('#ma-duplicate-count');
+    const downloadedCountElement = panel.querySelector('#ma-downloaded-count');
+    const bytesCountElement = panel.querySelector('#ma-bytes-count');
+    const elapsedElement = panel.querySelector('#ma-elapsed');
+
+    const namingPresetSelect = panel.querySelector('#ma-naming-preset');
+    const namingPreviewElement = panel.querySelector('#ma-naming-preview');
+    const namingCustomizeToggle = panel.querySelector('#ma-naming-customize');
+    const namingAdvancedElement = panel.querySelector('#ma-naming-advanced');
+    const namingTemplateWrap = panel.querySelector('#ma-naming-template-wrap');
+    const namingTemplateInput = panel.querySelector('#ma-naming-template');
+    const namingTimezoneSelect = panel.querySelector('#ma-naming-timezone');
+    const namingSequenceWidthInput = panel.querySelector('#ma-naming-sequence-width');
+    const namingErrorElement = panel.querySelector('#ma-naming-error');
+
+    const copyActivityButton = panel.querySelector('#ma-copy-activity');
+    const downloadReportButton = panel.querySelector('#ma-download-report');
+    const developerLogsButton = panel.querySelector('#ma-developer-logs');
+
+    const libraryDialogElement = libraryOverlay.querySelector('#ma-library-dialog');
+    const libraryCloseButton = libraryOverlay.querySelector('#ma-library-close');
+    const libraryCancelButton = libraryOverlay.querySelector('#ma-library-cancel');
+    const libraryArchiveButton = libraryOverlay.querySelector('#ma-library-archive');
+    const librarySearchInput = libraryOverlay.querySelector('#ma-library-search');
+    const librarySortSelect = libraryOverlay.querySelector('#ma-library-sort');
+    const libraryTypeFilter = libraryOverlay.querySelector('#ma-library-type-filter');
+    const libraryStatusFilter = libraryOverlay.querySelector('#ma-library-status-filter');
+    const libraryViewToggle = libraryOverlay.querySelector('#ma-library-view');
+    const libraryItemsElement = libraryOverlay.querySelector('#ma-library-items');
+    const libraryEmptyElement = libraryOverlay.querySelector('#ma-library-empty');
+    const librarySelectedCountElement = libraryOverlay.querySelector('#ma-library-selected-count');
+    const libraryEligibleCountElement = libraryOverlay.querySelector('#ma-library-eligible-count');
+    const libraryVisibleCountElement = libraryOverlay.querySelector('#ma-library-visible-count');
+    const libraryMessageElement = libraryOverlay.querySelector('#ma-library-message');
+    const selectVisibleButton = libraryOverlay.querySelector('#ma-select-visible');
+    const selectEligibleButton = libraryOverlay.querySelector('#ma-select-eligible');
+    const selectNoneButton = libraryOverlay.querySelector('#ma-select-none');
+    const selectInvertButton = libraryOverlay.querySelector('#ma-select-invert');
+
+    const developerCloseButton = developerLogsOverlay.querySelector('#ma-developer-close');
+    const developerSearchInput = developerLogsOverlay.querySelector('#ma-developer-search');
+    const developerLevelFilters = developerLogsOverlay.querySelectorAll('[data-ma-dev-level]');
+    const developerCategoryFilters = developerLogsOverlay.querySelectorAll('[data-ma-dev-category]');
+    const developerEventList = developerLogsOverlay.querySelector('#ma-developer-events');
+    const developerReportText = developerLogsOverlay.querySelector('#ma-developer-report');
+    const copyDeveloperButton = developerLogsOverlay.querySelector('#ma-copy-developer');
+    const downloadDeveloperButton = developerLogsOverlay.querySelector('#ma-download-developer');

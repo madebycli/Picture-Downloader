@@ -1,0 +1,238 @@
+    const existingAfterScanGroup = panel.querySelector('#ma-auto-zip')
+        ?.closest('.ma-compact-group');
+
+    const namingGroup = document.createElement('section');
+    namingGroup.className = 'ma-group';
+    namingGroup.innerHTML = `
+        <div class="ma-group-heading">
+            <div>
+                <h2>File naming</h2>
+                <p>Final names are planned once for the complete confirmed selection.</p>
+            </div>
+        </div>
+        <label class="ma-field-block">
+            <span>Preset</span>
+            <select id="ma-naming-preset">
+                <option value="numbered">Numbered — newest to oldest</option>
+                <option value="source-datetime">Source date/time</option>
+                <option value="source-date-number">Source + date + number</option>
+                <option value="original-number">Original + number</option>
+                <option value="custom">Custom template</option>
+            </select>
+        </label>
+        <div class="ma-naming-preview-wrap">
+            <span>Preview</span>
+            <strong id="ma-naming-preview">000001.jpg · 000002.mp4 · 000003.png</strong>
+            <small>Unique stems across all file types and ZIP parts. True extensions are preserved.</small>
+        </div>
+        <details id="ma-naming-customize" class="ma-disclosure">
+            <summary>Customize</summary>
+            <div id="ma-naming-advanced" class="ma-field-grid">
+                <label id="ma-naming-template-wrap" class="ma-field-wide">
+                    <span>Template</span>
+                    <input id="ma-naming-template" type="text" value="{sequence}" spellcheck="false">
+                </label>
+                <label>
+                    <span>Time zone</span>
+                    <select id="ma-naming-timezone">
+                        <option value="local">Local source time</option>
+                        <option value="utc">UTC</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Sequence width</span>
+                    <input id="ma-naming-sequence-width" type="number" min="6" max="12" value="6">
+                </label>
+            </div>
+        </details>
+        <div id="ma-naming-error" class="ma-inline-status ma-date-error" hidden></div>
+    `;
+
+    if (existingAfterScanGroup) {
+        existingAfterScanGroup.before(namingGroup);
+        existingAfterScanGroup.className = 'ma-group';
+        existingAfterScanGroup.innerHTML = `
+            <div class="ma-group-heading">
+                <div>
+                    <h2>After scan</h2>
+                    <p>Choose automatic archiving or review the deduplicated candidates first.</p>
+                </div>
+            </div>
+            <div class="ma-after-scan-options">
+                <label class="ma-mode-card">
+                    <input id="ma-auto-zip" name="ma-after-scan" type="radio" value="quick" checked>
+                    <span>
+                        <strong>Quick archive</strong>
+                        <small>Scan, merge duplicates, then download and archive every eligible item.</small>
+                    </span>
+                </label>
+                <label class="ma-mode-card">
+                    <input id="ma-review-before" name="ma-after-scan" type="radio" value="review">
+                    <span>
+                        <strong>Review before archive</strong>
+                        <small>Scan first. Original requests start only after Archive selected is confirmed.</small>
+                    </span>
+                </label>
+            </div>
+        `;
+    }
+
+    const mediaHeading = panel.querySelector('[data-ma-panel="media"] .ma-list-heading');
+    if (mediaHeading) {
+        mediaHeading.classList.add('ma-heading-with-control');
+        const openButton = document.createElement('button');
+        openButton.id = 'ma-open-library';
+        openButton.className = 'ma-text-button';
+        openButton.type = 'button';
+        openButton.textContent = 'Open Library';
+        mediaHeading.appendChild(openButton);
+    }
+
+    const detailMetrics = panel.querySelector('.ma-detail-metrics');
+    if (detailMetrics) {
+        detailMetrics.insertAdjacentHTML('beforeend', `
+            <div><span>Duplicates merged</span><strong id="ma-duplicate-count">0</strong></div>
+            <div><span>Downloaded</span><strong id="ma-downloaded-count">0</strong></div>
+            <div><span>Bytes</span><strong id="ma-bytes-count">0 B</strong></div>
+            <div><span>Elapsed</span><strong id="ma-elapsed">0:00</strong></div>
+        `);
+    }
+
+    const activityHeading = panel.querySelector('[data-ma-panel="activity"] .ma-list-heading');
+    if (activityHeading) {
+        activityHeading.querySelector('#ma-clear-log')?.remove();
+        const actions = document.createElement('div');
+        actions.className = 'ma-activity-actions';
+        actions.innerHTML = `
+            <button id="ma-copy-activity" class="ma-text-button" type="button">Copy</button>
+            <button id="ma-download-report" class="ma-text-button" type="button">Download .md</button>
+            <button id="ma-developer-logs" class="ma-text-button" type="button">Developer logs</button>
+            <button id="ma-clear-log" class="ma-text-button" type="button">Clear</button>
+        `;
+        activityHeading.appendChild(actions);
+    }
+
+    const libraryOverlay = document.createElement('div');
+    libraryOverlay.id = 'ma-library-overlay';
+    libraryOverlay.hidden = true;
+    libraryOverlay.innerHTML = `
+        <section id="ma-library-dialog" class="ma-library-dialog" role="dialog" aria-modal="true" aria-labelledby="ma-library-title">
+            <header class="ma-library-header">
+                <div>
+                    <div class="ma-title-row">
+                        <h1 id="ma-library-title">Media Archiver Library</h1>
+                        <span class="ma-site-badge">${activeSiteAdapter.label}</span>
+                    </div>
+                    <p>Review canonical candidates. Closing this window never starts a download.</p>
+                </div>
+                <button id="ma-library-close" class="ma-library-icon" type="button" aria-label="Close Library">×</button>
+            </header>
+
+            <div class="ma-library-toolbar" aria-label="Library controls">
+                <label class="ma-library-search">
+                    <span class="ma-visually-hidden">Search Library</span>
+                    <input id="ma-library-search" type="search" placeholder="Search filename, type, source or ID">
+                </label>
+                <label>
+                    <span>Sort</span>
+                    <select id="ma-library-sort">
+                        <option value="newest">Newest first</option>
+                        <option value="oldest">Oldest first</option>
+                        <option value="discovery">Discovery order</option>
+                        <option value="filename">Filename</option>
+                        <option value="type">Type</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Type</span>
+                    <select id="ma-library-type-filter">
+                        <option value="all">All types</option>
+                        <option value="photo">Photos & native GIFs</option>
+                        <option value="video">Videos</option>
+                        <option value="external-gif">Rendered GIF previews</option>
+                        <option value="comment">Comments</option>
+                    </select>
+                </label>
+                <label>
+                    <span>Status</span>
+                    <select id="ma-library-status-filter">
+                        <option value="all">All statuses</option>
+                        <option value="eligible">Eligible</option>
+                        <option value="selected">Selected</option>
+                        <option value="deselected">Deselected</option>
+                        <option value="saved">Saved</option>
+                        <option value="error">Errors</option>
+                    </select>
+                </label>
+                <button id="ma-library-view" type="button" data-view="grid" aria-pressed="false">List view</button>
+            </div>
+
+            <div class="ma-library-selection-bar">
+                <div class="ma-library-selection-actions">
+                    <button id="ma-select-visible" type="button">Select all visible</button>
+                    <button id="ma-select-eligible" type="button">Select all eligible</button>
+                    <button id="ma-select-none" type="button">None</button>
+                    <button id="ma-select-invert" type="button">Invert visible</button>
+                </div>
+                <div class="ma-library-shortcuts">Plain click: only · Check/Ctrl/Cmd: toggle · Shift: range · Ctrl/Cmd+A: visible · Space: toggle</div>
+            </div>
+
+            <div id="ma-library-items" class="ma-library-items" role="listbox" aria-multiselectable="true"></div>
+            <div id="ma-library-empty" class="ma-library-empty" hidden>No items match the current view.</div>
+
+            <footer class="ma-library-footer">
+                <div>
+                    <strong><span id="ma-library-selected-count">0</span> selected</strong>
+                    <span><span id="ma-library-eligible-count">0</span> eligible · <span id="ma-library-visible-count">0</span> visible</span>
+                    <p id="ma-library-message" hidden></p>
+                </div>
+                <div class="ma-library-footer-actions">
+                    <button id="ma-library-cancel" type="button">Close without downloading</button>
+                    <button id="ma-library-archive" class="ma-library-primary" type="button">Archive selected</button>
+                </div>
+            </footer>
+        </section>
+    `;
+
+    const developerLogsOverlay = document.createElement('div');
+    developerLogsOverlay.id = 'ma-developer-overlay';
+    developerLogsOverlay.hidden = true;
+    developerLogsOverlay.innerHTML = `
+        <section class="ma-developer-dialog" role="dialog" aria-modal="true" aria-labelledby="ma-developer-title">
+            <header class="ma-library-header">
+                <div>
+                    <h1 id="ma-developer-title">Developer logs</h1>
+                    <p>Structured events and a sanitized report. Sensitive content is redacted by default.</p>
+                </div>
+                <button id="ma-developer-close" class="ma-library-icon" type="button" aria-label="Close Developer logs">×</button>
+            </header>
+            <div class="ma-developer-toolbar">
+                <input id="ma-developer-search" type="search" placeholder="Search code or message">
+                <fieldset>
+                    <legend>Levels</legend>
+                    <label><input data-ma-dev-level type="checkbox" value="debug" checked> Debug</label>
+                    <label><input data-ma-dev-level type="checkbox" value="info" checked> Info</label>
+                    <label><input data-ma-dev-level type="checkbox" value="success" checked> Success</label>
+                    <label><input data-ma-dev-level type="checkbox" value="warn" checked> Warning</label>
+                    <label><input data-ma-dev-level type="checkbox" value="error" checked> Error</label>
+                </fieldset>
+                <fieldset>
+                    <legend>Categories</legend>
+                    ${['runtime','adapter','scan','selection','network','naming','archive','zip','ui']
+                        .map(category => `<label><input data-ma-dev-category type="checkbox" value="${category}" checked> ${category}</label>`)
+                        .join('')}
+                </fieldset>
+                <div class="ma-developer-actions">
+                    <button id="ma-copy-developer" type="button">Copy report</button>
+                    <button id="ma-download-developer" type="button">Download .md</button>
+                </div>
+            </div>
+            <div class="ma-developer-content">
+                <div id="ma-developer-events" class="ma-developer-events"></div>
+                <label class="ma-developer-report-wrap">
+                    <span>Sanitized Markdown report</span>
+                    <textarea id="ma-developer-report" readonly spellcheck="false"></textarea>
+                </label>
+            </div>
+        </section>
+    `;

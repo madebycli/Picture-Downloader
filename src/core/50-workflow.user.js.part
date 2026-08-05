@@ -1,3 +1,22 @@
+    function getAfterScanMode() {
+        return autoZipCheckbox?.checked ? 'quick' : 'review';
+    }
+
+    function syncWorkflowMode() {
+        const mode = getAfterScanMode();
+        try {
+            if (workflowState.phase === globalThis.MediaArchiverWorkflowState.phases.COMPLETED) {
+                workflowState.transition(globalThis.MediaArchiverWorkflowState.phases.IDLE);
+            }
+            if (workflowState.phase === globalThis.MediaArchiverWorkflowState.phases.IDLE) {
+                workflowState.setMode(mode);
+            }
+        } catch {
+            // State reporting must never break the established scanner.
+        }
+        return mode;
+    }
+
     async function startAutomaticWorkflow() {
         if (running) return;
 
@@ -6,6 +25,13 @@
         running = true;
         scanning = true;
         packing = false;
+        reviewArchiveConfirmed = false;
+        const afterScanMode = syncWorkflowMode();
+        try {
+            workflowState.transition(globalThis.MediaArchiverWorkflowState.phases.SCANNING);
+        } catch {
+            // Compatibility state is diagnostic only during incremental migration.
+        }
         updateButtons();
 
         const scanMode = scanDirectionSelect.value;
@@ -20,11 +46,21 @@
             return;
         }
 
+        diagnostics.startSession({
+            adapterId: activeSiteAdapter.id,
+            pageType: activeSiteAdapter.getArchiveContext()?.label || 'supported-page',
+            scanMode,
+            afterScanMode,
+            dateRange: dateRange.label
+        });
+        liveMetrics.startSession({ phase: 'scanning' });
+
         lastScanBoundaryReason = '';
         setPhase('STARTING');
         addLog(
             `Scan started on ${activeSiteAdapter.label}. Mode: ` +
-            `${scanModeDescription(scanMode)}.`
+            `${scanModeDescription(scanMode)}. After scan: ` +
+            `${afterScanMode === 'quick' ? 'Quick archive' : 'Review before archive'}.`
         );
 
         if (dateRange.enabled) {
@@ -40,18 +76,27 @@
             running = false;
             scanning = false;
             setPhase('ERROR');
+            liveMetrics.stopSession({ phase: 'error', errors: 1 });
+            diagnostics.error(
+                'ADAPTER_TIMELINE_NOT_FOUND',
+                'The active adapter could not find its timeline or scroller.',
+                null,
+                { adapterId: activeSiteAdapter.id, continued: false },
+                {
+                    category: 'adapter',
+                    userMessage: `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found. ${activeSiteAdapter.openTargetHelp || ''}`.trim()
+                }
+            );
             addLog(
-                `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found. ${activeSiteAdapter.openTargetHelp || ''}`.trim(),
+                `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found. ${activeSiteAdapter.openTargetHelp || ''} Code: ADAPTER_TIMELINE_NOT_FOUND`.trim(),
                 'error'
             );
             updateButtons();
             return;
         }
 
-        // Capture media and an item anchor at the selected starting position.
         scanVisiblePage();
         const startingAnchor = captureStartingAnchor(scroller);
-
         let reachedBoundary = false;
         let completedBoundaryLabel = '';
 
@@ -79,7 +124,7 @@
             );
         } else if (scanMode === 'full-finish-down') {
             addLog(
-                'Full downward-finish mode: first scanning from the current position to the timeline start.'
+                'Full timeline mode: first scanning from the current position to the timeline start.'
             );
 
             const reachedTop = await autoScrollToOldest(scroller);
@@ -105,7 +150,7 @@
                 reachedBoundary = false;
                 completedBoundaryLabel = 'timeline-start boundary';
                 addLog(
-                    'The first scan did not confirm the timeline-start boundary, so the downward full-channel pass was not started.',
+                    'The first scan did not confirm the timeline-start boundary, so the downward full-timeline pass was not started.',
                     'warn'
                 );
             }
@@ -123,14 +168,14 @@
         updateButtons();
 
         if (reachedBoundary) {
-            setPhase(`SCAN FINISHED: ${mediaEntries.size} media files`);
+            setPhase(`SCAN FINISHED: ${mediaEntries.size} items`);
             addLog(
                 `Scan completed at the ${completedBoundaryLabel}: ` +
-                `${mediaEntries.size} unique media files found.`,
+                `${mediaEntries.size} unique items found.`,
                 'success'
             );
         } else {
-            setPhase(`SCAN ENDED: ${mediaEntries.size} media files`);
+            setPhase(`SCAN ENDED: ${mediaEntries.size} items`);
             addLog(
                 'The scan stopped at the safety iteration limit or could not confirm the selected boundary.',
                 'warn'
@@ -139,43 +184,78 @@
 
         const statsAfterScan = selectionStatistics();
         addLog(
-            `Selection summary: ${statsAfterScan.total} total found, ` +
-            `${statsAfterScan.inDateRange} in the date range, ` +
-            `${statsAfterScan.excludedByDate} excluded by date, ` +
-            `${statsAfterScan.excludedByType} excluded by media type, ` +
-            `${statsAfterScan.selected} selected for ZIP.`
+            `Selection summary: ${statsAfterScan.total} canonical items, ` +
+            `${statsAfterScan.eligible} eligible, ` +
+            `${statsAfterScan.selected} selected, ` +
+            `${statsAfterScan.duplicatesMerged} duplicate discoveries merged.`
+        );
+
+        await applyFinalTimelinePosition(
+            scroller,
+            finalPositionSelect.value,
+            startingAnchor
         );
 
         const selectedAfterScan = selectedMediaEntries();
-        const createdZip =
-            selectedAfterScan.length > 0 &&
-            autoZipCheckbox.checked;
-
-        if (createdZip) {
-            await createAndDownloadZipParts();
+        if (afterScanMode === 'quick') {
+            try {
+                workflowState.afterScan();
+            } catch {
+                // State reporting must not break archive execution.
+            }
+            if (selectedAfterScan.length > 0) {
+                await createAndDownloadZipParts();
+            } else {
+                liveMetrics.stopSession({ phase: 'completed' });
+                setPhase('SCAN FINISHED: NOTHING ELIGIBLE');
+                addLog('The scan finished, but no eligible items matched the current filters.', 'warn');
+            }
+            return;
         }
 
-        if (!stopRequested) {
-            await applyFinalTimelinePosition(
-                scroller,
-                finalPositionSelect.value,
-                startingAnchor
-            );
-
-            setPhase(
-                createdZip
-                    ? 'FINISHED'
-                    : `SCAN FINISHED: ${mediaEntries.size} media files`
-            );
+        try {
+            workflowState.afterScan();
+        } catch {
+            // State reporting must not break review.
         }
+        liveMetrics.stopSession({ phase: 'review-ready' });
+        setPhase(`REVIEW READY: ${statsAfterScan.selected} selected`);
+        addLog(
+            'Review is ready. No original files have been requested. Confirm “Archive selected” in the Library to begin downloads.',
+            'success'
+        );
+        openLibrary();
     }
 
     function finishStoppedScan() {
         scanning = false;
         running = false;
-        setPhase(`STOPPED: ${mediaEntries.size} media files collected`);
+        const afterScanMode = getAfterScanMode();
+        const stats = selectionStatistics();
+
+        try {
+            workflowState.afterScan({ stopped: true });
+        } catch {
+            // State reporting must not break partial review.
+        }
+
+        if (afterScanMode === 'review' && stats.total > 0) {
+            stopRequested = false;
+            liveMetrics.stopSession({ phase: 'review-ready' });
+            setPhase(`PARTIAL REVIEW READY: ${stats.selected} selected`);
+            addLog(
+                `Scanning stopped manually. Review the ${stats.total} unique items collected so far; no original files have been requested.`,
+                'warn'
+            );
+            updateButtons();
+            openLibrary();
+            return;
+        }
+
+        liveMetrics.stopSession({ phase: 'scan-stopped' });
+        setPhase(`STOPPED: ${mediaEntries.size} items collected`);
         addLog(
-            'Scrolling stopped. Use “CREATE ZIP NOW” to save the media found so far.',
+            'Scrolling stopped. Use the Library or archive action to save the eligible items found so far.',
             'warn'
         );
         updateButtons();
@@ -198,19 +278,26 @@
             entry.size = 0;
         }
         scheduleRender();
+        scheduleLibraryRender();
     }
 
     function resetCollection() {
         if (running || packing || scanning) return;
 
         mediaEntries.clear();
+        selectionStore.removeMissing(new Set());
         firstSeenCounter = 0;
+        activeArchiveNamePlan = null;
+        reviewArchiveConfirmed = false;
         progressFill.style.width = '0%';
         mediaList.replaceChildren();
+        if (typeof libraryItemsElement !== 'undefined') {
+            libraryItemsElement.replaceChildren();
+        }
         updateCounters();
         setPhase('READY');
+        renderNamingPreview();
     }
-
 
     function formatBytes(bytes) {
         if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -222,20 +309,31 @@
         return `${(bytes / (1024 ** power)).toFixed(power ? 1 : 0)} ${units[power]}`;
     }
 
+    function formatElapsed(milliseconds) {
+        const seconds = Math.max(0, Math.floor((milliseconds || 0) / 1000));
+        const minutes = Math.floor(seconds / 60);
+        const remaining = seconds % 60;
+        return `${minutes}:${String(remaining).padStart(2, '0')}`;
+    }
+
     function statusIcon(entry) {
         if (!isEntryIncluded(entry) && entry.status === STATUS.COLLECTED) {
             return ['–', entrySkipReason(entry), 'skipped'];
         }
 
+        if (!selectionStore.isSelected(entry.key) && entry.status === STATUS.COLLECTED) {
+            return ['○', 'Deselected in the Library', 'skipped'];
+        }
+
         switch (entry.status) {
             case STATUS.FETCHING:
-                return ['…', 'Downloading original', 'fetching'];
+                return ['…', 'Downloading selected original', 'fetching'];
             case STATUS.PACKED:
                 return ['✓', 'Saved in ZIP', 'packed'];
             case STATUS.ERROR:
                 return ['!', entry.error || 'Error', 'error'];
             default:
-                return ['○', 'Collected', 'collected'];
+                return ['●', 'Selected for archive', 'collected'];
         }
     }
 
@@ -251,7 +349,9 @@
         entries.forEach((entry, index) => {
             const row = document.createElement('div');
             row.className = `ma-row ma-${entry.status}`;
-            if (!isEntryIncluded(entry)) row.classList.add('ma-skipped');
+            if (!isEntryIncluded(entry) || !selectionStore.isSelected(entry.key)) {
+                row.classList.add('ma-skipped');
+            }
 
             let thumbnail;
 
@@ -265,10 +365,6 @@
                     entry.mediaType === 'external-gif'
                         ? 'GIF'
                         : '▶';
-                thumbnail.title =
-                    entry.mediaType === 'external-gif'
-                        ? 'External GIF preview (usually MP4)'
-                        : 'Video attachment';
             } else {
                 thumbnail = document.createElement('img');
                 thumbnail.className = 'ma-thumb';
@@ -297,7 +393,7 @@
                     ? new Date(entry.timestamp).toLocaleString('en-GB')
                     : 'Time unknown',
                 entry.size ? formatBytes(entry.size) : '',
-                entry.itemId ? `ID ${entry.itemId}` : ''
+                entry.duplicateCount ? `${entry.duplicateCount} duplicates merged` : ''
             ].filter(Boolean).join(' · ');
 
             details.append(name, meta);
@@ -316,13 +412,40 @@
         updateCounters();
     }
 
+    function diagnosticCategoryForMessage(message) {
+        if (/zip/i.test(message)) return 'zip';
+        if (/download|http|network/i.test(message)) return 'network';
+        if (/scan|timeline|boundary/i.test(message)) return 'scan';
+        if (/select|review|library/i.test(message)) return 'selection';
+        return 'runtime';
+    }
+
     function addLog(message, type = 'info') {
+        const level = ['success', 'warn', 'error', 'debug'].includes(type)
+            ? type
+            : 'info';
+        const category = diagnosticCategoryForMessage(message);
+        const codeMatch = String(message).match(/Code:\s*([A-Z0-9_]+)/);
+        const code = codeMatch?.[1] || 'ACTIVITY_MESSAGE';
+
+        if (level === 'error') {
+            diagnostics.error(code, 'User-visible operation error.', null, {
+                phase: workflowState.phase,
+                continued: !stopRequested
+            }, { category, userMessage: String(message) });
+        } else {
+            diagnostics[level]?.(
+                code,
+                'User-visible activity event.',
+                { phase: workflowState.phase },
+                { category, userMessage: String(message) }
+            );
+        }
+
         const line = document.createElement('div');
         line.className = `ma-log-line ma-log-${type}`;
-
         const time = new Date().toLocaleTimeString('en-GB');
         line.textContent = `[${time}] ${message}`;
-
         logArea.appendChild(line);
         while (logArea.childElementCount > 250) {
             logArea.firstElementChild?.remove();
@@ -332,19 +455,61 @@
 
     function setPhase(value) {
         phaseElement.textContent = value;
+        liveMetrics.setPhase(String(value).toLowerCase());
+    }
+
+    function refreshLiveMetrics(snapshot) {
+        if (!snapshot || !foundElement) return;
+        foundElement.textContent = String(snapshot.found);
+        selectedCountElement.textContent = String(snapshot.selected);
+        packedElement.textContent = String(snapshot.saved);
+        errorElement.textContent = String(snapshot.errors);
+        selectedSummaryElement.textContent = `${snapshot.selected} selected`;
+        if (typeof duplicateCountElement !== 'undefined' && duplicateCountElement) {
+            duplicateCountElement.textContent = String(snapshot.duplicatesMerged);
+        }
+        if (typeof downloadedCountElement !== 'undefined' && downloadedCountElement) {
+            downloadedCountElement.textContent = String(snapshot.downloaded);
+        }
+        if (typeof bytesCountElement !== 'undefined' && bytesCountElement) {
+            bytesCountElement.textContent = formatBytes(snapshot.bytesDownloaded);
+        }
+        if (typeof elapsedElement !== 'undefined' && elapsedElement) {
+            elapsedElement.textContent = formatElapsed(snapshot.elapsedMs);
+        }
+        if (typeof librarySelectedCountElement !== 'undefined' && librarySelectedCountElement) {
+            librarySelectedCountElement.textContent = String(snapshot.selected);
+        }
     }
 
     function updateCounters() {
         let packedCount = 0;
         let errorCount = 0;
+        let downloadedCount = 0;
+        let bytesDownloaded = 0;
 
         for (const entry of mediaEntries.values()) {
             if (entry.status === STATUS.PACKED) packedCount++;
             if (entry.status === STATUS.ERROR) errorCount++;
+            if (entry.size > 0) {
+                downloadedCount++;
+                bytesDownloaded += entry.size;
+            }
         }
 
         const counts = countMediaTypes();
         const stats = selectionStatistics();
+
+        liveMetrics.update({
+            found: stats.total,
+            eligible: stats.eligible,
+            selected: stats.selected,
+            duplicatesMerged: stats.duplicatesMerged,
+            downloaded: downloadedCount,
+            saved: packedCount,
+            errors: errorCount,
+            bytesDownloaded
+        });
 
         foundElement.textContent = String(stats.total);
         photoCountElement.textContent = String(counts.photos);
@@ -361,18 +526,28 @@
         mediaTabCount.textContent = String(stats.total);
         packedElement.textContent = String(packedCount);
         errorElement.textContent = String(errorCount);
+        if (typeof duplicateCountElement !== 'undefined' && duplicateCountElement) {
+            duplicateCountElement.textContent = String(stats.duplicatesMerged);
+        }
+        if (typeof downloadedCountElement !== 'undefined' && downloadedCountElement) {
+            downloadedCountElement.textContent = String(downloadedCount);
+        }
+        if (typeof bytesCountElement !== 'undefined' && bytesCountElement) {
+            bytesCountElement.textContent = formatBytes(bytesDownloaded);
+        }
+        updateLibrarySelectionSummary();
         updateButtons();
     }
 
     function updateButtons() {
         const selectedCount = selectedMediaEntries().length;
         const busy = running || packing || scanning;
-
         const dateRange = getDateRangeConfig();
+        const reviewMode = getAfterScanMode() === 'review';
 
-        startButton.textContent = autoZipCheckbox.checked
-            ? 'Scan & create ZIPs'
-            : 'Scan media';
+        startButton.textContent = reviewMode
+            ? 'Scan and review'
+            : 'Scan & quick archive';
 
         startButton.disabled =
             busy ||
@@ -383,12 +558,16 @@
             ) ||
             !dateRange.valid;
         stopButton.disabled = !busy;
+        zipButton.textContent = reviewMode ? 'Open Library' : 'Archive eligible now';
         zipButton.disabled =
             busy ||
             selectedCount === 0 ||
             !dateRange.valid;
         resetButton.disabled = busy;
         autoZipCheckbox.disabled = busy;
+        if (typeof reviewBeforeRadio !== 'undefined' && reviewBeforeRadio) {
+            reviewBeforeRadio.disabled = busy;
+        }
         photoCheckbox.disabled = busy;
         videoCheckbox.disabled = busy;
         externalGifCheckbox.disabled = busy;
@@ -402,5 +581,4 @@
             !dateFilterCheckbox.checked ||
             dateEndModeSelect.value !== 'specific';
     }
-
 
