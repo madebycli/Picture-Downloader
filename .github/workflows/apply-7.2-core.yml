@@ -23,10 +23,21 @@ jobs:
           node-version: 22
       - name: Apply source changes
         run: node scripts/apply-7.2-core.mjs
+      - name: Install dependencies
+        run: npm ci
       - name: Validate generated source
-        run: |
-          npm ci
-          npm test
+        id: validation
+        continue-on-error: true
+        run: npm test 2>&1 | tee validation.log
+      - name: Upload validation output
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: apply-7.2-core-validation
+          path: validation.log
+      - name: Stop on validation failure
+        if: steps.validation.outcome != 'success'
+        run: exit 1
       - name: Commit implementation
         run: |
           git config user.name "github-actions[bot]"
