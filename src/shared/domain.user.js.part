@@ -1,0 +1,128 @@
+    (() => {
+        const ITEM_KINDS = Object.freeze({
+            MEDIA: 'media',
+            COMMENT: 'comment',
+            GENERATED_DOCUMENT: 'generated-document'
+        });
+
+        const WORKFLOW_PHASES = Object.freeze({
+            IDLE: 'idle',
+            SCANNING: 'scanning',
+            SCAN_STOPPED: 'scan-stopped',
+            REVIEW_READY: 'review-ready',
+            REVIEWING: 'reviewing',
+            FETCHING_SELECTED: 'fetching-selected',
+            PACKING: 'packing',
+            COMPLETED: 'completed',
+            ERROR: 'error'
+        });
+
+        const DEFAULT_CAPABILITIES = Object.freeze({
+            media: false,
+            textRecords: false,
+            virtualTimeline: false,
+            dateFilter: false,
+            hostPageSelection: false,
+            scanModes: Object.freeze([]),
+            views: Object.freeze(['grid', 'list'])
+        });
+
+        function normalizeAdapterCapabilities(capabilities = {}) {
+            const scanModes = Array.isArray(capabilities.scanModes)
+                ? [...new Set(capabilities.scanModes.map(String))]
+                : [];
+            const views = Array.isArray(capabilities.views) && capabilities.views.length
+                ? [...new Set(capabilities.views.map(String))]
+                : ['grid', 'list'];
+
+            return Object.freeze({
+                media: Boolean(capabilities.media),
+                textRecords: Boolean(capabilities.textRecords),
+                virtualTimeline: Boolean(capabilities.virtualTimeline),
+                dateFilter: Boolean(capabilities.dateFilter),
+                hostPageSelection: Boolean(capabilities.hostPageSelection),
+                scanModes: Object.freeze(scanModes),
+                views: Object.freeze(views)
+            });
+        }
+
+        function normalizeEligibility(value = {}) {
+            return Object.freeze({
+                adapter: value.adapter !== false,
+                type: value.type !== false,
+                date: value.date !== false
+            });
+        }
+
+        function isArchiveItemEligible(item) {
+            const eligibility = item?.eligibility || {};
+            return Boolean(
+                item?.canonical !== false &&
+                eligibility.adapter !== false &&
+                eligibility.type !== false &&
+                eligibility.date !== false
+            );
+        }
+
+        function createArchiveItem(input = {}) {
+            if (!input.key) throw new TypeError('ArchiveItem requires a stable key.');
+            if (!input.adapterId) throw new TypeError('ArchiveItem requires adapterId.');
+
+            const kind = input.kind || ITEM_KINDS.MEDIA;
+            if (!Object.values(ITEM_KINDS).includes(kind)) {
+                throw new TypeError(`Unsupported ArchiveItem kind: ${kind}`);
+            }
+
+            const eligibility = normalizeEligibility(input.eligibility);
+            const canonical = input.canonical !== false;
+            const initiallySelected = input.manuallySelected ?? (
+                canonical &&
+                eligibility.adapter &&
+                eligibility.type &&
+                eligibility.date
+            );
+
+            return {
+                key: String(input.key),
+                kind,
+                adapterId: String(input.adapterId),
+                sourceId: input.sourceId == null ? null : String(input.sourceId),
+                parentSourceId: input.parentSourceId == null
+                    ? null
+                    : String(input.parentSourceId),
+                timestamp: input.timestamp || null,
+                discoveryIndex: Number.isFinite(input.discoveryIndex)
+                    ? input.discoveryIndex
+                    : 0,
+                canonical,
+                canonicalKey: String(input.canonicalKey || input.key),
+                duplicateCount: Math.max(0, Number(input.duplicateCount) || 0),
+                eligibility,
+                manuallySelected: Boolean(initiallySelected),
+                status: input.status || 'collected',
+                error: input.error || '',
+                payload: input.payload || {}
+            };
+        }
+
+        function isFinalArchiveCandidate(item) {
+            return Boolean(isArchiveItemEligible(item) && item.manuallySelected);
+        }
+
+        const api = Object.freeze({
+            ITEM_KINDS,
+            WORKFLOW_PHASES,
+            DEFAULT_CAPABILITIES,
+            normalizeAdapterCapabilities,
+            createArchiveItem,
+            isArchiveItemEligible,
+            isFinalArchiveCandidate
+        });
+
+        Object.defineProperty(globalThis, 'MediaArchiverDomain', {
+            value: api,
+            configurable: true,
+            writable: false
+        });
+    })();
+

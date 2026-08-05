@@ -39,10 +39,7 @@
     ]);
 
     const VIDEO_EXTENSIONS = new Set([
-        // Common browser-compatible video containers
         '.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi',
-
-        // Additional uploaded video containers
         '.mpeg', '.mpg', '.mpe', '.mpv',
         '.ogv', '.ogg',
         '.3gp', '.3g2',
@@ -65,23 +62,13 @@
         ERROR: 'error'
     });
 
-    /** @type {Map<string, {
-     * key: string,
-     * url: string,
-     * previewUrl: string,
-     * filename: string,
-     * mediaType: 'photo'|'video'|'external-gif',
-     * sourceKind: string,
-     * sourcePageUrl: string|null,
-     * itemId: string|null,
-     * timestamp: string|null,
-     * firstSeen: number,
-     * status: string,
-     * error: string,
-     * size: number
-     * }>} */
-    const mediaEntries = new Map(); // Stores attachments and external GIF previews.
-
+    /**
+     * General archive-item storage. The mediaEntries alias remains during the
+     * incremental migration so the production Discord userscript keeps its
+     * established behavior after every milestone.
+     */
+    const archiveItems = new Map();
+    const mediaEntries = archiveItems;
     const activeRequests = new Set();
 
     let firstSeenCounter = 0;
@@ -94,39 +81,64 @@
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-
     const SITE_ADAPTERS = [];
     let activeSiteAdapter = null;
 
     function registerSiteAdapter(adapter) {
-        const requiredMethods = [
-            'matches',
-            'scanVisibleMedia',
-            'findScroller',
-            'visibleItemIds',
-            'visibleItemTimeRange',
-            'findItemElementById',
-            'captureStartingAnchor',
-            'findItemId',
-            'findItemTimestamp',
-            'compareItemIds',
-            'getArchiveContext',
-            'isDownloadUrlAllowed'
-        ];
-
         if (!adapter?.id || !adapter?.label) {
             throw new Error('A site adapter needs an id and label.');
         }
 
-        for (const method of requiredMethods) {
-            if (typeof adapter[method] !== 'function') {
-                throw new Error(
-                    `Site adapter ${adapter.id} is missing ${method}().`
-                );
+        const discover = adapter.scanVisibleMedia || adapter.discoverRenderedItems;
+        const requiredMethods = [
+            ['matches', adapter.matches],
+            ['scanVisibleMedia/discoverRenderedItems', discover],
+            ['getArchiveContext', adapter.getArchiveContext],
+            ['isDownloadUrlAllowed', adapter.isDownloadUrlAllowed]
+        ];
+
+        for (const [name, implementation] of requiredMethods) {
+            if (typeof implementation !== 'function') {
+                throw new Error(`Site adapter ${adapter.id} is missing ${name}().`);
             }
         }
 
-        SITE_ADAPTERS.push(Object.freeze(adapter));
+        const normalizeCapabilities = globalThis.MediaArchiverDomain
+            ?.normalizeAdapterCapabilities;
+        const capabilities = normalizeCapabilities
+            ? normalizeCapabilities(adapter.capabilities)
+            : Object.freeze({
+                media: true,
+                textRecords: false,
+                virtualTimeline: true,
+                dateFilter: true,
+                hostPageSelection: false,
+                scanModes: Object.freeze([
+                    'newest-to-oldest',
+                    'current-to-oldest',
+                    'current-to-newest',
+                    'full-finish-down'
+                ]),
+                views: Object.freeze(['grid', 'list'])
+            });
+
+        const normalized = {
+            ...adapter,
+            capabilities,
+            scanVisibleMedia: discover,
+            findScroller: adapter.findScroller || (() => document.scrollingElement),
+            visibleItemIds: adapter.visibleItemIds || (() => []),
+            visibleItemTimeRange: adapter.visibleItemTimeRange || (() => null),
+            findItemElementById: adapter.findItemElementById || (() => null),
+            captureStartingAnchor: adapter.captureStartingAnchor || (() => null),
+            findItemId: adapter.findItemId || (() => null),
+            findItemTimestamp: adapter.findItemTimestamp || (() => null),
+            compareItemIds: adapter.compareItemIds || ((left, right) =>
+                String(left || '').localeCompare(String(right || ''))
+            )
+        };
+
+        SITE_ADAPTERS.push(Object.freeze(normalized));
     }
 
     function resolveSiteAdapter() {
@@ -181,6 +193,21 @@
 
     function adapterTerm(key, fallback) {
         return activeSiteAdapter?.terms?.[key] || fallback;
+    }
+
+    function upsertArchiveItem(input) {
+        const createArchiveItem = globalThis.MediaArchiverDomain?.createArchiveItem;
+        const item = createArchiveItem ? createArchiveItem(input) : input;
+        const existing = archiveItems.get(item.key);
+
+        if (existing) {
+            existing.duplicateCount = (existing.duplicateCount || 0) + 1;
+            existing.payload = { ...existing.payload, ...item.payload };
+            return { item: existing, inserted: false, duplicateMerged: true };
+        }
+
+        archiveItems.set(item.key, item);
+        return { item, inserted: true, duplicateMerged: false };
     }
 
     function sanitizeFilename(value) {

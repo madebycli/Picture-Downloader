@@ -1,8 +1,11 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "output": "media-archiver.user.js",
   "beforeAdapters": [
-    "src/core/00-bootstrap.user.js.part"
+    "src/core/00-bootstrap.user.js.part",
+    "src/shared/runtime-contract.user.js.part",
+    "src/shared/domain.user.js.part",
+    "src/shared/workflow-state.user.js.part"
   ],
   "afterAdapters": [
     "src/core/10-activate-adapter.user.js.part",

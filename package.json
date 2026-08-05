@@ -2,14 +2,16 @@
   "name": "media-archiver-userscript",
   "version": "6.0.0",
   "private": true,
-  "description": "Build and validation tooling for the modular Media Archiver userscript.",
+  "description": "Build and validation tooling for the modular Media Archiver product.",
   "scripts": {
     "build": "node scripts/assemble-userscript.mjs",
+    "build:userscript": "node scripts/assemble-userscript.mjs",
     "check:syntax": "node --check media-archiver.user.js",
     "check:invariants": "node scripts/check-userscript.mjs",
     "check:unsupported": "node scripts/smoke-unsupported-page.mjs",
     "test:baseline": "node --test tests/baseline.test.mjs",
-    "test": "npm run build && npm run check:syntax && npm run check:invariants && npm run check:unsupported && npm run test:baseline"
+    "test:unit": "node --test tests/contracts.test.mjs",
+    "test": "npm run build:userscript && npm run check:syntax && npm run check:invariants && npm run check:unsupported && npm run test:baseline && npm run test:unit"
   },
   "engines": {
     "node": ">=20"
