@@ -22,6 +22,25 @@
         "src/adapters/discord/30-timeline.user.js.part",
         "src/adapters/discord/90-register.user.js.part"
       ]
+    },
+    {
+      "id": "pinterest",
+      "label": "Pinterest",
+      "matches": [
+        "https://pinterest.com/*",
+        "https://*.pinterest.com/*"
+      ],
+      "connect": [
+        "i.pinimg.com",
+        "v.pinimg.com",
+        "v1.pinimg.com"
+      ],
+      "modules": [
+        "src/adapters/pinterest/00-config.user.js.part",
+        "src/adapters/pinterest/10-media.user.js.part",
+        "src/adapters/pinterest/20-timeline.user.js.part",
+        "src/adapters/pinterest/90-register.user.js.part"
+      ]
     }
   ]
 }

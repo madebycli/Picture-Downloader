@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         Media Archiver
 // @namespace    https://github.com/madebycli/Picture-Downloader
-// @version      6.0.0
-// @description  Collect rendered media from supported web apps and save filtered files as numbered ZIP parts.
+// @version      7.0.0
+// @description  Smart, adapter-driven media collection with page picking, sync index, profiles, and adaptive ZIP archives.
 // @homepageURL  https://github.com/madebycli/Picture-Downloader
 // @supportURL   https://github.com/madebycli/Picture-Downloader/issues
 // __ADAPTER_MATCHES__
 // @require      https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // __ADAPTER_CONNECTS__
 // @run-at       document-idle
 // ==/UserScript==
@@ -15,20 +18,24 @@
 (() => {
     'use strict';
 
-    const VERSION = '6.0.0';
+    const VERSION = '7.0.0';
     const APP_NAME = 'Media Archiver';
-    const SCAN_DELAY_MS = 650;
+    const SCAN_DELAY_MS = 620;
+    const SCAN_SETTLE_WINDOW_MS = 520;
     const REAL_TOP_CONFIRM_MS = 20_000;
     const REAL_BOTTOM_CONFIRM_MS = 20_000;
     const FINAL_NEWEST_SETTLE_MS = 7_000;
     const RESTORE_POSITION_MAX_STEPS = 700;
-    const TOP_PROBE_INTERVAL_MS = 1000;
-    const NEWEST_STABLE_ROUNDS_REQUIRED = 3;
-    const DOWNLOAD_CONCURRENCY = 8;
+    const BOUNDARY_PROBE_INTERVAL_MS = 1000;
+    const DOWNLOAD_CONCURRENCY = 6;
     const REQUEST_RETRIES = 4;
-    const ZIP_BATCH_MAX_ITEMS = 200;
-    const ZIP_MAX_BYTES = 350 * 1024 * 1024;
-    const WORK_BATCH_ESTIMATED_MAX_BYTES = 420 * 1024 * 1024;
+    const DEFAULT_ZIP_TARGET_MB = 250;
+    const MIN_ZIP_TARGET_MB = 25;
+    const MAX_ZIP_TARGET_MB = 750;
+    const MAX_ZIP_ITEMS_SAFETY = 5000;
+    const MIN_INCREMENTAL_OVERLAP_MS = 5 * 60 * 1000;
+    const CHECKPOINT_DEBOUNCE_MS = 1800;
+    const MAX_CHECKPOINT_ENTRIES = 20_000;
     const ESTIMATED_PHOTO_BYTES = 1.5 * 1024 * 1024;
     const ESTIMATED_VIDEO_BYTES = 60 * 1024 * 1024;
     const ESTIMATED_EXTERNAL_GIF_BYTES = 8 * 1024 * 1024;
@@ -39,18 +46,10 @@
     ]);
 
     const VIDEO_EXTENSIONS = new Set([
-        // Common browser-compatible video containers
         '.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi',
-
-        // Additional uploaded video containers
-        '.mpeg', '.mpg', '.mpe', '.mpv',
-        '.ogv', '.ogg',
-        '.3gp', '.3g2',
-        '.flv', '.f4v',
-        '.wmv', '.asf',
-        '.ts', '.mts', '.m2ts',
-        '.vob', '.divx',
-        '.rm', '.rmvb'
+        '.mpeg', '.mpg', '.mpe', '.mpv', '.ogv', '.ogg',
+        '.3gp', '.3g2', '.flv', '.f4v', '.wmv', '.asf',
+        '.ts', '.mts', '.m2ts', '.vob', '.divx', '.rm', '.rmvb'
     ]);
 
     const MEDIA_EXTENSIONS = new Set([
@@ -62,13 +61,16 @@
         COLLECTED: 'collected',
         FETCHING: 'fetching',
         PACKED: 'packed',
+        DUPLICATE: 'duplicate',
         ERROR: 'error'
     });
 
     /** @type {Map<string, {
      * key: string,
+     * fingerprint?: string,
      * url: string,
      * previewUrl: string,
+     * fallbackUrl?: string,
      * filename: string,
      * mediaType: 'photo'|'video'|'external-gif',
      * sourceKind: string,
@@ -78,10 +80,10 @@
      * firstSeen: number,
      * status: string,
      * error: string,
-     * size: number
+     * size: number,
+     * contentHash?: string|null
      * }>} */
-    const mediaEntries = new Map(); // Stores attachments and external GIF previews.
-
+    const mediaEntries = new Map();
     const activeRequests = new Set();
 
     let firstSeenCounter = 0;
@@ -91,9 +93,9 @@
     let stopRequested = false;
     let renderTimer = null;
     let lastScanBoundaryReason = '';
+    let checkpointTimer = null;
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
 
     const SITE_ADAPTERS = [];
     let activeSiteAdapter = null;
@@ -111,7 +113,8 @@
             'findItemTimestamp',
             'compareItemIds',
             'getArchiveContext',
-            'isDownloadUrlAllowed'
+            'isDownloadUrlAllowed',
+            'scrollSign'
         ];
 
         if (!adapter?.id || !adapter?.label) {
@@ -140,7 +143,17 @@
     }
 
     function scanVisiblePage() {
-        return activeSiteAdapter.scanVisibleMedia();
+        const added = Number(activeSiteAdapter.scanVisibleMedia()) || 0;
+
+        if (added > 0) {
+            scheduleSessionCheckpoint?.();
+        }
+
+        if (pagePickerActive) {
+            refreshPageSelectionTargets?.();
+        }
+
+        return added;
     }
 
     function findTimelineScroller() {
@@ -183,17 +196,31 @@
         return activeSiteAdapter?.terms?.[key] || fallback;
     }
 
-    function sanitizeFilename(value) {
-        return (value || 'bild')
+    function sanitizeFilename(value, fallback = 'media') {
+        return (value || fallback)
             .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
             .replace(/\s+/g, ' ')
             .replace(/[. ]+$/g, '')
-            .slice(0, 180) || 'bild';
+            .slice(0, 180) || fallback;
+    }
+
+    function slugify(value, fallback = 'collection') {
+        return sanitizeFilename(value, fallback)
+            .normalize('NFKD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9._-]+/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 100) || fallback;
     }
 
     function extensionFromPath(pathname) {
         const filename = pathname.split('/').pop() || '';
         const dot = filename.lastIndexOf('.');
         return dot >= 0 ? filename.slice(dot).toLowerCase() : '';
+    }
+
+    function clamp(value, minimum, maximum) {
+        return Math.min(maximum, Math.max(minimum, value));
     }
 

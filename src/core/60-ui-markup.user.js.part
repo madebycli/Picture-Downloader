@@ -9,7 +9,7 @@
                     <div class="ma-title">${APP_NAME}</div>
                     <span class="ma-site-badge">${activeSiteAdapter.label}</span>
                 </div>
-                <div class="ma-subtitle">Rendered media · v${VERSION}</div>
+                <div class="ma-subtitle">Smart media sync · v${VERSION}</div>
             </div>
             <button
                 id="ma-collapse"
@@ -42,26 +42,74 @@
                 <button type="button" data-ma-tab="media" aria-selected="false">
                     Media <span id="ma-media-tab-count">0</span>
                 </button>
+                <button type="button" data-ma-tab="library" aria-selected="false">Library</button>
                 <button type="button" data-ma-tab="activity" aria-selected="false">Activity</button>
             </nav>
 
             <div class="ma-tab-content">
                 <section data-ma-panel="setup">
+                    <section class="ma-group ma-profile-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>Profiles</h2>
+                                <p>Save reusable scan, sync, and archive settings.</p>
+                            </div>
+                        </div>
+                        <div class="ma-profile-row">
+                            <select id="ma-profile-select" aria-label="Saved profile">
+                                <option value="">Choose profile…</option>
+                            </select>
+                            <button id="ma-profile-load" class="ma-secondary" type="button">Load</button>
+                        </div>
+                        <div class="ma-profile-row">
+                            <input id="ma-profile-name" type="text" maxlength="60" placeholder="Profile name">
+                            <button id="ma-profile-save" class="ma-secondary" type="button">Save</button>
+                            <button id="ma-profile-delete" class="ma-quiet-danger" type="button">Delete</button>
+                        </div>
+                    </section>
+
+                    <section class="ma-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>Collection mode</h2>
+                                <p>Choose what counts as downloadable in this run.</p>
+                            </div>
+                        </div>
+                        <div class="ma-choice-grid">
+                            <label class="ma-choice">
+                                <input id="ma-only-new" type="checkbox">
+                                <span><strong>Only new media</strong><small>Skip sources already saved in this collection index</small></span>
+                            </label>
+                            <label class="ma-choice">
+                                <input id="ma-exact-dedupe" type="checkbox" checked>
+                                <span><strong>Exact duplicate check</strong><small>SHA-256 prevents re-uploaded identical bytes in ZIPs</small></span>
+                            </label>
+                            <label class="ma-choice ma-choice-wide">
+                                <input id="ma-picked-only" type="checkbox">
+                                <span><strong>Use picked items only</strong><small>Archive only media selected on the page or in the Media tab</small></span>
+                            </label>
+                        </div>
+                        <div class="ma-inline-actions">
+                            <button id="ma-page-picker" class="ma-picker-button" type="button">Start page picker</button>
+                            <button id="ma-clear-picks" class="ma-text-button" type="button">Clear picks</button>
+                        </div>
+                    </section>
+
                     <section class="ma-group">
                         <div class="ma-group-heading">
                             <div>
                                 <h2>What to save</h2>
-                                <p>Choose the media categories included in the archive.</p>
+                                <p>Media categories remain independent from page picks.</p>
                             </div>
                         </div>
                         <div class="ma-choice-grid">
                             <label class="ma-choice">
                                 <input id="ma-include-photos" type="checkbox" checked>
-                                <span><strong>Photos & native GIFs</strong><small>Image attachments</small></span>
+                                <span><strong>Photos & native GIFs</strong><small>Image attachments and pins</small></span>
                             </label>
                             <label class="ma-choice">
                                 <input id="ma-include-videos" type="checkbox" checked>
-                                <span><strong>Videos</strong><small>Video attachments</small></span>
+                                <span><strong>Videos</strong><small>Rendered video files</small></span>
                             </label>
                             <label class="ma-choice ma-choice-wide">
                                 <input id="ma-include-external-gifs" type="checkbox" checked>
@@ -74,7 +122,7 @@
                         <div class="ma-group-heading ma-heading-with-control">
                             <div>
                                 <h2>Date range</h2>
-                                <p>Filter by each item's source timestamp.</p>
+                                <p id="ma-date-capability">Filter by source timestamps when the active site exposes them.</p>
                             </div>
                             <label class="ma-switch">
                                 <input id="ma-date-filter" type="checkbox">
@@ -106,26 +154,70 @@
                     <section class="ma-group">
                         <div class="ma-group-heading">
                             <div>
-                                <h2>Scan behavior</h2>
-                                <p>Control where the scan starts, ends, and leaves the page.</p>
+                                <h2>Scan planner</h2>
+                                <p>Smart mode chooses the shortest safe route for the selected period.</p>
                             </div>
                         </div>
                         <div class="ma-field-grid">
                             <label class="ma-field-wide">
-                                <span>Direction and starting point</span>
+                                <span>Planning mode</span>
+                                <select id="ma-scan-strategy">
+                                    <option value="smart" selected>Smart — choose automatically</option>
+                                    <option value="manual">Manual — advanced override</option>
+                                </select>
+                            </label>
+                            <label id="ma-manual-direction-wrap" class="ma-field-wide">
+                                <span>Manual direction and starting point</span>
                                 <select id="ma-scan-direction">
-                                    <option value="newest-to-oldest">End → start (jump to end first)</option>
-                                    <option value="current-to-oldest">Current position → start</option>
-                                    <option value="current-to-newest">Current position → end</option>
-                                    <option value="full-finish-down">Full timeline: current → start → end</option>
+                                    <option value="newest-to-oldest">Newest → older boundary</option>
+                                    <option value="current-to-oldest">Current position → older boundary</option>
+                                    <option value="current-to-newest">Current position → newer boundary</option>
+                                    <option value="full-finish-down">Current → older boundary → newer boundary</option>
                                 </select>
                             </label>
                             <label class="ma-field-wide">
                                 <span>Position after completion</span>
                                 <select id="ma-final-position">
-                                    <option value="newest" selected>Jump to timeline end</option>
+                                    <option value="newest" selected>Jump to newest</option>
                                     <option value="scan-end">Stay at scan end</option>
                                     <option value="start">Return to starting position</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div id="ma-plan-summary" class="ma-plan-summary">Smart plan will be calculated when the scan starts.</div>
+                    </section>
+
+                    <section class="ma-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>Archive output</h2>
+                                <p>Names and ZIP sizes adapt to the active collection.</p>
+                            </div>
+                        </div>
+                        <div class="ma-field-grid">
+                            <label>
+                                <span>Files inside ZIP</span>
+                                <select id="ma-filename-mode">
+                                    <option value="sequential">000001.ext, 000002.ext</option>
+                                    <option value="original">Keep original names</option>
+                                    <option value="timestamp-original">Timestamp + original name</option>
+                                    <option value="context-sequential">Collection name + number</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span>Target ZIP size (MB)</span>
+                                <input id="ma-zip-target" type="number" min="${MIN_ZIP_TARGET_MB}" max="${MAX_ZIP_TARGET_MB}" step="25" value="${DEFAULT_ZIP_TARGET_MB}">
+                            </label>
+                            <label class="ma-field-wide">
+                                <span>Custom archive name (optional)</span>
+                                <input id="ma-archive-name" type="text" maxlength="100" placeholder="Auto: site + channel / board name">
+                            </label>
+                            <label class="ma-field-wide">
+                                <span>ZIP engine</span>
+                                <select id="ma-zip-engine">
+                                    <option value="auto">Auto — fast engine with built-in fallback</option>
+                                    <option value="fflate">Prefer fflate</option>
+                                    <option value="built-in">Built-in compatibility writer</option>
                                 </select>
                             </label>
                         </div>
@@ -135,7 +227,7 @@
                         <label class="ma-option-row">
                             <span>
                                 <strong>Create ZIPs after scanning</strong>
-                                <small>Turn this off to review the collected media first.</small>
+                                <small>Turn this off to review or pick media first.</small>
                             </span>
                             <input id="ma-auto-zip" type="checkbox" checked>
                         </label>
@@ -149,14 +241,52 @@
                         <div><span>GIF previews</span><strong id="ma-external-gif-count">0</strong></div>
                         <div><span>In range</span><strong id="ma-in-range">0</strong></div>
                         <div><span>Date excluded</span><strong id="ma-excluded-date">0</strong></div>
+                        <div><span>Indexed</span><strong id="ma-indexed-count">0</strong></div>
+                        <div><span>Duplicates</span><strong id="ma-duplicate-count">0</strong></div>
+                        <div><span>Picked</span><strong id="ma-picked-count">0</strong></div>
                     </div>
-                    <div class="ma-list-heading">
+                    <div class="ma-list-heading ma-heading-with-control">
                         <div>
                             <h2>Collected media</h2>
-                            <p>○ collected · … downloading · ✓ saved · – filtered out</p>
+                            <p>Click an item to pick it. Shift-click selects a range.</p>
+                        </div>
+                        <div class="ma-mini-actions">
+                            <button id="ma-media-picker" class="ma-text-button" type="button">Pick on page</button>
+                            <button id="ma-invert-picks" class="ma-text-button" type="button">Invert</button>
                         </div>
                     </div>
                     <div id="ma-media-list" class="ma-media-list"></div>
+                </section>
+
+                <section data-ma-panel="library" hidden>
+                    <section class="ma-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>Current collection index</h2>
+                                <p id="ma-library-context">Loading current collection…</p>
+                            </div>
+                        </div>
+                        <div id="ma-library-summary" class="ma-library-summary"></div>
+                        <div class="ma-inline-actions ma-wrap-actions">
+                            <button id="ma-restore-checkpoint" class="ma-secondary" type="button">Restore last scan</button>
+                            <button id="ma-discard-checkpoint" class="ma-text-button" type="button">Discard checkpoint</button>
+                            <button id="ma-clear-index" class="ma-quiet-danger" type="button">Clear collection index</button>
+                        </div>
+                    </section>
+
+                    <section class="ma-group">
+                        <div class="ma-group-heading">
+                            <div>
+                                <h2>Backup and transfer</h2>
+                                <p>Export or import profiles, settings, and archive indexes.</p>
+                            </div>
+                        </div>
+                        <div class="ma-inline-actions ma-wrap-actions">
+                            <button id="ma-export-data" class="ma-secondary" type="button">Export backup</button>
+                            <button id="ma-import-data" class="ma-secondary" type="button">Import backup</button>
+                            <input id="ma-import-file" type="file" accept="application/json,.json" hidden>
+                        </div>
+                    </section>
                 </section>
 
                 <section data-ma-panel="activity" hidden>
@@ -172,11 +302,24 @@
             </div>
 
             <footer class="ma-actions">
-                <button id="ma-start" class="ma-primary" type="button">Scan & create ZIPs</button>
+                <button id="ma-start" class="ma-primary" type="button">Scan & archive</button>
                 <button id="ma-stop" class="ma-danger" type="button" disabled>Stop</button>
                 <button id="ma-zip" class="ma-success" type="button" disabled>Create ZIP now</button>
-                <button id="ma-reset" class="ma-secondary" type="button">Reset</button>
+                <button id="ma-reset" class="ma-secondary" type="button">Reset session</button>
             </footer>
         </div>
     `;
 
+    const pickerToolbar = document.createElement('div');
+    pickerToolbar.id = 'ma-picker-toolbar';
+    pickerToolbar.hidden = true;
+    pickerToolbar.innerHTML = `
+        <div class="ma-picker-orb">✓</div>
+        <div class="ma-picker-copy">
+            <strong>Page picker</strong>
+            <span id="ma-picker-toolbar-count">0 picked</span>
+        </div>
+        <button id="ma-picker-download" type="button">Download picked</button>
+        <button id="ma-picker-clear" type="button">Clear</button>
+        <button id="ma-picker-done" type="button" aria-label="Close page picker">Done</button>
+    `;

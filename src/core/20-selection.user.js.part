@@ -6,9 +6,10 @@
         }
 
         if (a.timestamp && b.timestamp) {
-            const timeDifference =
-                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
-            if (timeDifference) return timeDifference;
+            const difference =
+                new Date(b.timestamp).getTime() -
+                new Date(a.timestamp).getTime();
+            if (difference) return difference;
         }
 
         if (a.itemId && !b.itemId) return -1;
@@ -44,19 +45,25 @@
         return date.getTime();
     }
 
+    function adapterDateRangeSupport() {
+        return activeSiteAdapter.dateRangeSupport || 'full';
+    }
+
     function getDateRangeConfig() {
-        const enabled = Boolean(dateFilterCheckbox?.checked);
+        const supported = adapterDateRangeSupport() !== 'none';
+        const enabled = supported && Boolean(dateFilterCheckbox?.checked);
 
         if (!enabled) {
             return {
                 enabled: false,
+                supported,
                 valid: true,
                 startMs: Number.NEGATIVE_INFINITY,
                 endExclusiveMs: Number.POSITIVE_INFINITY,
                 startValue: '',
                 endValue: '',
                 endMode: 'latest',
-                label: 'All dates'
+                label: supported ? 'All dates' : 'Date filtering unavailable'
             };
         }
 
@@ -68,6 +75,7 @@
         if (!Number.isFinite(startMs)) {
             return {
                 enabled: true,
+                supported,
                 valid: false,
                 error: 'Choose a valid From date.'
             };
@@ -81,6 +89,7 @@
             if (!Number.isFinite(endStartMs)) {
                 return {
                     enabled: true,
+                    supported,
                     valid: false,
                     error: 'Choose a valid To date.'
                 };
@@ -89,6 +98,7 @@
             if (endStartMs < startMs) {
                 return {
                     enabled: true,
+                    supported,
                     valid: false,
                     error: 'The To date cannot be earlier than the From date.'
                 };
@@ -101,6 +111,7 @@
 
         return {
             enabled: true,
+            supported,
             valid: true,
             startMs,
             endExclusiveMs,
@@ -130,28 +141,29 @@
         const timestamp = entryTimestampMilliseconds(entry);
         if (!Number.isFinite(timestamp)) return false;
 
-        return (
-            timestamp >= range.startMs &&
-            timestamp < range.endExclusiveMs
-        );
+        return timestamp >= range.startMs && timestamp < range.endExclusiveMs;
     }
 
     function mediaTypeIsEnabled(entry) {
         if (entry.mediaType === 'video') {
             return Boolean(videoCheckbox?.checked);
         }
-
         if (entry.mediaType === 'external-gif') {
             return Boolean(externalGifCheckbox?.checked);
         }
-
         return Boolean(photoCheckbox?.checked);
+    }
+
+    function indexAllowsEntry(entry) {
+        return !onlyNewCheckbox?.checked || !isEntryPreviouslyArchived(entry);
     }
 
     function isEntryIncluded(entry) {
         return (
             mediaTypeIsEnabled(entry) &&
-            isEntryInsideDateRange(entry)
+            isEntryInsideDateRange(entry) &&
+            indexAllowsEntry(entry) &&
+            pageSelectionAllowsEntry(entry)
         );
     }
 
@@ -159,13 +171,17 @@
         if (!mediaTypeIsEnabled(entry)) {
             return 'Skipped by media-type filter';
         }
-
         if (!isEntryInsideDateRange(entry)) {
             return Number.isFinite(entryTimestampMilliseconds(entry))
                 ? 'Skipped by date-range filter'
                 : 'Skipped because its source date is unknown';
         }
-
+        if (!indexAllowsEntry(entry)) {
+            return 'Already archived in this collection index';
+        }
+        if (!pageSelectionAllowsEntry(entry)) {
+            return 'Not included in the current page pick';
+        }
         return '';
     }
 
@@ -177,17 +193,25 @@
         let inDateRange = 0;
         let excludedByDate = 0;
         let excludedByType = 0;
+        let excludedByIndex = 0;
+        let excludedByPick = 0;
+        let duplicateCount = 0;
         let selected = 0;
 
         for (const entry of mediaEntries.values()) {
             const insideDate = isEntryInsideDateRange(entry);
             const typeEnabled = mediaTypeIsEnabled(entry);
+            const newInIndex = indexAllowsEntry(entry);
+            const picked = pageSelectionAllowsEntry(entry);
 
             if (insideDate) inDateRange++;
             else excludedByDate++;
 
             if (insideDate && !typeEnabled) excludedByType++;
-            if (insideDate && typeEnabled) selected++;
+            if (insideDate && typeEnabled && !newInIndex) excludedByIndex++;
+            if (insideDate && typeEnabled && newInIndex && !picked) excludedByPick++;
+            if (entry.status === STATUS.DUPLICATE) duplicateCount++;
+            if (insideDate && typeEnabled && newInIndex && picked) selected++;
         }
 
         return {
@@ -195,32 +219,59 @@
             inDateRange,
             excludedByDate,
             excludedByType,
+            excludedByIndex,
+            excludedByPick,
+            duplicateCount,
             selected
         };
     }
 
+    function incrementalStartBoundaryMs() {
+        if (!onlyNewCheckbox?.checked) return Number.NEGATIVE_INFINITY;
+        if (activeSiteAdapter.incrementalBoundarySupport === false) {
+            return Number.NEGATIVE_INFINITY;
+        }
+
+        const latest = latestIndexedTimestampMilliseconds();
+        return Number.isFinite(latest)
+            ? latest - MIN_INCREMENTAL_OVERLAP_MS
+            : Number.NEGATIVE_INFINITY;
+    }
+
     function selectedDateBoundaryReached(direction) {
         const range = getDateRangeConfig();
-        if (!range.enabled || !range.valid) return null;
-
         const visible = visibleItemTimeRange();
         if (!visible) return null;
 
-        // The whole visible viewport must be outside the selected range.
-        // This keeps the complete boundary day and avoids skipping media near
-        // the top or bottom edge of a virtualized timeline.
-        if (
-            direction === 'older' &&
-            visible.maxMs < range.startMs
-        ) {
-            return {
-                reason: 'date-start',
-                label: `passed the From date (${range.startValue})`
-            };
+        if (direction === 'older') {
+            const incrementalBoundary = incrementalStartBoundaryMs();
+            const dateBoundary = range.enabled
+                ? range.startMs
+                : Number.NEGATIVE_INFINITY;
+            const effectiveBoundary = Math.max(
+                incrementalBoundary,
+                dateBoundary
+            );
+
+            if (
+                Number.isFinite(effectiveBoundary) &&
+                visible.maxMs < effectiveBoundary
+            ) {
+                const incrementalWon =
+                    incrementalBoundary >= dateBoundary &&
+                    Number.isFinite(incrementalBoundary);
+                return {
+                    reason: incrementalWon ? 'index-frontier' : 'date-start',
+                    label: incrementalWon
+                        ? 'passed the previously archived frontier'
+                        : `passed the From date (${range.startValue})`
+                };
+            }
         }
 
         if (
             direction === 'newer' &&
+            range.enabled &&
             Number.isFinite(range.endExclusiveMs) &&
             visible.minMs >= range.endExclusiveMs
         ) {
@@ -239,6 +290,8 @@
                 return 'selected From-date boundary';
             case 'date-end':
                 return 'selected To-date boundary';
+            case 'index-frontier':
+                return 'previous archive frontier';
             case 'timeline-start':
                 return 'timeline-start boundary';
             case 'timeline-end':
@@ -250,12 +303,13 @@
 
     function dateRangeFilenameToken() {
         const range = getDateRangeConfig();
-        if (!range.enabled || !range.valid) return 'all_dates';
+        if (!range.enabled || !range.valid) {
+            return onlyNewCheckbox?.checked ? 'new_only' : 'all_dates';
+        }
 
         const end = range.endMode === 'specific'
             ? range.endValue
             : 'latest';
-
         return `${range.startValue}_to_${end}`;
     }
 
@@ -274,40 +328,61 @@
     }
 
     function selectedArchiveKind(entries) {
-        const { photos, videos, externalGifs } =
-            countMediaTypes(entries);
+        const { photos, videos, externalGifs } = countMediaTypes(entries);
+        const typeCount = [photos, videos, externalGifs]
+            .filter(value => value > 0).length;
 
-        const selectedTypeCount = [
-            photos,
-            videos,
-            externalGifs
-        ].filter(value => value > 0).length;
-
-        if (selectedTypeCount > 1) return 'media';
+        if (typeCount > 1) return 'media';
         if (videos) return 'videos';
-        if (externalGifs) return 'external_gifs';
+        if (externalGifs) return 'gif-previews';
         return 'photos';
+    }
+
+    function estimatedEntryBytes(entry) {
+        if (entry.size > 0) return entry.size;
+        if (entry.mediaType === 'video') return ESTIMATED_VIDEO_BYTES;
+        if (entry.mediaType === 'external-gif') {
+            return ESTIMATED_EXTERNAL_GIF_BYTES;
+        }
+        return ESTIMATED_PHOTO_BYTES;
+    }
+
+    function getZipTargetBytes() {
+        const megabytes = clamp(
+            Number(zipTargetInput?.value) || DEFAULT_ZIP_TARGET_MB,
+            MIN_ZIP_TARGET_MB,
+            MAX_ZIP_TARGET_MB
+        );
+        return Math.round(megabytes * 1024 * 1024);
+    }
+
+    function getZipHardMaximumBytes() {
+        const target = getZipTargetBytes();
+        return Math.min(
+            3.5 * 1024 * 1024 * 1024,
+            Math.max(target * 1.35, target + 64 * 1024 * 1024)
+        );
     }
 
     function takeAdaptiveWorkGroup(entries, startIndex) {
         const group = [];
         let estimatedBytes = 0;
+        const target = getZipTargetBytes();
+        const memoryWindow = Math.min(
+            900 * 1024 * 1024,
+            Math.max(target * 2.15, 160 * 1024 * 1024)
+        );
 
-        for (
-            let index = startIndex;
-            index < entries.length && group.length < ZIP_BATCH_MAX_ITEMS;
-            index++
-        ) {
+        for (let index = startIndex; index < entries.length; index++) {
             const entry = entries[index];
-            const estimate = entry.mediaType === 'video'
-                ? ESTIMATED_VIDEO_BYTES
-                : entry.mediaType === 'external-gif'
-                    ? ESTIMATED_EXTERNAL_GIF_BYTES
-                    : ESTIMATED_PHOTO_BYTES;
+            const estimate = estimatedEntryBytes(entry);
 
             if (
                 group.length > 0 &&
-                estimatedBytes + estimate > WORK_BATCH_ESTIMATED_MAX_BYTES
+                (
+                    estimatedBytes + estimate > memoryWindow ||
+                    group.length >= MAX_ZIP_ITEMS_SAFETY
+                )
             ) {
                 break;
             }
@@ -317,5 +392,107 @@
         }
 
         return group;
+    }
+
+    function recordsByteLength(records) {
+        return records.reduce(
+            (total, record) => total + record.data.byteLength,
+            0
+        );
+    }
+
+    function partitionRecordsBalanced(records, targetBytes, hardMaximumBytes) {
+        if (!records.length) return [];
+
+        const totalBytes = recordsByteLength(records);
+        let partCount = Math.max(1, Math.ceil(totalBytes / targetBytes));
+
+        while (totalBytes / partCount > hardMaximumBytes) {
+            partCount++;
+        }
+
+        const groups = [];
+        let cursor = 0;
+        let remainingBytes = totalBytes;
+        let remainingParts = partCount;
+
+        while (cursor < records.length) {
+            const desired = remainingBytes / remainingParts;
+            const group = [];
+            let bytes = 0;
+
+            while (cursor < records.length) {
+                const record = records[cursor];
+                const nextBytes = bytes + record.data.byteLength;
+                const recordsAfter = records.length - (cursor + 1);
+                const mustLeave = remainingParts - 1;
+                const canTake = recordsAfter >= mustLeave;
+
+                if (
+                    group.length &&
+                    canTake &&
+                    nextBytes > hardMaximumBytes
+                ) {
+                    break;
+                }
+
+                if (
+                    group.length &&
+                    canTake &&
+                    bytes >= desired * 0.88 &&
+                    Math.abs(bytes - desired) <= Math.abs(nextBytes - desired)
+                ) {
+                    break;
+                }
+
+                group.push(record);
+                bytes = nextBytes;
+                cursor++;
+
+                if (bytes >= hardMaximumBytes) break;
+            }
+
+            groups.push(group);
+            remainingBytes -= bytes;
+            remainingParts--;
+        }
+
+        return groups;
+    }
+
+    function takeFlushableRecordGroups(pendingRecords, final = false) {
+        const target = getZipTargetBytes();
+        const hardMaximum = getZipHardMaximumBytes();
+        const total = recordsByteLength(pendingRecords);
+
+        if (final) {
+            const groups = partitionRecordsBalanced(
+                pendingRecords,
+                target,
+                hardMaximum
+            );
+            pendingRecords.length = 0;
+            return groups;
+        }
+
+        // Keep roughly two target ZIPs in memory so the last small remainder
+        // can be rebalanced instead of becoming a tiny archive part.
+        const onlineHoldLimit = Math.min(
+            target * 2.2,
+            700 * 1024 * 1024
+        );
+        if (total < onlineHoldLimit) return [];
+
+        const groups = partitionRecordsBalanced(
+            pendingRecords,
+            target,
+            hardMaximum
+        );
+
+        if (groups.length <= 1) return [];
+        const ready = groups.slice(0, -1);
+        const carry = groups.at(-1);
+        pendingRecords.splice(0, pendingRecords.length, ...carry);
+        return ready;
     }
 

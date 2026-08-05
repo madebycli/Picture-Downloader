@@ -1,0 +1,505 @@
+    const STORAGE_KEYS = Object.freeze({
+        settings: 'media-archiver.settings.v2',
+        profiles: 'media-archiver.profiles.v1',
+        index: 'media-archiver.index.v2',
+        checkpoint: 'media-archiver.checkpoint.v1'
+    });
+
+    const DEFAULT_SETTINGS = Object.freeze({
+        includePhotos: true,
+        includeVideos: true,
+        includeExternalGifs: true,
+        dateFilter: false,
+        fromDate: '',
+        dateEndMode: 'latest',
+        toDate: '',
+        scanStrategy: 'smart',
+        manualDirection: 'newest-to-oldest',
+        finalPosition: 'newest',
+        autoZip: true,
+        onlyNew: false,
+        exactDedupe: true,
+        pickedOnly: false,
+        filenameMode: 'sequential',
+        archiveName: '',
+        zipTargetMb: DEFAULT_ZIP_TARGET_MB,
+        zipEngine: 'auto'
+    });
+
+    function storageGet(key, fallback) {
+        try {
+            if (typeof GM_getValue === 'function') {
+                return GM_getValue(key, fallback);
+            }
+        } catch {
+            // Fall through to localStorage for development environments.
+        }
+
+        try {
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : fallback;
+        } catch {
+            return fallback;
+        }
+    }
+
+    function storageSet(key, value) {
+        try {
+            if (typeof GM_setValue === 'function') {
+                GM_setValue(key, value);
+                return;
+            }
+        } catch {
+            // Fall through.
+        }
+
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+        } catch (error) {
+            console.warn(`${APP_NAME}: could not persist ${key}`, error);
+        }
+    }
+
+    function storageDelete(key) {
+        try {
+            if (typeof GM_deleteValue === 'function') {
+                GM_deleteValue(key);
+                return;
+            }
+        } catch {
+            // Fall through.
+        }
+
+        try {
+            localStorage.removeItem(key);
+        } catch {
+            // Ignore.
+        }
+    }
+
+    function normalizedIndex(value) {
+        const candidate = value && typeof value === 'object' ? value : {};
+        return {
+            schemaVersion: 2,
+            updatedAt: candidate.updatedAt || null,
+            scopes: candidate.scopes && typeof candidate.scopes === 'object'
+                ? candidate.scopes
+                : {}
+        };
+    }
+
+    function normalizedProfiles(value) {
+        const candidate = value && typeof value === 'object' ? value : {};
+        return candidate.profiles && typeof candidate.profiles === 'object'
+            ? candidate
+            : { schemaVersion: 1, profiles: {} };
+    }
+
+    let savedSettings = {
+        ...DEFAULT_SETTINGS,
+        ...(storageGet(STORAGE_KEYS.settings, {}) || {})
+    };
+    let profileStore = normalizedProfiles(
+        storageGet(STORAGE_KEYS.profiles, null)
+    );
+    let archiveIndex = normalizedIndex(
+        storageGet(STORAGE_KEYS.index, null)
+    );
+
+    function currentArchiveContext() {
+        const context = activeSiteAdapter.getArchiveContext() || {};
+        const id = String(context.id || location.pathname || 'collection');
+        const collectionName = String(
+            context.collectionName || context.label || id || 'Collection'
+        );
+
+        return {
+            id,
+            collectionName,
+            siteLabel: context.siteLabel || activeSiteAdapter.label,
+            siteId: activeSiteAdapter.id,
+            scopeKey: `${activeSiteAdapter.id}:${id}`,
+            ...context
+        };
+    }
+
+    function getIndexScope(create = false) {
+        const { scopeKey, collectionName, siteLabel } = currentArchiveContext();
+        let scope = archiveIndex.scopes[scopeKey];
+
+        if (!scope && create) {
+            scope = {
+                schemaVersion: 1,
+                siteLabel,
+                collectionName,
+                createdAt: new Date().toISOString(),
+                updatedAt: null,
+                latestArchivedTimestamp: null,
+                sources: {},
+                hashes: {}
+            };
+            archiveIndex.scopes[scopeKey] = scope;
+        }
+
+        return scope || null;
+    }
+
+    function sourceFingerprintForEntry(entry) {
+        return String(
+            entry.fingerprint ||
+            activeSiteAdapter.getSourceFingerprint?.(entry) ||
+            entry.key
+        );
+    }
+
+    function isEntryPreviouslyArchived(entry) {
+        const scope = getIndexScope(false);
+        if (!scope) return false;
+        return Boolean(scope.sources?.[sourceFingerprintForEntry(entry)]);
+    }
+
+    function isContentHashArchived(hash) {
+        if (!hash) return false;
+        const scope = getIndexScope(false);
+        return Boolean(scope?.hashes?.[hash]);
+    }
+
+    function latestIndexedTimestampMilliseconds() {
+        const value = getIndexScope(false)?.latestArchivedTimestamp;
+        const parsed = Date.parse(value || '');
+        return Number.isFinite(parsed) ? parsed : NaN;
+    }
+
+    function persistArchiveIndex() {
+        archiveIndex.updatedAt = new Date().toISOString();
+        storageSet(STORAGE_KEYS.index, archiveIndex);
+        refreshLibrarySummary?.();
+    }
+
+    function updateLatestArchivedTimestamp(scope, timestamp) {
+        const parsed = Date.parse(timestamp || '');
+        if (!Number.isFinite(parsed)) return;
+
+        const current = Date.parse(scope.latestArchivedTimestamp || '');
+        if (!Number.isFinite(current) || parsed > current) {
+            scope.latestArchivedTimestamp = new Date(parsed).toISOString();
+        }
+    }
+
+    function markArchivedRecords(records, archiveMeta = {}) {
+        if (!records?.length) return;
+
+        const scope = getIndexScope(true);
+        const archivedAt = new Date().toISOString();
+
+        for (const record of records) {
+            const entry = record.entry;
+            const fingerprint = sourceFingerprintForEntry(entry);
+            const contentHash = record.contentHash || entry.contentHash || null;
+
+            scope.sources[fingerprint] = {
+                archivedAt,
+                contentHash,
+                itemId: entry.itemId || null,
+                timestamp: entry.timestamp || null,
+                archive: archiveMeta.filename || null
+            };
+
+            if (contentHash) {
+                scope.hashes[contentHash] = {
+                    archivedAt,
+                    fingerprint,
+                    filename: entry.filename || null
+                };
+            }
+
+            updateLatestArchivedTimestamp(scope, entry.timestamp);
+        }
+
+        scope.collectionName = currentArchiveContext().collectionName;
+        scope.siteLabel = activeSiteAdapter.label;
+        scope.updatedAt = archivedAt;
+        persistArchiveIndex();
+    }
+
+    function markVerifiedDuplicate(entry, contentHash) {
+        if (!entry || !contentHash) return;
+        const scope = getIndexScope(true);
+        const archivedAt = new Date().toISOString();
+        const fingerprint = sourceFingerprintForEntry(entry);
+
+        scope.sources[fingerprint] = {
+            archivedAt,
+            contentHash,
+            itemId: entry.itemId || null,
+            timestamp: entry.timestamp || null,
+            duplicateOf: scope.hashes?.[contentHash]?.fingerprint || null
+        };
+        updateLatestArchivedTimestamp(scope, entry.timestamp);
+        scope.updatedAt = archivedAt;
+        persistArchiveIndex();
+    }
+
+    async function sha256Hex(bytes) {
+        if (!globalThis.crypto?.subtle) return null;
+        const buffer = bytes.buffer.slice(
+            bytes.byteOffset,
+            bytes.byteOffset + bytes.byteLength
+        );
+        const digest = await crypto.subtle.digest('SHA-256', buffer);
+        return [...new Uint8Array(digest)]
+            .map(value => value.toString(16).padStart(2, '0'))
+            .join('');
+    }
+
+    function captureCurrentSettings() {
+        return {
+            includePhotos: Boolean(photoCheckbox?.checked),
+            includeVideos: Boolean(videoCheckbox?.checked),
+            includeExternalGifs: Boolean(externalGifCheckbox?.checked),
+            dateFilter: Boolean(dateFilterCheckbox?.checked),
+            fromDate: fromDateInput?.value || '',
+            dateEndMode: dateEndModeSelect?.value || 'latest',
+            toDate: toDateInput?.value || '',
+            scanStrategy: scanStrategySelect?.value || 'smart',
+            manualDirection: scanDirectionSelect?.value || 'newest-to-oldest',
+            finalPosition: finalPositionSelect?.value || 'newest',
+            autoZip: Boolean(autoZipCheckbox?.checked),
+            onlyNew: Boolean(onlyNewCheckbox?.checked),
+            exactDedupe: Boolean(exactDedupeCheckbox?.checked),
+            pickedOnly: Boolean(pickedOnlyCheckbox?.checked),
+            filenameMode: filenameModeSelect?.value || 'sequential',
+            archiveName: archiveNameInput?.value || '',
+            zipTargetMb: clamp(
+                Number(zipTargetInput?.value) || DEFAULT_ZIP_TARGET_MB,
+                MIN_ZIP_TARGET_MB,
+                MAX_ZIP_TARGET_MB
+            ),
+            zipEngine: zipEngineSelect?.value || 'auto'
+        };
+    }
+
+    function persistCurrentSettings() {
+        savedSettings = {
+            ...DEFAULT_SETTINGS,
+            ...captureCurrentSettings()
+        };
+        storageSet(STORAGE_KEYS.settings, savedSettings);
+    }
+
+    function applySettings(settings = savedSettings) {
+        const value = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+
+        photoCheckbox.checked = Boolean(value.includePhotos);
+        videoCheckbox.checked = Boolean(value.includeVideos);
+        externalGifCheckbox.checked = Boolean(value.includeExternalGifs);
+        dateFilterCheckbox.checked = Boolean(value.dateFilter);
+        if (value.fromDate) fromDateInput.value = value.fromDate;
+        dateEndModeSelect.value = value.dateEndMode === 'specific'
+            ? 'specific'
+            : 'latest';
+        if (value.toDate) toDateInput.value = value.toDate;
+        scanStrategySelect.value = value.scanStrategy === 'manual'
+            ? 'manual'
+            : 'smart';
+        scanDirectionSelect.value = value.manualDirection || 'newest-to-oldest';
+        finalPositionSelect.value = value.finalPosition || 'newest';
+        autoZipCheckbox.checked = Boolean(value.autoZip);
+        onlyNewCheckbox.checked = Boolean(value.onlyNew);
+        exactDedupeCheckbox.checked = value.exactDedupe !== false;
+        pickedOnlyCheckbox.checked = Boolean(value.pickedOnly);
+        filenameModeSelect.value = value.filenameMode || 'sequential';
+        archiveNameInput.value = value.archiveName || '';
+        zipTargetInput.value = String(clamp(
+            Number(value.zipTargetMb) || DEFAULT_ZIP_TARGET_MB,
+            MIN_ZIP_TARGET_MB,
+            MAX_ZIP_TARGET_MB
+        ));
+        zipEngineSelect.value = ['auto', 'fflate', 'built-in'].includes(value.zipEngine)
+            ? value.zipEngine
+            : 'auto';
+
+        refreshDateControls?.();
+        refreshStrategyControls?.();
+        refreshPagePickerControls?.();
+        updateButtons?.();
+        scheduleRender?.();
+    }
+
+    function profileEntries() {
+        return Object.entries(profileStore.profiles || {})
+            .sort(([left], [right]) => left.localeCompare(right));
+    }
+
+    function saveCurrentProfile(name) {
+        const cleanName = sanitizeFilename(name, 'Profile').slice(0, 60);
+        profileStore.profiles[cleanName] = {
+            name: cleanName,
+            updatedAt: new Date().toISOString(),
+            settings: captureCurrentSettings()
+        };
+        storageSet(STORAGE_KEYS.profiles, profileStore);
+        refreshProfileOptions?.(cleanName);
+        return cleanName;
+    }
+
+    function deleteProfile(name) {
+        if (!name || !profileStore.profiles[name]) return false;
+        delete profileStore.profiles[name];
+        storageSet(STORAGE_KEYS.profiles, profileStore);
+        refreshProfileOptions?.('');
+        return true;
+    }
+
+    function applyProfile(name) {
+        const profile = profileStore.profiles?.[name];
+        if (!profile) return false;
+        applySettings(profile.settings);
+        persistCurrentSettings();
+        return true;
+    }
+
+    function downloadJson(value, filename) {
+        const blob = new Blob(
+            [JSON.stringify(value, null, 2)],
+            { type: 'application/json;charset=utf-8' }
+        );
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.style.display = 'none';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    }
+
+    function exportLibraryData() {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        downloadJson({
+            product: APP_NAME,
+            version: VERSION,
+            exportedAt: new Date().toISOString(),
+            settings: captureCurrentSettings(),
+            profiles: profileStore,
+            index: archiveIndex
+        }, `media-archiver-backup_${stamp}.json`);
+    }
+
+    async function importLibraryData(file) {
+        const parsed = JSON.parse(await file.text());
+        if (!parsed || typeof parsed !== 'object') {
+            throw new Error('The selected file is not a valid Media Archiver backup.');
+        }
+
+        if (parsed.settings) {
+            savedSettings = { ...DEFAULT_SETTINGS, ...parsed.settings };
+            storageSet(STORAGE_KEYS.settings, savedSettings);
+            applySettings(savedSettings);
+        }
+        if (parsed.profiles) {
+            profileStore = normalizedProfiles(parsed.profiles);
+            storageSet(STORAGE_KEYS.profiles, profileStore);
+            refreshProfileOptions?.('');
+        }
+        if (parsed.index) {
+            archiveIndex = normalizedIndex(parsed.index);
+            persistArchiveIndex();
+        }
+    }
+
+    function clearCurrentIndexScope() {
+        const { scopeKey } = currentArchiveContext();
+        if (!archiveIndex.scopes[scopeKey]) return false;
+        delete archiveIndex.scopes[scopeKey];
+        persistArchiveIndex();
+        return true;
+    }
+
+    function serializeCheckpointEntries() {
+        return sortedMediaEntries()
+            .slice(0, MAX_CHECKPOINT_ENTRIES)
+            .map(entry => ({
+                key: entry.key,
+                fingerprint: sourceFingerprintForEntry(entry),
+                url: entry.url,
+                previewUrl: entry.previewUrl,
+                fallbackUrl: entry.fallbackUrl || null,
+                filename: entry.filename,
+                mediaType: entry.mediaType,
+                sourceKind: entry.sourceKind,
+                sourcePageUrl: entry.sourcePageUrl,
+                itemId: entry.itemId,
+                timestamp: entry.timestamp,
+                firstSeen: entry.firstSeen
+            }));
+    }
+
+    function saveSessionCheckpoint() {
+        if (!mediaEntries.size) return;
+        const context = currentArchiveContext();
+        storageSet(STORAGE_KEYS.checkpoint, {
+            schemaVersion: 1,
+            savedAt: new Date().toISOString(),
+            scopeKey: context.scopeKey,
+            siteId: activeSiteAdapter.id,
+            collectionName: context.collectionName,
+            entries: serializeCheckpointEntries()
+        });
+        refreshCheckpointControls?.();
+    }
+
+    function scheduleSessionCheckpoint() {
+        clearTimeout(checkpointTimer);
+        checkpointTimer = setTimeout(
+            saveSessionCheckpoint,
+            CHECKPOINT_DEBOUNCE_MS
+        );
+    }
+
+    function readCurrentCheckpoint() {
+        const checkpoint = storageGet(STORAGE_KEYS.checkpoint, null);
+        if (
+            !checkpoint ||
+            checkpoint.scopeKey !== currentArchiveContext().scopeKey ||
+            !Array.isArray(checkpoint.entries)
+        ) {
+            return null;
+        }
+        return checkpoint;
+    }
+
+    function restoreSessionCheckpoint() {
+        const checkpoint = readCurrentCheckpoint();
+        if (!checkpoint) return 0;
+
+        let restored = 0;
+        for (const saved of checkpoint.entries) {
+            if (!saved?.key || !activeSiteAdapter.isDownloadUrlAllowed(saved.url)) {
+                continue;
+            }
+            if (mediaEntries.has(saved.key)) continue;
+
+            mediaEntries.set(saved.key, {
+                ...saved,
+                firstSeen: firstSeenCounter++,
+                status: STATUS.COLLECTED,
+                error: '',
+                size: 0,
+                contentHash: null
+            });
+            restored++;
+        }
+
+        scanVisiblePage();
+        scheduleRender();
+        updateCounters();
+        return restored;
+    }
+
+    function clearSessionCheckpoint() {
+        storageDelete(STORAGE_KEYS.checkpoint);
+        refreshCheckpointControls?.();
+    }
+

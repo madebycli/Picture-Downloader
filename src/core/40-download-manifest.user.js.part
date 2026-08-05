@@ -15,22 +15,20 @@
                 reject(new Error('The active site adapter blocked this download URL.'));
                 return;
             }
-
             if (stopRequested) {
                 reject(new Error('Stopped by user'));
                 return;
             }
 
             let requestHandle;
-
             requestHandle = GM_xmlhttpRequest({
                 method: 'GET',
                 url,
                 responseType: 'arraybuffer',
-                timeout: 120000,
+                timeout: 180000,
                 anonymous: true,
                 headers: {
-                    'Accept': 'video/*,image/*,*/*;q=0.8'
+                    Accept: 'video/*,image/*,*/*;q=0.8'
                 },
                 onload: async response => {
                     activeRequests.delete(requestHandle);
@@ -45,16 +43,13 @@
                     }
 
                     const retryable =
+                        response.status === 408 ||
                         response.status === 429 ||
                         response.status >= 500 ||
                         response.status === 0;
 
-                    if (
-                        retryable &&
-                        attempt < REQUEST_RETRIES &&
-                        !stopRequested
-                    ) {
-                        await sleep(700 * attempt);
+                    if (retryable && attempt < REQUEST_RETRIES && !stopRequested) {
+                        await sleep(750 * attempt);
                         try {
                             resolve(await requestArrayBuffer(url, attempt + 1));
                         } catch (error) {
@@ -67,9 +62,8 @@
                 },
                 onerror: async () => {
                     activeRequests.delete(requestHandle);
-
                     if (attempt < REQUEST_RETRIES && !stopRequested) {
-                        await sleep(700 * attempt);
+                        await sleep(750 * attempt);
                         try {
                             resolve(await requestArrayBuffer(url, attempt + 1));
                         } catch (error) {
@@ -77,13 +71,12 @@
                         }
                         return;
                     }
-
                     reject(new Error('Network error'));
                 },
                 ontimeout: async () => {
                     activeRequests.delete(requestHandle);
-
                     if (attempt < REQUEST_RETRIES && !stopRequested) {
+                        await sleep(750 * attempt);
                         try {
                             resolve(await requestArrayBuffer(url, attempt + 1));
                         } catch (error) {
@@ -91,7 +84,6 @@
                         }
                         return;
                     }
-
                     reject(new Error('Request timed out'));
                 }
             });
@@ -119,15 +111,19 @@
         );
     }
 
-    function uniqueArchiveName(index, entry, digits) {
-        const width = Math.max(6, digits);
-        const prefix = String(index + 1).padStart(width, '0');
-        let extension = extensionFromPath(new URL(entry.url, location.href).pathname);
+    function resolvedMediaExtension(entry) {
+        let extension = '';
+        try {
+            extension = extensionFromPath(
+                new URL(entry.url, location.href).pathname
+            );
+        } catch {
+            // Use original filename below.
+        }
 
         if (!MEDIA_EXTENSIONS.has(extension)) {
             extension = extensionFromPath(`/${entry.filename}`);
         }
-
         if (!MEDIA_EXTENSIONS.has(extension)) {
             extension =
                 entry.mediaType === 'video' ||
@@ -135,71 +131,72 @@
                     ? '.mp4'
                     : '.jpg';
         }
+        return extension;
+    }
 
-        return `${prefix}${extension}`;
+    function filenameStem(value) {
+        const clean = sanitizeFilename(value, 'media');
+        const extension = extensionFromPath(`/${clean}`);
+        return extension ? clean.slice(0, -extension.length) : clean;
+    }
+
+    function timestampFilenameToken(entry) {
+        const date = new Date(entry.timestamp || '');
+        if (!Number.isFinite(date.getTime())) return 'unknown-time';
+        return date.toISOString().replace(/[:]/g, '-').replace('.000Z', 'Z');
+    }
+
+    function ensureUniqueArchiveFilename(candidate, usedNames) {
+        const extension = extensionFromPath(`/${candidate}`);
+        const stem = extension
+            ? candidate.slice(0, -extension.length)
+            : candidate;
+        let unique = candidate;
+        let suffix = 2;
+
+        while (usedNames.has(unique.toLowerCase())) {
+            unique = `${stem}_${suffix}${extension}`;
+            suffix++;
+        }
+        usedNames.add(unique.toLowerCase());
+        return unique;
+    }
+
+    function uniqueArchiveName(index, entry, digits, usedNames) {
+        const width = Math.max(6, digits);
+        const sequence = String(index + 1).padStart(width, '0');
+        const extension = resolvedMediaExtension(entry);
+        const mode = filenameModeSelect?.value || 'sequential';
+        const contextSlug = slugify(
+            currentArchiveContext().collectionName,
+            'collection'
+        );
+        const originalStem = filenameStem(entry.filename);
+
+        let candidate;
+        switch (mode) {
+            case 'original':
+                candidate = `${originalStem}${extension}`;
+                break;
+            case 'timestamp-original':
+                candidate = `${timestampFilenameToken(entry)}_${originalStem}${extension}`;
+                break;
+            case 'context-sequential':
+                candidate = `${contextSlug}_${sequence}${extension}`;
+                break;
+            default:
+                candidate = `${sequence}${extension}`;
+        }
+
+        return ensureUniqueArchiveFilename(
+            sanitizeFilename(candidate, `${sequence}${extension}`),
+            usedNames
+        );
     }
 
     function csvCell(value) {
         const text = String(value ?? '');
         return `"${text.replace(/"/g, '""')}"`;
-    }
-
-    function buildManifest(entries, archiveNames) {
-        const rows = [
-            [
-                'order_newest_to_oldest',
-                'archive_filename',
-                'original_filename',
-                'media_type',
-                'source_kind',
-                'source_page_url',
-                'item_id',
-                'timestamp',
-                'status',
-                'size_bytes',
-                'source_url'
-            ].map(csvCell).join(',')
-        ];
-
-        entries.forEach((entry, index) => {
-            rows.push([
-                index + 1,
-                archiveNames.get(entry.key) || '',
-                entry.filename,
-                entry.mediaType,
-                entry.sourceKind || '',
-                entry.sourcePageUrl || '',
-                entry.itemId || '',
-                entry.timestamp || '',
-                entry.status,
-                entry.size || 0,
-                entry.url
-            ].map(csvCell).join(','));
-        });
-
-        return '\uFEFF' + rows.join('\r\n');
-    }
-
-    function splitRecordsBySize(records, maximumBytes) {
-        const groups = [];
-        let current = [];
-        let currentBytes = 0;
-
-        for (const record of records) {
-            const bytes = record.data.byteLength;
-
-            if (current.length && currentBytes + bytes > maximumBytes) {
-                groups.push(current);
-                current = [];
-                currentBytes = 0;
-            }
-
-            current.push(record);
-            currentBytes += bytes;
-        }
-
-        if (current.length) groups.push(current);
-        return groups;
     }
 
     function buildPartManifest(records, archiveNames, partNumber) {
@@ -210,6 +207,8 @@
             'original_filename',
             'media_type',
             'source_kind',
+            'source_fingerprint',
+            'content_sha256',
             'source_page_url',
             'item_id',
             'timestamp',
@@ -226,6 +225,8 @@
                 entry.filename,
                 entry.mediaType,
                 entry.sourceKind || '',
+                sourceFingerprintForEntry(entry),
+                record.contentHash || entry.contentHash || '',
                 entry.sourcePageUrl || '',
                 entry.itemId || '',
                 entry.timestamp || '',
@@ -240,28 +241,21 @@
     function resolveFflateLibrary() {
         const candidates = [];
 
-        // On Firefox/Tampermonkey, an @require UMD global can exist in the
-        // userscript scope without appearing as globalThis.fflate.
         try {
-            if (typeof fflate !== 'undefined') {
-                candidates.push(fflate);
-            }
+            if (typeof fflate !== 'undefined') candidates.push(fflate);
         } catch {
             // Ignore unavailable lexical global.
         }
-
         try {
             candidates.push(globalThis?.fflate);
         } catch {
             // Ignore.
         }
-
         try {
             candidates.push(window?.fflate);
         } catch {
             // Ignore.
         }
-
         try {
             if (typeof unsafeWindow !== 'undefined') {
                 candidates.push(unsafeWindow?.fflate);
@@ -279,33 +273,45 @@
 
     function encodeUtf8(value) {
         const library = resolveFflateLibrary();
-
-        if (library) {
-            return library.strToU8(String(value));
-        }
-
-        return new TextEncoder().encode(String(value));
+        return library
+            ? library.strToU8(String(value))
+            : new TextEncoder().encode(String(value));
     }
 
-    // Built-in ZIP32 STORE writer. This is used only when the optional
-    // external fflate library is unavailable. Media files are already
-    // compressed, so storing them without DEFLATE is appropriate and avoids
-    // depending on a CDN.
     const FALLBACK_CRC32_TABLE = (() => {
         const table = new Uint32Array(256);
-
         for (let index = 0; index < 256; index++) {
             let value = index;
-
             for (let bit = 0; bit < 8; bit++) {
                 value = (value & 1)
                     ? (0xEDB88320 ^ (value >>> 1))
                     : (value >>> 1);
             }
-
             table[index] = value >>> 0;
         }
-
         return table;
     })();
 
+    function buildArchiveBaseName() {
+        const context = currentArchiveContext();
+        const custom = archiveNameInput?.value?.trim();
+        const site = slugify(context.siteLabel, activeSiteAdapter.id);
+        const collection = slugify(context.collectionName, context.id);
+        return custom
+            ? slugify(custom, `${site}_${collection}`)
+            : `${site}_${collection}`;
+    }
+
+    function buildZipFilename(partNumber, archiveKind) {
+        const stamp = new Date()
+            .toISOString()
+            .slice(0, 16)
+            .replace('T', '_')
+            .replace(':', '-');
+        const part = String(partNumber).padStart(3, '0');
+        return sanitizeFilename(
+            `${buildArchiveBaseName()}_${archiveKind}_` +
+            `${dateRangeFilenameToken()}_${stamp}_part-${part}.zip`,
+            `media_archive_part-${part}.zip`
+        );
+    }

@@ -1,8 +1,8 @@
 {
   "name": "media-archiver-userscript",
-  "version": "6.0.0",
+  "version": "7.0.0",
   "private": true,
-  "description": "Build and validation tooling for the modular Media Archiver userscript.",
+  "description": "Build and validation tooling for Media Archiver with smart scan planning, persistent sync indexes, page picking, and site adapters.",
   "scripts": {
     "build": "node scripts/assemble-userscript.mjs",
     "check:syntax": "node --check media-archiver.user.js",

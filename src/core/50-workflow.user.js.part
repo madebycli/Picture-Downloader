@@ -1,16 +1,51 @@
+    async function executeScanPlan(scroller, plan) {
+        let completed = false;
+        let finalLabel = '';
+
+        for (let index = 0; index < plan.length && !stopRequested; index++) {
+            const step = plan[index];
+            lastScanBoundaryReason = '';
+
+            if (step.type === 'move-newest') {
+                await moveToNewest(scroller);
+                continue;
+            }
+            if (step.type === 'move-oldest') {
+                await moveToOldest(scroller);
+                continue;
+            }
+            if (step.type === 'scan') {
+                const reached = step.direction === 'older'
+                    ? await autoScrollToOldest(scroller)
+                    : await autoScrollToNewest(scroller);
+                completed = reached;
+                finalLabel = scanBoundaryDescription(lastScanBoundaryReason);
+
+                if (!reached) {
+                    addLog(
+                        `The ${step.direction} scan could not confirm its boundary. ` +
+                        'The remaining plan was stopped to avoid skipping an unknown section.',
+                        'warn'
+                    );
+                    break;
+                }
+            }
+        }
+
+        return { completed, finalLabel };
+    }
+
     async function startAutomaticWorkflow() {
         if (running) return;
 
-        resetCollection();
+        resetCollection({ clearCheckpoint: false });
         stopRequested = false;
         running = true;
         scanning = true;
         packing = false;
         updateButtons();
 
-        const scanMode = scanDirectionSelect.value;
         const dateRange = getDateRangeConfig();
-
         if (!dateRange.valid) {
             running = false;
             scanning = false;
@@ -22,95 +57,54 @@
 
         lastScanBoundaryReason = '';
         setPhase('STARTING');
-        addLog(
-            `Scan started on ${activeSiteAdapter.label}. Mode: ` +
-            `${scanModeDescription(scanMode)}.`
-        );
+        addLog(`Scan started on ${activeSiteAdapter.label}.`);
 
         if (dateRange.enabled) {
             addLog(
-                `Date range: ${dateRange.label}. Calendar days use your browser's local time zone.`
+                `Requested period: ${dateRange.label}. ` +
+                'The smart planner will choose the shortest safe chronological path.'
+            );
+        } else if (adapterDateRangeSupport() === 'none') {
+            addLog(
+                `${activeSiteAdapter.label} does not expose reliable dates in this view; ` +
+                'the date filter is disabled and the feed order is used.',
+                'warn'
             );
         }
 
-        await sleep(300);
+        if (onlyNewCheckbox.checked) {
+            const latest = latestIndexedTimestampMilliseconds();
+            addLog(
+                Number.isFinite(latest)
+                    ? `Incremental mode: scan stops after crossing the previous archive frontier (${new Date(latest).toLocaleString('en-GB')}).`
+                    : 'Incremental mode: no previous archive frontier exists yet, so this run establishes one.'
+            );
+        }
 
+        await sleep(250);
         const scroller = findTimelineScroller();
         if (!scroller) {
             running = false;
             scanning = false;
             setPhase('ERROR');
             addLog(
-                `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found. ${activeSiteAdapter.openTargetHelp || ''}`.trim(),
+                `${activeSiteAdapter.label} ${adapterTerm('timeline', 'timeline')} was not found. ` +
+                `${activeSiteAdapter.openTargetHelp || ''}`,
                 'error'
             );
             updateButtons();
             return;
         }
 
-        // Capture media and an item anchor at the selected starting position.
         scanVisiblePage();
         const startingAnchor = captureStartingAnchor(scroller);
+        const plan = selectedScanPlan();
+        addLog(
+            `${scanStrategySelect.value === 'smart' ? 'Smart' : 'Manual'} scan plan: ` +
+            `${describeScanPlan(plan)}.`
+        );
 
-        let reachedBoundary = false;
-        let completedBoundaryLabel = '';
-
-        if (scanMode === 'newest-to-oldest') {
-            await moveToNewest(scroller);
-
-            if (stopRequested) {
-                finishStoppedScan();
-                return;
-            }
-
-            reachedBoundary = await autoScrollToOldest(scroller);
-            completedBoundaryLabel = scanBoundaryDescription(
-                lastScanBoundaryReason
-            );
-        } else if (scanMode === 'current-to-oldest') {
-            reachedBoundary = await autoScrollToOldest(scroller);
-            completedBoundaryLabel = scanBoundaryDescription(
-                lastScanBoundaryReason
-            );
-        } else if (scanMode === 'current-to-newest') {
-            reachedBoundary = await autoScrollToNewest(scroller);
-            completedBoundaryLabel = scanBoundaryDescription(
-                lastScanBoundaryReason
-            );
-        } else if (scanMode === 'full-finish-down') {
-            addLog(
-                'Full downward-finish mode: first scanning from the current position to the timeline start.'
-            );
-
-            const reachedTop = await autoScrollToOldest(scroller);
-
-            if (stopRequested) {
-                finishStoppedScan();
-                return;
-            }
-
-            if (reachedTop) {
-                addLog(
-                    `${scanBoundaryDescription(lastScanBoundaryReason)} confirmed. ` +
-                    'Now scanning downward toward the selected end boundary.',
-                    'success'
-                );
-
-                lastScanBoundaryReason = '';
-                reachedBoundary = await autoScrollToNewest(scroller);
-                completedBoundaryLabel = scanBoundaryDescription(
-                    lastScanBoundaryReason
-                );
-            } else {
-                reachedBoundary = false;
-                completedBoundaryLabel = 'timeline-start boundary';
-                addLog(
-                    'The first scan did not confirm the timeline-start boundary, so the downward full-channel pass was not started.',
-                    'warn'
-                );
-            }
-        }
-
+        const result = await executeScanPlan(scroller, plan);
         scanning = false;
 
         if (stopRequested) {
@@ -119,39 +113,36 @@
         }
 
         running = false;
+        saveSessionCheckpoint();
         updateCounters();
         updateButtons();
 
-        if (reachedBoundary) {
+        if (result.completed) {
             setPhase(`SCAN FINISHED: ${mediaEntries.size} media files`);
             addLog(
-                `Scan completed at the ${completedBoundaryLabel}: ` +
-                `${mediaEntries.size} unique media files found.`,
+                `Scan completed at the ${result.finalLabel}: ` +
+                `${mediaEntries.size} unique source files found.`,
                 'success'
             );
         } else {
             setPhase(`SCAN ENDED: ${mediaEntries.size} media files`);
             addLog(
-                'The scan stopped at the safety iteration limit or could not confirm the selected boundary.',
+                'The scan ended without a fully confirmed boundary. The collected checkpoint was preserved.',
                 'warn'
             );
         }
 
-        const statsAfterScan = selectionStatistics();
+        const stats = selectionStatistics();
         addLog(
-            `Selection summary: ${statsAfterScan.total} total found, ` +
-            `${statsAfterScan.inDateRange} in the date range, ` +
-            `${statsAfterScan.excludedByDate} excluded by date, ` +
-            `${statsAfterScan.excludedByType} excluded by media type, ` +
-            `${statsAfterScan.selected} selected for ZIP.`
+            `Selection summary: ${stats.total} found, ${stats.selected} selected, ` +
+            `${stats.excludedByIndex} already indexed, ${stats.excludedByPick} outside page picks.`
         );
 
-        const selectedAfterScan = selectedMediaEntries();
-        const createdZip =
-            selectedAfterScan.length > 0 &&
+        const shouldCreateZip =
+            selectedMediaEntries().length > 0 &&
             autoZipCheckbox.checked;
 
-        if (createdZip) {
+        if (shouldCreateZip) {
             await createAndDownloadZipParts();
         }
 
@@ -161,9 +152,8 @@
                 finalPositionSelect.value,
                 startingAnchor
             );
-
             setPhase(
-                createdZip
+                shouldCreateZip
                     ? 'FINISHED'
                     : `SCAN FINISHED: ${mediaEntries.size} media files`
             );
@@ -173,9 +163,10 @@
     function finishStoppedScan() {
         scanning = false;
         running = false;
+        saveSessionCheckpoint();
         setPhase(`STOPPED: ${mediaEntries.size} media files collected`);
         addLog(
-            'Scrolling stopped. Use “CREATE ZIP NOW” to save the media found so far.',
+            'Scrolling stopped. The session checkpoint was saved; create ZIPs now or restore it after a reload.',
             'warn'
         );
         updateButtons();
@@ -183,7 +174,6 @@
 
     function requestStop() {
         if (!running && !packing && !scanning) return;
-
         stopRequested = true;
         abortActiveRequests();
         setPhase('STOPPING …');
@@ -196,21 +186,25 @@
             entry.status = STATUS.COLLECTED;
             entry.error = '';
             entry.size = 0;
+            entry.contentHash = null;
         }
         scheduleRender();
     }
 
-    function resetCollection() {
+    function resetCollection({ clearCheckpoint = true } = {}) {
         if (running || packing || scanning) return;
 
         mediaEntries.clear();
+        manualPickedKeys.clear();
+        lastPickedKey = null;
         firstSeenCounter = 0;
         progressFill.style.width = '0%';
         mediaList.replaceChildren();
+        refreshPageSelectionTargets();
+        if (clearCheckpoint) clearSessionCheckpoint();
         updateCounters();
         setPhase('READY');
     }
-
 
     function formatBytes(bytes) {
         if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -231,7 +225,9 @@
             case STATUS.FETCHING:
                 return ['…', 'Downloading original', 'fetching'];
             case STATUS.PACKED:
-                return ['✓', 'Saved in ZIP', 'packed'];
+                return ['✓', 'Saved in ZIP and indexed', 'packed'];
+            case STATUS.DUPLICATE:
+                return ['=', 'Exact duplicate skipped and indexed', 'duplicate'];
             case STATUS.ERROR:
                 return ['!', entry.error || 'Error', 'error'];
             default:
@@ -241,7 +237,18 @@
 
     function scheduleRender() {
         clearTimeout(renderTimer);
-        renderTimer = setTimeout(renderMediaList, 120);
+        renderTimer = setTimeout(renderMediaList, 100);
+    }
+
+    function handleMediaRowSelection(event, entry) {
+        if (running || packing || scanning) return;
+        const willSelect = !manualPickedKeys.has(entry.key);
+
+        if (event.shiftKey && lastPickedKey) {
+            selectPickedRange(lastPickedKey, entry.key, willSelect);
+        } else {
+            togglePickedEntry(entry.key, willSelect);
+        }
     }
 
     function renderMediaList() {
@@ -249,26 +256,26 @@
         const fragment = document.createDocumentFragment();
 
         entries.forEach((entry, index) => {
-            const row = document.createElement('div');
+            const row = document.createElement('button');
+            row.type = 'button';
             row.className = `ma-row ma-${entry.status}`;
+            row.dataset.key = entry.key;
+            row.title = 'Click to pick this item; Shift-click selects a range.';
             if (!isEntryIncluded(entry)) row.classList.add('ma-skipped');
+            if (manualPickedKeys.has(entry.key)) {
+                row.classList.add('ma-row-picked');
+            }
 
             let thumbnail;
-
             if (
                 entry.mediaType === 'video' ||
                 entry.mediaType === 'external-gif'
             ) {
                 thumbnail = document.createElement('div');
                 thumbnail.className = 'ma-thumb ma-video-thumb';
-                thumbnail.textContent =
-                    entry.mediaType === 'external-gif'
-                        ? 'GIF'
-                        : '▶';
-                thumbnail.title =
-                    entry.mediaType === 'external-gif'
-                        ? 'External GIF preview (usually MP4)'
-                        : 'Video attachment';
+                thumbnail.textContent = entry.mediaType === 'external-gif'
+                    ? 'GIF'
+                    : '▶';
             } else {
                 thumbnail = document.createElement('img');
                 thumbnail.className = 'ma-thumb';
@@ -280,35 +287,45 @@
 
             const details = document.createElement('div');
             details.className = 'ma-details';
-
             const name = document.createElement('div');
             name.className = 'ma-name';
             name.textContent =
                 `${String(index + 1).padStart(4, '0')} · ${entry.filename}`;
-            name.title = entry.filename;
-
             const meta = document.createElement('div');
             meta.className = 'ma-meta';
             meta.textContent = [
                 entry.mediaType === 'external-gif'
-                    ? 'EXTERNAL GIF PREVIEW'
+                    ? 'GIF PREVIEW'
                     : entry.mediaType.toUpperCase(),
                 entry.timestamp
                     ? new Date(entry.timestamp).toLocaleString('en-GB')
                     : 'Time unknown',
                 entry.size ? formatBytes(entry.size) : '',
-                entry.itemId ? `ID ${entry.itemId}` : ''
+                isEntryPreviouslyArchived(entry) ? 'INDEXED' : ''
             ].filter(Boolean).join(' · ');
-
             details.append(name, meta);
 
+            const pick = document.createElement('span');
+            pick.className = 'ma-pick-indicator';
+            pick.textContent = manualPickedKeys.has(entry.key) ? '✓' : '+';
+            pick.title = manualPickedKeys.has(entry.key)
+                ? 'Picked for manual selection'
+                : 'Add to manual selection';
+
             const [symbol, title, className] = statusIcon(entry);
-            const status = document.createElement('div');
+            const status = document.createElement('span');
             status.className = `ma-check ma-check-${className}`;
             status.textContent = symbol;
             status.title = title;
 
-            row.append(thumbnail, details, status);
+            const indicators = document.createElement('span');
+            indicators.className = 'ma-row-indicators';
+            indicators.append(pick, status);
+
+            row.append(thumbnail, details, indicators);
+            row.addEventListener('click', event => {
+                handleMediaRowSelection(event, entry);
+            });
             fragment.appendChild(row);
         });
 
@@ -319,12 +336,10 @@
     function addLog(message, type = 'info') {
         const line = document.createElement('div');
         line.className = `ma-log-line ma-log-${type}`;
-
         const time = new Date().toLocaleTimeString('en-GB');
         line.textContent = `[${time}] ${message}`;
-
         logArea.appendChild(line);
-        while (logArea.childElementCount > 250) {
+        while (logArea.childElementCount > 300) {
             logArea.firstElementChild?.remove();
         }
         logArea.scrollTop = logArea.scrollHeight;
@@ -349,31 +364,32 @@
         foundElement.textContent = String(stats.total);
         photoCountElement.textContent = String(counts.photos);
         videoCountElement.textContent = String(counts.videos);
-        externalGifCountElement.textContent =
-            String(counts.externalGifs);
-        inRangeElement.textContent =
-            String(stats.inDateRange);
-        excludedDateElement.textContent =
-            String(stats.excludedByDate);
-        selectedCountElement.textContent =
-            String(stats.selected);
+        externalGifCountElement.textContent = String(counts.externalGifs);
+        inRangeElement.textContent = String(stats.inDateRange);
+        excludedDateElement.textContent = String(stats.excludedByDate);
+        indexedElement.textContent = String(stats.excludedByIndex);
+        duplicateElement.textContent = String(stats.duplicateCount);
+        pickedElement.textContent = String(pickedEntryCount());
+        selectedCountElement.textContent = String(stats.selected);
         selectedSummaryElement.textContent = `${stats.selected} selected`;
         mediaTabCount.textContent = String(stats.total);
         packedElement.textContent = String(packedCount);
         errorElement.textContent = String(errorCount);
+
+        pickerToolbarCount.textContent = `${pickedEntryCount()} picked`;
+        refreshLibrarySummary?.();
+        refreshPagePickerControls?.();
         updateButtons();
     }
 
     function updateButtons() {
         const selectedCount = selectedMediaEntries().length;
         const busy = running || packing || scanning;
-
         const dateRange = getDateRangeConfig();
 
         startButton.textContent = autoZipCheckbox.checked
-            ? 'Scan & create ZIPs'
+            ? 'Scan & archive'
             : 'Scan media';
-
         startButton.disabled =
             busy ||
             (
@@ -383,24 +399,43 @@
             ) ||
             !dateRange.valid;
         stopButton.disabled = !busy;
-        zipButton.disabled =
-            busy ||
-            selectedCount === 0 ||
-            !dateRange.valid;
+        zipButton.disabled = busy || selectedCount === 0 || !dateRange.valid;
         resetButton.disabled = busy;
-        autoZipCheckbox.disabled = busy;
-        photoCheckbox.disabled = busy;
-        videoCheckbox.disabled = busy;
-        externalGifCheckbox.disabled = busy;
-        scanDirectionSelect.disabled = busy;
-        finalPositionSelect.disabled = busy;
-        dateFilterCheckbox.disabled = busy;
+
+        for (const control of [
+            autoZipCheckbox,
+            photoCheckbox,
+            videoCheckbox,
+            externalGifCheckbox,
+            scanStrategySelect,
+            scanDirectionSelect,
+            finalPositionSelect,
+            dateFilterCheckbox,
+            fromDateInput,
+            dateEndModeSelect,
+            toDateInput,
+            onlyNewCheckbox,
+            exactDedupeCheckbox,
+            pickedOnlyCheckbox,
+            filenameModeSelect,
+            archiveNameInput,
+            zipTargetInput,
+            zipEngineSelect,
+            profileSelect,
+            profileNameInput
+        ]) {
+            if (control) control.disabled = busy;
+        }
+
+        dateFilterCheckbox.disabled =
+            busy || adapterDateRangeSupport() === 'none';
         fromDateInput.disabled = busy || !dateFilterCheckbox.checked;
         dateEndModeSelect.disabled = busy || !dateFilterCheckbox.checked;
         toDateInput.disabled =
             busy ||
             !dateFilterCheckbox.checked ||
             dateEndModeSelect.value !== 'specific';
+        pagePickerButton.disabled = busy;
+        pickerDownloadButton.disabled = busy || pickedEntryCount() === 0;
+        pickerClearButton.disabled = busy || pickedEntryCount() === 0;
     }
-
-

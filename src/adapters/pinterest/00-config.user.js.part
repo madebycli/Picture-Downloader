@@ -1,0 +1,85 @@
+    function createPinterestAdapter() {
+        const downloadHosts = new Set([
+            'i.pinimg.com',
+            'v.pinimg.com',
+            'v1.pinimg.com'
+        ]);
+
+        return {
+            id: 'pinterest',
+            label: 'Pinterest',
+            archivePrefix: 'pinterest',
+            dateRangeSupport: 'none',
+            incrementalBoundarySupport: false,
+            defaultSmartPlan: Object.freeze([
+                { type: 'move-newest' },
+                { type: 'scan', direction: 'older' }
+            ]),
+            scrollSign(direction) {
+                // Pinterest feeds begin at the top and load more pins below.
+                return direction === 'older' ? 1 : -1;
+            },
+            terms: Object.freeze({
+                timeline: 'board, profile, search, or feed',
+                item: 'pin',
+                items: 'pins',
+                oldest: 'feed end',
+                newest: 'feed start'
+            }),
+            matches(currentLocation) {
+                return (
+                    currentLocation.hostname === 'pinterest.com' ||
+                    currentLocation.hostname.endsWith('.pinterest.com')
+                ) && !currentLocation.pathname.startsWith('/login');
+            },
+            scanVisibleMedia: scanPinterestVisibleMedia,
+            findScroller: findPinterestScroller,
+            visibleItemIds: pinterestVisibleItemIds,
+            visibleItemTimeRange: pinterestVisibleItemTimeRange,
+            findItemElementById: findPinterestItemElementById,
+            captureStartingAnchor: capturePinterestStartingAnchor,
+            findItemId: findPinterestItemId,
+            findItemTimestamp: findPinterestItemTimestamp,
+            compareItemIds(left, right) {
+                if (!left || !right) return 0;
+                try {
+                    const a = BigInt(left);
+                    const b = BigInt(right);
+                    return a === b ? 0 : a < b ? -1 : 1;
+                } catch {
+                    return String(left).localeCompare(String(right));
+                }
+            },
+            getArchiveContext: getPinterestArchiveContext,
+            getSelectionTargets: getPinterestSelectionTargets,
+            getSourceFingerprint(entry) {
+                return entry.fingerprint || entry.key;
+            },
+            isDownloadUrlAllowed(rawUrl) {
+                try {
+                    return downloadHosts.has(
+                        new URL(rawUrl, location.href).hostname
+                    );
+                } catch {
+                    return false;
+                }
+            },
+            openTargetHelp: 'Open a Pinterest board, profile, search, feed, or pin page.'
+        };
+    }
+
+    function pinterestMediaHost(rawUrl) {
+        try {
+            return new URL(rawUrl, location.href).hostname;
+        } catch {
+            return '';
+        }
+    }
+
+    function isPinterestMediaUrl(rawUrl) {
+        return [
+            'i.pinimg.com',
+            'v.pinimg.com',
+            'v1.pinimg.com'
+        ].includes(pinterestMediaHost(rawUrl));
+    }

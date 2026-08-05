@@ -12,6 +12,11 @@
             id: 'discord',
             label: 'Discord',
             archivePrefix: 'discord',
+            dateRangeSupport: 'full',
+            incrementalBoundarySupport: true,
+            scrollSign(direction) {
+                return direction === 'older' ? -1 : 1;
+            },
             terms: Object.freeze({
                 timeline: 'channel or thread',
                 item: 'message',
@@ -52,8 +57,30 @@
                         /\/channels\/(?:@me|\d+)\/(\d+)/
                     )?.[1] ||
                     'timeline';
+                const heading = [
+                    document.querySelector('main h1')?.textContent,
+                    document.querySelector('header h1')?.textContent,
+                    document.querySelector('[aria-label*="Channel header" i]')?.textContent
+                ].find(value => value?.trim());
+                const titleFallback = document.title
+                    .replace(/\s*[|·-]\s*Discord\s*$/i, '')
+                    .replace(/^#/, '')
+                    .trim();
+                const collectionName = sanitizeFilename(
+                    heading?.trim() || titleFallback || `Channel ${id}`,
+                    `Channel ${id}`
+                );
 
-                return { id, label: 'channel' };
+                return {
+                    id,
+                    label: 'channel',
+                    siteLabel: 'Discord',
+                    collectionName
+                };
+            },
+            getSelectionTargets: getDiscordSelectionTargets,
+            getSourceFingerprint(entry) {
+                return entry.fingerprint || entry.key;
             },
             isDownloadUrlAllowed(rawUrl) {
                 try {

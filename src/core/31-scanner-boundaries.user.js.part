@@ -1,180 +1,49 @@
-    async function confirmRealTimelineStart(scroller) {
+    async function confirmRealChronologicalBoundary(scroller, direction) {
+        const sign = physicalScrollSign(direction);
         const startedAt = performance.now();
+        const waitDuration = direction === 'older'
+            ? REAL_TOP_CONFIRM_MS
+            : REAL_BOTTOM_CONFIRM_MS;
         const baseline = {
-            oldestId: oldestVisibleItemId(),
+            extremeId: chronologicalExtremeItemId(direction),
             mediaCount: mediaEntries.size,
             height: scrollPosition(scroller).height
         };
 
         addLog(
-            'Possible timeline start reached. Waiting 20 seconds for delayed older items.'
+            `Possible ${direction === 'older' ? 'oldest' : 'newest'} boundary reached. ` +
+            `Waiting ${Math.round(waitDuration / 1000)} seconds for delayed items.`
         );
 
         while (!stopRequested) {
-            scroller.scrollTop = 0;
-            scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-            await sleep(TOP_PROBE_INTERVAL_MS);
+            moveToPhysicalBoundary(scroller, sign);
+            await sleep(BOUNDARY_PROBE_INTERVAL_MS);
             scanVisiblePage();
 
             const current = scrollPosition(scroller);
-            const currentOldestId = oldestVisibleItemId();
-            const olderItemLoaded = isOlderItemId(
-                currentOldestId,
-                baseline.oldestId
-            );
+            const currentExtreme = chronologicalExtremeItemId(direction);
             const changed =
-                olderItemLoaded ||
+                itemProgressed(direction, baseline.extremeId, currentExtreme) ||
                 mediaEntries.size > baseline.mediaCount ||
                 Math.abs(current.height - baseline.height) >= 3 ||
-                current.top > 8;
+                !isAtPhysicalBoundary(scroller, sign, 10);
 
             if (changed) {
                 addLog(
-                    `${activeSiteAdapter.label} loaded more content; scanning continues (${mediaEntries.size} media files found).`,
+                    `${activeSiteAdapter.label} loaded more content; scanning continues ` +
+                    `(${mediaEntries.size} media files found).`,
                     'success'
                 );
                 return false;
             }
 
-            const elapsed = performance.now() - startedAt;
-            const remaining = Math.max(0, REAL_TOP_CONFIRM_MS - elapsed);
-            setPhase(
-                `SCAN: confirming real timeline start · ${Math.ceil(remaining / 1000)} s left`
-            );
-
-            if (remaining <= 0) {
-                scanVisiblePage();
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    async function autoScrollToOldest(scroller) {
-        setPhase('SCAN: newest → oldest');
-        addLog('Fast scan started. A 20-second confirmation runs at the possible timeline start.');
-
-        let iterations = 0;
-
-        while (!stopRequested && iterations < 20_000) {
-            iterations++;
-            scanVisiblePage();
-
-            const before = scrollPosition(scroller);
-            const step = Math.max(Math.floor(before.client * 0.78), 520);
-
-            scroller.scrollTop = Math.max(0, before.top - step);
-            await sleep(SCAN_DELAY_MS);
-            scanVisiblePage();
-
-            // A second short scan catches media inserted shortly after the item
-            // without slowing the whole run too much.
-            await sleep(120);
-            scanVisiblePage();
-
-            const after = scrollPosition(scroller);
-            const dateBoundary = selectedDateBoundaryReached('older');
-
-            if (dateBoundary) {
-                lastScanBoundaryReason = dateBoundary.reason;
-                addLog(
-                    `Date boundary reached: ${dateBoundary.label}.`,
-                    'success'
-                );
-                return true;
-            }
-
-            if (iterations % 25 === 0) {
-                addLog(`Scan running: ${mediaEntries.size} media files found.`);
-            }
-
-            if (after.top <= 5) {
-                const reallyAtTop = await confirmRealTimelineStart(scroller);
-
-                if (reallyAtTop) {
-                    lastScanBoundaryReason = 'timeline-start';
-                    addLog(
-                        'No older items appeared for 20 seconds. Timeline start confirmed.',
-                        'success'
-                    );
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    function newestVisibleItemId() {
-        let newest = null;
-
-        for (const id of visibleItemIds()) {
-            if (newest === null || compareItemIds(id, newest) > 0) {
-                newest = id;
-            }
-        }
-
-        return newest;
-    }
-
-    function isNewerItemId(candidate, baseline) {
-        return Boolean(
-            candidate &&
-            baseline &&
-            compareItemIds(candidate, baseline) > 0
-        );
-    }
-
-    async function confirmRealTimelineEnd(scroller) {
-        const startedAt = performance.now();
-        const baseline = {
-            newestId: newestVisibleItemId(),
-            mediaCount: mediaEntries.size,
-            height: scrollPosition(scroller).height
-        };
-
-        addLog(
-            'Possible timeline-end boundary reached. Waiting 20 seconds for delayed newer items.'
-        );
-
-        while (!stopRequested) {
-            scroller.scrollTop = scroller.scrollHeight;
-            scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
-            await sleep(TOP_PROBE_INTERVAL_MS);
-            scanVisiblePage();
-
-            const current = scrollPosition(scroller);
-            const currentNewestId = newestVisibleItemId();
-            const newerItemLoaded = isNewerItemId(
-                currentNewestId,
-                baseline.newestId
-            );
-            const distanceFromBottom =
-                current.height - (current.top + current.client);
-
-            const changed =
-                newerItemLoaded ||
-                mediaEntries.size > baseline.mediaCount ||
-                Math.abs(current.height - baseline.height) >= 3 ||
-                distanceFromBottom > 8;
-
-            if (changed) {
-                addLog(
-                    `${activeSiteAdapter.label} loaded newer content; downward scanning continues (${mediaEntries.size} media files found).`,
-                    'success'
-                );
-                return false;
-            }
-
-            const elapsed = performance.now() - startedAt;
             const remaining = Math.max(
                 0,
-                REAL_BOTTOM_CONFIRM_MS - elapsed
+                waitDuration - (performance.now() - startedAt)
             );
-
             setPhase(
-                `SCAN: confirming timeline-end boundary · ${Math.ceil(remaining / 1000)} s left`
+                `SCAN: confirming ${direction} boundary · ` +
+                `${Math.ceil(remaining / 1000)} s left`
             );
 
             if (remaining <= 0) {
@@ -186,84 +55,106 @@
         return false;
     }
 
-    async function autoScrollToNewest(scroller) {
-        setPhase('SCAN: current → newest');
+    async function autoScrollChronological(scroller, direction) {
+        setPhase(
+            direction === 'older'
+                ? 'SCAN: toward older items'
+                : 'SCAN: toward newer items'
+        );
         addLog(
-            'Downward scan started. A 20-second confirmation runs at the possible timeline-end boundary.'
+            `Scanning toward ${direction} items with adaptive anti-snapback steps.`
         );
 
         let iterations = 0;
+        let stalledRounds = 0;
 
-        while (!stopRequested && iterations < 20_000) {
+        while (!stopRequested && iterations < 30_000) {
             iterations++;
             scanVisiblePage();
 
-            const before = scrollPosition(scroller);
-            const step = Math.max(
-                Math.floor(before.client * 0.78),
-                520
-            );
-
-            scroller.scrollTop = Math.min(
-                scroller.scrollHeight,
-                before.top + step
-            );
-
-            await sleep(SCAN_DELAY_MS);
+            const result = await stabilizedScrollStep(scroller, direction);
             scanVisiblePage();
 
-            await sleep(120);
-            scanVisiblePage();
-
-            const after = scrollPosition(scroller);
-            const dateBoundary = selectedDateBoundaryReached('newer');
-
-            if (dateBoundary) {
-                lastScanBoundaryReason = dateBoundary.reason;
+            const selectedBoundary = selectedDateBoundaryReached(direction);
+            if (selectedBoundary) {
+                lastScanBoundaryReason = selectedBoundary.reason;
                 addLog(
-                    `Date boundary reached: ${dateBoundary.label}.`,
+                    `Scan frontier reached: ${selectedBoundary.label}.`,
                     'success'
                 );
                 return true;
             }
 
-            const nearBottom =
-                after.top + after.client >= after.height - 5;
+            if (result.progressed) {
+                stalledRounds = 0;
+            } else {
+                stalledRounds++;
+            }
 
             if (iterations % 25 === 0) {
                 addLog(
-                    `Downward scan running: ${mediaEntries.size} media files found.`
+                    `Scan running: ${mediaEntries.size} media files found; ` +
+                    `${scanMotionState.bounceCount} virtual-list snapbacks recovered.`
                 );
             }
 
-            if (nearBottom) {
-                const reallyAtBottom =
-                    await confirmRealTimelineEnd(scroller);
+            const sign = physicalScrollSign(direction);
+            if (result.atBoundary || isAtPhysicalBoundary(scroller, sign, 6)) {
+                const confirmed = await confirmRealChronologicalBoundary(
+                    scroller,
+                    direction
+                );
 
-                if (reallyAtBottom) {
-                    lastScanBoundaryReason = 'timeline-end';
+                if (confirmed) {
+                    lastScanBoundaryReason = direction === 'older'
+                        ? 'timeline-start'
+                        : 'timeline-end';
                     addLog(
-                        'No newer items appeared for 20 seconds. Timeline end confirmed.',
+                        `No additional ${direction} items appeared. Boundary confirmed.`,
                         'success'
                     );
                     return true;
                 }
+                stalledRounds = 0;
+            } else if (stalledRounds >= 5) {
+                // A virtualized list can reject several scroll writes while it
+                // is reconciling heights. Pause, rescan, and continue from the
+                // settled frontier instead of jumping back to an old pixel.
+                addLog(
+                    'The timeline temporarily resisted scrolling. Pausing for rendering, then retrying from the current frontier.',
+                    'warn'
+                );
+                await sleep(1200);
+                scanVisiblePage();
+                stalledRounds = 0;
+                scanMotionState.stepScale = clamp(
+                    scanMotionState.stepScale * 0.82,
+                    0.42,
+                    0.82
+                );
             }
         }
 
         return false;
+    }
+
+    function autoScrollToOldest(scroller) {
+        return autoScrollChronological(scroller, 'older');
+    }
+
+    function autoScrollToNewest(scroller) {
+        return autoScrollChronological(scroller, 'newer');
     }
 
     function scanModeDescription(mode) {
         switch (mode) {
             case 'current-to-oldest':
-                return 'Current position → start';
+                return 'Current position → older boundary';
             case 'current-to-newest':
-                return 'Current position → end';
+                return 'Current position → newer boundary';
             case 'full-finish-down':
-                return 'Full timeline: current → start → end';
+                return 'Current → older boundary → newer boundary';
             default:
-                return 'End → start (jump to end first)';
+                return 'Newest → older boundary';
         }
     }
-

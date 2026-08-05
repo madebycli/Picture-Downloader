@@ -1,0 +1,101 @@
+    function findPinterestScroller() {
+        return document.scrollingElement || document.documentElement;
+    }
+
+    function pinterestVisiblePinElements() {
+        return [...document.querySelectorAll('a[href*="/pin/"]')]
+            .filter(element => {
+                const rect = element.getBoundingClientRect();
+                return (
+                    rect.bottom >= 0 &&
+                    rect.top <= window.innerHeight &&
+                    rect.width >= 60 &&
+                    rect.height >= 60
+                );
+            });
+    }
+
+    function pinterestVisibleItemIds() {
+        const ids = new Set();
+        for (const element of pinterestVisiblePinElements()) {
+            const id = element.href.match(/\/pin\/(\d+)/)?.[1];
+            if (id) ids.add(id);
+        }
+        return [...ids];
+    }
+
+    function pinterestVisibleItemTimeRange() {
+        const values = [];
+        for (const element of pinterestVisiblePinElements()) {
+            const timestamp = findPinterestItemTimestamp(element);
+            const parsed = Date.parse(timestamp || '');
+            if (Number.isFinite(parsed)) values.push(parsed);
+        }
+        if (!values.length) return null;
+        return { minMs: Math.min(...values), maxMs: Math.max(...values) };
+    }
+
+    function findPinterestItemElementById(itemId) {
+        if (!itemId) return null;
+        return document.querySelector(`a[href*="/pin/${CSS.escape(String(itemId))}/"]`);
+    }
+
+    function capturePinterestStartingAnchor(scroller) {
+        const elements = pinterestVisiblePinElements();
+        const scrollerRect = scroller === document.scrollingElement
+            ? { top: 0 }
+            : scroller.getBoundingClientRect();
+        let best = null;
+
+        for (const element of elements) {
+            const id = findPinterestItemId(element);
+            if (!id) continue;
+            const rect = element.getBoundingClientRect();
+            const distance = Math.abs(rect.top - scrollerRect.top);
+            if (!best || distance < best.distance) {
+                best = {
+                    itemId: id,
+                    offset: rect.top - scrollerRect.top,
+                    distance
+                };
+            }
+        }
+
+        const position = scrollPosition(scroller);
+        return {
+            itemId: best?.itemId || null,
+            offset: best?.offset || 0,
+            scrollRatio: position.height > position.client
+                ? position.top / (position.height - position.client)
+                : 0
+        };
+    }
+
+    function getPinterestArchiveContext() {
+        const pathParts = location.pathname.split('/').filter(Boolean);
+        const pinId = location.pathname.match(/\/pin\/(\d+)/)?.[1];
+        const query = new URLSearchParams(location.search).get('q');
+        const heading = document.querySelector('main h1, h1')?.textContent?.trim();
+        const title = document.title
+            .replace(/\s*[|·-]\s*Pinterest\s*$/i, '')
+            .trim();
+
+        let id = 'feed';
+        if (pinId) id = `pin-${pinId}`;
+        else if (query) id = `search-${slugify(query)}`;
+        else if (pathParts.length >= 2) id = pathParts.slice(0, 3).join('-');
+        else if (pathParts.length) id = pathParts[0];
+
+        const collectionName = sanitizeFilename(
+            heading || title || query || id,
+            'Pinterest collection'
+        );
+
+        return {
+            id,
+            label: 'board or feed',
+            siteLabel: 'Pinterest',
+            collectionName
+        };
+    }
+

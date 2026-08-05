@@ -1,5 +1,5 @@
     document.head.appendChild(style);
-    document.body.appendChild(panel);
+    document.body.append(panel, pickerToolbar);
 
     const phaseElement = panel.querySelector('#ma-phase');
     const progressFill = panel.querySelector('#ma-progress-fill');
@@ -9,6 +9,9 @@
     const externalGifCountElement = panel.querySelector('#ma-external-gif-count');
     const inRangeElement = panel.querySelector('#ma-in-range');
     const excludedDateElement = panel.querySelector('#ma-excluded-date');
+    const indexedElement = panel.querySelector('#ma-indexed-count');
+    const duplicateElement = panel.querySelector('#ma-duplicate-count');
+    const pickedElement = panel.querySelector('#ma-picked-count');
     const selectedCountElement = panel.querySelector('#ma-selected-count');
     const selectedSummaryElement = panel.querySelector('#ma-selected-summary');
     const packedElement = panel.querySelector('#ma-packed');
@@ -16,6 +19,7 @@
     const mediaTabCount = panel.querySelector('#ma-media-tab-count');
     const mediaList = panel.querySelector('#ma-media-list');
     const logArea = panel.querySelector('#ma-log');
+
     const startButton = panel.querySelector('#ma-start');
     const stopButton = panel.querySelector('#ma-stop');
     const zipButton = panel.querySelector('#ma-zip');
@@ -24,8 +28,16 @@
     const photoCheckbox = panel.querySelector('#ma-include-photos');
     const videoCheckbox = panel.querySelector('#ma-include-videos');
     const externalGifCheckbox = panel.querySelector('#ma-include-external-gifs');
+    const onlyNewCheckbox = panel.querySelector('#ma-only-new');
+    const exactDedupeCheckbox = panel.querySelector('#ma-exact-dedupe');
+    const pickedOnlyCheckbox = panel.querySelector('#ma-picked-only');
+
+    const scanStrategySelect = panel.querySelector('#ma-scan-strategy');
     const scanDirectionSelect = panel.querySelector('#ma-scan-direction');
+    const manualDirectionWrap = panel.querySelector('#ma-manual-direction-wrap');
     const finalPositionSelect = panel.querySelector('#ma-final-position');
+    const planSummaryElement = panel.querySelector('#ma-plan-summary');
+
     const dateFilterCheckbox = panel.querySelector('#ma-date-filter');
     const dateFields = panel.querySelector('#ma-date-fields');
     const fromDateInput = panel.querySelector('#ma-from-date');
@@ -33,6 +45,37 @@
     const toDateWrap = panel.querySelector('#ma-to-date-wrap');
     const toDateInput = panel.querySelector('#ma-to-date');
     const dateSummaryElement = panel.querySelector('#ma-date-summary');
+    const dateCapabilityElement = panel.querySelector('#ma-date-capability');
+
+    const filenameModeSelect = panel.querySelector('#ma-filename-mode');
+    const archiveNameInput = panel.querySelector('#ma-archive-name');
+    const zipTargetInput = panel.querySelector('#ma-zip-target');
+    const zipEngineSelect = panel.querySelector('#ma-zip-engine');
+
+    const pagePickerButton = panel.querySelector('#ma-page-picker');
+    const mediaPickerButton = panel.querySelector('#ma-media-picker');
+    const clearPicksButton = panel.querySelector('#ma-clear-picks');
+    const invertPicksButton = panel.querySelector('#ma-invert-picks');
+    const pickerToolbarCount = pickerToolbar.querySelector('#ma-picker-toolbar-count');
+    const pickerDownloadButton = pickerToolbar.querySelector('#ma-picker-download');
+    const pickerClearButton = pickerToolbar.querySelector('#ma-picker-clear');
+    const pickerDoneButton = pickerToolbar.querySelector('#ma-picker-done');
+
+    const profileSelect = panel.querySelector('#ma-profile-select');
+    const profileNameInput = panel.querySelector('#ma-profile-name');
+    const profileLoadButton = panel.querySelector('#ma-profile-load');
+    const profileSaveButton = panel.querySelector('#ma-profile-save');
+    const profileDeleteButton = panel.querySelector('#ma-profile-delete');
+
+    const libraryContextElement = panel.querySelector('#ma-library-context');
+    const librarySummaryElement = panel.querySelector('#ma-library-summary');
+    const restoreCheckpointButton = panel.querySelector('#ma-restore-checkpoint');
+    const discardCheckpointButton = panel.querySelector('#ma-discard-checkpoint');
+    const clearIndexButton = panel.querySelector('#ma-clear-index');
+    const exportDataButton = panel.querySelector('#ma-export-data');
+    const importDataButton = panel.querySelector('#ma-import-data');
+    const importFileInput = panel.querySelector('#ma-import-file');
+
     const collapseButton = panel.querySelector('#ma-collapse');
     const clearLogButton = panel.querySelector('#ma-clear-log');
     const tabButtons = [...panel.querySelectorAll('[data-ma-tab]')];
@@ -43,72 +86,261 @@
             const selected = button.dataset.maTab === tabName;
             button.setAttribute('aria-selected', String(selected));
         }
-
         for (const tabPanel of tabPanels) {
             tabPanel.hidden = tabPanel.dataset.maPanel !== tabName;
         }
     }
 
     function refreshDateControls() {
-        const enabled = dateFilterCheckbox.checked;
-        const specificEnd = enabled && dateEndModeSelect.value === 'specific';
+        const support = adapterDateRangeSupport();
+        const supported = support !== 'none';
+        if (!supported) dateFilterCheckbox.checked = false;
 
+        dateFilterCheckbox.disabled = !supported || running || scanning || packing;
+        dateCapabilityElement.textContent = supported
+            ? support === 'partial'
+                ? 'Some items expose dates; undated media is excluded while filtering.'
+                : 'Exact source timestamps are available for smart period scans.'
+            : `${activeSiteAdapter.label} does not expose reliable chronological dates in this view.`;
+
+        const enabled = supported && dateFilterCheckbox.checked;
+        const specificEnd = enabled && dateEndModeSelect.value === 'specific';
         dateFields.classList.toggle('ma-disabled', !enabled);
         toDateWrap.hidden = !specificEnd;
 
         const range = getDateRangeConfig();
         dateSummaryElement.classList.toggle('ma-date-error', !range.valid);
-        dateSummaryElement.textContent = !enabled
-            ? 'All scanned dates are included.'
-            : range.valid
-                ? `Inclusive range: ${range.label}`
-                : range.error;
+        dateSummaryElement.textContent = !supported
+            ? 'Date filtering is unavailable; Smart Scan follows the visible feed order.'
+            : !enabled
+                ? 'All scanned dates are included.'
+                : range.valid
+                    ? `Inclusive range: ${range.label}`
+                    : range.error;
 
+        refreshStrategyControls();
         scheduleRender();
         updateCounters();
+    }
+
+    function refreshStrategyControls() {
+        const manual = scanStrategySelect.value === 'manual';
+        manualDirectionWrap.hidden = !manual;
+
+        try {
+            const plan = selectedScanPlan();
+            planSummaryElement.textContent = manual
+                ? `Manual plan: ${describeScanPlan(plan)}.`
+                : `Smart plan preview: ${describeScanPlan(plan)}. ` +
+                  'The final plan is recalculated from the visible dates when Start is pressed.';
+        } catch {
+            planSummaryElement.textContent =
+                'Smart plan will be calculated when the scan starts.';
+        }
+    }
+
+    function refreshPagePickerControls() {
+        const picked = pickedEntryCount();
+        pagePickerButton.textContent = pagePickerActive
+            ? 'Stop page picker'
+            : 'Start page picker';
+        mediaPickerButton.textContent = pagePickerActive
+            ? 'Stop picking'
+            : 'Pick on page';
+        pickerToolbar.hidden = !pagePickerActive;
+        pickerToolbarCount.textContent = `${picked} picked`;
+        clearPicksButton.disabled = picked === 0 || running || packing || scanning;
+        invertPicksButton.disabled = mediaEntries.size === 0 || running || packing || scanning;
+        pickedOnlyCheckbox.closest('.ma-choice')?.classList.toggle(
+            'ma-choice-attention',
+            pickedOnlyCheckbox.checked && picked === 0
+        );
+    }
+
+    function refreshProfileOptions(selectedName = profileSelect.value) {
+        profileSelect.replaceChildren(
+            new Option('Choose profile…', '')
+        );
+        for (const [name] of profileEntries()) {
+            profileSelect.appendChild(new Option(name, name));
+        }
+        profileSelect.value = profileStore.profiles[selectedName]
+            ? selectedName
+            : '';
+    }
+
+    function refreshCheckpointControls() {
+        const checkpoint = readCurrentCheckpoint();
+        restoreCheckpointButton.disabled = !checkpoint || running || packing || scanning;
+        discardCheckpointButton.disabled = !checkpoint || running || packing || scanning;
+        restoreCheckpointButton.textContent = checkpoint
+            ? `Restore ${checkpoint.entries.length} items`
+            : 'No saved scan';
+    }
+
+    function refreshLibrarySummary() {
+        const context = currentArchiveContext();
+        const scope = getIndexScope(false);
+        const sourceCount = scope ? Object.keys(scope.sources || {}).length : 0;
+        const hashCount = scope ? Object.keys(scope.hashes || {}).length : 0;
+        const latest = scope?.latestArchivedTimestamp
+            ? new Date(scope.latestArchivedTimestamp).toLocaleString('en-GB')
+            : 'Not established';
+
+        libraryContextElement.textContent =
+            `${context.siteLabel} · ${context.collectionName}`;
+        librarySummaryElement.innerHTML = `
+            <div class="ma-library-card"><span>Archived source fingerprints</span><strong>${sourceCount}</strong></div>
+            <div class="ma-library-card"><span>Exact content hashes</span><strong>${hashCount}</strong></div>
+            <div class="ma-library-card"><span>Newest indexed item</span><strong>${latest}</strong></div>
+        `;
+        clearIndexButton.disabled = sourceCount === 0 || running || packing || scanning;
+        refreshCheckpointControls();
+    }
+
+    function persistAndRefresh() {
+        persistCurrentSettings();
+        refreshDateControls();
+        refreshStrategyControls();
+        refreshPagePickerControls();
+        updateButtons();
     }
 
     for (const button of tabButtons) {
         button.addEventListener('click', () => {
             selectInterfaceTab(button.dataset.maTab);
+            if (button.dataset.maTab === 'library') refreshLibrarySummary();
         });
     }
 
-    startButton.addEventListener('click', startAutomaticWorkflow);
+    startButton.addEventListener('click', async () => {
+        setPagePickerActive(false);
+        persistCurrentSettings();
+        await startAutomaticWorkflow();
+    });
     stopButton.addEventListener('click', requestStop);
-    zipButton.addEventListener('click', createAndDownloadZipParts);
-    autoZipCheckbox.addEventListener('change', updateButtons);
+    zipButton.addEventListener('click', async () => {
+        setPagePickerActive(false);
+        persistCurrentSettings();
+        await createAndDownloadZipParts();
+    });
 
-    for (const checkbox of [
+    for (const control of [
+        autoZipCheckbox,
         photoCheckbox,
         videoCheckbox,
-        externalGifCheckbox
+        externalGifCheckbox,
+        onlyNewCheckbox,
+        exactDedupeCheckbox,
+        pickedOnlyCheckbox,
+        scanStrategySelect,
+        scanDirectionSelect,
+        finalPositionSelect,
+        dateFilterCheckbox,
+        fromDateInput,
+        dateEndModeSelect,
+        toDateInput,
+        filenameModeSelect,
+        archiveNameInput,
+        zipTargetInput,
+        zipEngineSelect
     ]) {
-        checkbox.addEventListener('change', () => {
-            scheduleRender();
-            updateCounters();
-        });
+        control.addEventListener('change', persistAndRefresh);
     }
+    archiveNameInput.addEventListener('input', persistCurrentSettings);
+    profileNameInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter') profileSaveButton.click();
+    });
 
-    scanDirectionSelect.addEventListener('change', () => {
-        addLog(`Scan mode selected: ${scanModeDescription(scanDirectionSelect.value)}.`);
+    pagePickerButton.addEventListener('click', () => {
+        setPagePickerActive(!pagePickerActive);
     });
-    finalPositionSelect.addEventListener('change', () => {
-        addLog(`Final position: ${finalPositionDescription(finalPositionSelect.value)}.`);
+    mediaPickerButton.addEventListener('click', () => {
+        setPagePickerActive(!pagePickerActive);
     });
-    dateFilterCheckbox.addEventListener('change', refreshDateControls);
-    fromDateInput.addEventListener('change', refreshDateControls);
-    dateEndModeSelect.addEventListener('change', refreshDateControls);
-    toDateInput.addEventListener('change', refreshDateControls);
+    clearPicksButton.addEventListener('click', clearPagePicks);
+    invertPicksButton.addEventListener('click', invertPagePicks);
+    pickerDoneButton.addEventListener('click', () => setPagePickerActive(false));
+    pickerClearButton.addEventListener('click', clearPagePicks);
+    pickerDownloadButton.addEventListener('click', downloadPickedEntries);
+
+    profileLoadButton.addEventListener('click', () => {
+        if (!profileSelect.value || !applyProfile(profileSelect.value)) {
+            addLog('Choose a saved profile first.', 'warn');
+            return;
+        }
+        addLog(`Profile loaded: ${profileSelect.value}.`, 'success');
+    });
+    profileSaveButton.addEventListener('click', () => {
+        const name = profileNameInput.value.trim() || profileSelect.value;
+        if (!name) {
+            addLog('Enter a profile name first.', 'warn');
+            return;
+        }
+        const savedName = saveCurrentProfile(name);
+        profileNameInput.value = savedName;
+        addLog(`Profile saved: ${savedName}.`, 'success');
+    });
+    profileDeleteButton.addEventListener('click', () => {
+        const name = profileSelect.value;
+        if (!name || !deleteProfile(name)) {
+            addLog('Choose a saved profile to delete.', 'warn');
+            return;
+        }
+        profileNameInput.value = '';
+        addLog(`Profile deleted: ${name}.`, 'success');
+    });
+
+    restoreCheckpointButton.addEventListener('click', () => {
+        const count = restoreSessionCheckpoint();
+        addLog(
+            count
+                ? `Restored ${count} collected media entries from the last checkpoint.`
+                : 'No compatible checkpoint was found for this collection.',
+            count ? 'success' : 'warn'
+        );
+        selectInterfaceTab('media');
+    });
+    discardCheckpointButton.addEventListener('click', () => {
+        clearSessionCheckpoint();
+        addLog('Saved scan checkpoint discarded.');
+    });
+    clearIndexButton.addEventListener('click', () => {
+        if (!confirm(`Clear the archive index for ${currentArchiveContext().collectionName}?`)) {
+            return;
+        }
+        clearCurrentIndexScope();
+        scheduleRender();
+        updateCounters();
+        addLog('Current collection index cleared.', 'warn');
+    });
+    exportDataButton.addEventListener('click', () => {
+        persistCurrentSettings();
+        exportLibraryData();
+        addLog('Backup exported.', 'success');
+    });
+    importDataButton.addEventListener('click', () => importFileInput.click());
+    importFileInput.addEventListener('change', async () => {
+        const file = importFileInput.files?.[0];
+        if (!file) return;
+        try {
+            await importLibraryData(file);
+            addLog('Backup imported successfully.', 'success');
+            refreshLibrarySummary();
+        } catch (error) {
+            addLog(`Backup import failed: ${error.message}`, 'error');
+        } finally {
+            importFileInput.value = '';
+        }
+    });
 
     resetButton.addEventListener('click', () => {
-        resetCollection();
+        setPagePickerActive(false);
+        resetCollection({ clearCheckpoint: true });
         logArea.replaceChildren();
-        addLog('Collection reset.');
+        addLog('Session and checkpoint reset. The persistent archive index was kept.');
     });
-    clearLogButton.addEventListener('click', () => {
-        logArea.replaceChildren();
-    });
+    clearLogButton.addEventListener('click', () => logArea.replaceChildren());
     collapseButton.addEventListener('click', () => {
         const collapsed = panel.classList.toggle('ma-collapsed');
         collapseButton.textContent = collapsed ? '+' : '−';
@@ -119,19 +351,30 @@
         );
     });
 
-    window.addEventListener('beforeunload', abortActiveRequests);
+    window.addEventListener('beforeunload', () => {
+        abortActiveRequests();
+        persistCurrentSettings();
+        if (mediaEntries.size && (running || scanning || packing)) {
+            saveSessionCheckpoint();
+        }
+    });
 
     const today = new Date();
     const thirtyDaysAgo = new Date(today);
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
     fromDateInput.value = localDateInputValue(thirtyDaysAgo);
     toDateInput.value = localDateInputValue(today);
     dateEndModeSelect.value = 'latest';
 
+    initializePagePicker();
+    refreshProfileOptions('');
+    applySettings(savedSettings);
     addLog(
-        `Ready on ${activeSiteAdapter.label}. Configure the scan, then start.`
+        `Ready on ${activeSiteAdapter.label}. The adapter was selected automatically.`
     );
     selectInterfaceTab('setup');
     refreshDateControls();
+    refreshStrategyControls();
+    refreshPagePickerControls();
+    refreshLibrarySummary();
 })();
