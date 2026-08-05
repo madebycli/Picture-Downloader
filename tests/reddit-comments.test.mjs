@@ -25,6 +25,7 @@ async function loadRedditConfig(pathname = '/r/fixture/comments/post123/title/')
         },
         sanitizeFilename: value => String(value).replace(/[^a-z0-9._-]+/gi, '-'),
         scanRedditRenderedThread() {},
+        expandRedditRenderedComments() {},
         findRedditThreadScroller() {},
         redditVisibleCommentIds() { return []; },
         redditVisibleCommentTimeRange() { return null; },
@@ -69,6 +70,17 @@ test('Reddit comment adapter exposes media only and never creates comment record
     assert.match(source, /scanRedditRenderedThread\(\)[\s\S]*scanRedditRenderedCommentMedia\(\)/);
 });
 
+test('Reddit hides date range and uses a complete downward comment-thread scan', async () => {
+    const context = await loadRedditConfig();
+    const adapter = vm.runInContext('createRedditCommentsAdapter()', context);
+
+    assert.equal(adapter.capabilities.dateFilter, false);
+    assert.deepEqual([...adapter.capabilities.scanModes], ['current-to-newest']);
+    assert.equal(adapter.preferredScanMode, 'current-to-newest');
+    assert.equal(adapter.boundaryConfirmMs, 5_000);
+    assert.equal(typeof adapter.expandRenderedContent, 'function');
+});
+
 test('Reddit media collector covers rendered photos GIFs videos picture sources and direct links', async () => {
     const source = await read('src/adapters/reddit-comments/20-media.user.js.part');
     for (const marker of [
@@ -102,20 +114,39 @@ test('Reddit external host matcher supports approved wildcard CDNs', async () =>
     assert.equal(allowed('example.com'), false);
 });
 
-test('Reddit implementation uses rendered DOM only and performs no account actions or API enumeration', async () => {
-    const source = [
-        await read('src/adapters/reddit-comments/00-config.user.js.part'),
-        await read('src/adapters/reddit-comments/10-comments.user.js.part'),
-        await read('src/adapters/reddit-comments/20-media.user.js.part'),
-        await read('src/adapters/reddit-comments/30-thread.user.js.part')
-    ].join('\n');
+test('Reddit expansion is narrowly limited to rendered more-comments controls', async () => {
+    const thread = await read('src/adapters/reddit-comments/30-thread.user.js.part');
+
+    assert.match(thread, /view\|load\|show/);
+    assert.match(thread, /more\\s\+\(\?:comments/);
+    assert.match(thread, /continue\\s\+this\\s\+thread/);
+    assert.match(thread, /slice\(0, 8\)/);
+    assert.match(thread, /8_000/);
+    assert.match(thread, /control\.click\(\)/);
+    assert.match(thread, /log\\s\*in\|sign\\s\*up/);
+    assert.match(thread, /award\|share\|report\|save\|follow\|join\|vote\|upvote\|downvote/);
+    assert.match(thread, /redditExpansionControlEligible/);
+    assert.match(thread, /redditCommentElements\(\)\.length/);
+});
+
+test('Reddit implementation uses rendered DOM only and performs no API enumeration or account actions', async () => {
+    const config = await read('src/adapters/reddit-comments/00-config.user.js.part');
+    const comments = await read('src/adapters/reddit-comments/10-comments.user.js.part');
+    const media = await read('src/adapters/reddit-comments/20-media.user.js.part');
+    const thread = await read('src/adapters/reddit-comments/30-thread.user.js.part');
+    const source = [config, comments, media, thread].join('\n');
 
     assert.match(source, /querySelectorAll/);
     assert.doesNotMatch(source, /fetch\(|XMLHttpRequest|\/api\/|graphql|Authorization/i);
     assert.doesNotMatch(
         source,
-        /\.(?:click|submit)\s*\(|\b(?:upvote|downvote|follow|joinCommunity|submitPost|postMessage)\b/i
+        /\b(?:upvote|downvote|follow|joinCommunity|submitPost|postMessage)\s*\(/i
     );
+
+    // The only click path belongs to the reviewed rendered expansion helper.
+    const clickOccurrences = source.match(/\.click\s*\(\)/g) || [];
+    assert.equal(clickOccurrences.length, 1);
+    assert.match(thread, /async function expandRedditRenderedComments/);
 });
 
 test('Reddit host permissions cover native and common rendered external media CDNs', async () => {
