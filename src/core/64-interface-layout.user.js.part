@@ -95,11 +95,11 @@
     `;
     archiveTabPanel.appendChild(archiveMainGroup);
 
-    const autoArchiveGroup = autoZipCheckbox?.closest('.ma-group');
-    if (autoArchiveGroup) {
-        const row = autoArchiveGroup.querySelector('.ma-option-row');
+    const compactAutoArchiveGroup = autoZipCheckbox?.closest('.ma-group');
+    if (compactAutoArchiveGroup) {
+        const row = compactAutoArchiveGroup.querySelector('.ma-option-row');
         if (row) archiveMainGroup.querySelector('.ma-archive-primary').appendChild(row);
-        autoArchiveGroup.remove();
+        compactAutoArchiveGroup.remove();
     }
     if (finalPositionLabel) {
         archiveMainGroup
