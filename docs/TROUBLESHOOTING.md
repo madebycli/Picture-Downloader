@@ -34,4 +34,4 @@ The active adapter blocks hosts not declared in its allowlist. This is intention
 
 ## Discord-specific notes
 
-The Discord adapter can collect rendered external GIF previews only when Discord creates a proxy media element. A plain external link without a rendered preview has no proxy file to save. Discord web updates can also require selector maintenance inside `src/adapters/discord.user.js.part`.
+The Discord adapter can collect rendered external GIF previews only when Discord creates a proxy media element. A plain external link without a rendered preview has no proxy file to save. Discord web updates can also require selector maintenance inside `src/adapters/discord/`.
