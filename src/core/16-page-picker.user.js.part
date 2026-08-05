@@ -1,0 +1,282 @@
+    const manualPickedKeys = new Set();
+    const decoratedSelectionTargets = new Set();
+    const selectionTargetMap = new WeakMap();
+    let pagePickerActive = false;
+    let lastPickedKey = null;
+    let pagePickerObserver = null;
+    let pickerRefreshTimer = null;
+
+    function pageSelectionAllowsEntry(entry) {
+        if (!pickedOnlyCheckbox?.checked) return true;
+        return manualPickedKeys.has(entry.key);
+    }
+
+    function pickedEntryCount() {
+        let count = 0;
+        for (const key of manualPickedKeys) {
+            if (mediaEntries.has(key)) count++;
+        }
+        return count;
+    }
+
+    function setPickedState(key, selected) {
+        if (!mediaEntries.has(key)) return false;
+
+        if (selected) manualPickedKeys.add(key);
+        else manualPickedKeys.delete(key);
+
+        lastPickedKey = key;
+        refreshPageSelectionTargets();
+        scheduleRender();
+        updateCounters();
+        return true;
+    }
+
+    function togglePickedEntry(key, force = null) {
+        const selected = force === null
+            ? !manualPickedKeys.has(key)
+            : Boolean(force);
+        return setPickedState(key, selected);
+    }
+
+    function selectPickedRange(fromKey, toKey, selected = true) {
+        const entries = sortedMediaEntries();
+        const fromIndex = entries.findIndex(entry => entry.key === fromKey);
+        const toIndex = entries.findIndex(entry => entry.key === toKey);
+
+        if (fromIndex < 0 || toIndex < 0) {
+            togglePickedEntry(toKey, selected);
+            return 1;
+        }
+
+        const start = Math.min(fromIndex, toIndex);
+        const end = Math.max(fromIndex, toIndex);
+        let changed = 0;
+
+        for (let index = start; index <= end; index++) {
+            const key = entries[index].key;
+            const before = manualPickedKeys.has(key);
+            if (selected) manualPickedKeys.add(key);
+            else manualPickedKeys.delete(key);
+            if (before !== selected) changed++;
+        }
+
+        lastPickedKey = toKey;
+        refreshPageSelectionTargets();
+        scheduleRender();
+        updateCounters();
+        return changed;
+    }
+
+    function clearPagePicks() {
+        manualPickedKeys.clear();
+        lastPickedKey = null;
+        refreshPageSelectionTargets();
+        scheduleRender();
+        updateCounters();
+    }
+
+    function invertPagePicks() {
+        for (const entry of mediaEntries.values()) {
+            if (manualPickedKeys.has(entry.key)) {
+                manualPickedKeys.delete(entry.key);
+            } else {
+                manualPickedKeys.add(entry.key);
+            }
+        }
+        lastPickedKey = null;
+        refreshPageSelectionTargets();
+        scheduleRender();
+        updateCounters();
+    }
+
+    function selectionTargetsFromAdapter() {
+        if (typeof activeSiteAdapter.getSelectionTargets !== 'function') {
+            return [];
+        }
+
+        try {
+            return activeSiteAdapter.getSelectionTargets() || [];
+        } catch (error) {
+            addLog?.(`Could not refresh page selection targets: ${error.message}`, 'warn');
+            return [];
+        }
+    }
+
+    function clearDecoratedSelectionTargets() {
+        for (const element of decoratedSelectionTargets) {
+            element.classList?.remove(
+                'ma-page-selectable',
+                'ma-page-selected'
+            );
+            element.removeAttribute?.('data-ma-selected');
+        }
+        decoratedSelectionTargets.clear();
+    }
+
+    function refreshPageSelectionTargets() {
+        clearTimeout(pickerRefreshTimer);
+
+        if (!pagePickerActive) {
+            clearDecoratedSelectionTargets();
+            refreshPagePickerControls?.();
+            return;
+        }
+
+        const targets = selectionTargetsFromAdapter();
+        const currentElements = new Set();
+
+        for (const target of targets) {
+            const element = target?.element;
+            const key = target?.key;
+            if (!(element instanceof Element) || !key || !mediaEntries.has(key)) {
+                continue;
+            }
+
+            currentElements.add(element);
+            selectionTargetMap.set(element, key);
+            element.classList.add('ma-page-selectable');
+            element.classList.toggle(
+                'ma-page-selected',
+                manualPickedKeys.has(key)
+            );
+            element.setAttribute(
+                'data-ma-selected',
+                manualPickedKeys.has(key) ? 'true' : 'false'
+            );
+            decoratedSelectionTargets.add(element);
+        }
+
+        for (const element of [...decoratedSelectionTargets]) {
+            if (!element.isConnected || !currentElements.has(element)) {
+                element.classList.remove(
+                    'ma-page-selectable',
+                    'ma-page-selected'
+                );
+                element.removeAttribute('data-ma-selected');
+                decoratedSelectionTargets.delete(element);
+            }
+        }
+
+        refreshPagePickerControls?.();
+    }
+
+    function schedulePageSelectionRefresh() {
+        clearTimeout(pickerRefreshTimer);
+        pickerRefreshTimer = setTimeout(() => {
+            scanVisiblePage();
+            refreshPageSelectionTargets();
+        }, 120);
+    }
+
+    function findClickedSelectionTarget(startElement) {
+        let current = startElement instanceof Element
+            ? startElement
+            : startElement?.parentElement;
+
+        for (let depth = 0; current && depth < 10; depth++, current = current.parentElement) {
+            if (current.classList?.contains('ma-page-selectable')) {
+                const key = selectionTargetMap.get(current);
+                if (key) return { element: current, key };
+            }
+        }
+
+        return null;
+    }
+
+    function handlePagePickerClick(event) {
+        if (!pagePickerActive || event.button !== 0) return;
+        if (panel?.contains(event.target) || pickerToolbar?.contains(event.target)) {
+            return;
+        }
+
+        const target = findClickedSelectionTarget(event.target);
+        if (!target) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        const willSelect = !manualPickedKeys.has(target.key);
+        if (event.shiftKey && lastPickedKey) {
+            const changed = selectPickedRange(
+                lastPickedKey,
+                target.key,
+                willSelect
+            );
+            addLog(
+                `${willSelect ? 'Selected' : 'Cleared'} ${changed} items with Shift range selection.`,
+                'success'
+            );
+        } else {
+            togglePickedEntry(target.key, willSelect);
+        }
+
+        target.element.animate?.([
+            { transform: 'scale(.975)' },
+            { transform: 'scale(1.015)' },
+            { transform: 'scale(1)' }
+        ], {
+            duration: 260,
+            easing: 'cubic-bezier(.2,.8,.2,1)'
+        });
+    }
+
+    function handlePickerKeydown(event) {
+        if (!pagePickerActive) return;
+        if (event.key === 'Escape') {
+            setPagePickerActive(false);
+        }
+    }
+
+    function setPagePickerActive(active) {
+        const nextState = Boolean(active);
+        if (nextState === pagePickerActive) {
+            refreshPagePickerControls?.();
+            return;
+        }
+        pagePickerActive = nextState;
+
+        if (pagePickerActive) {
+            pickedOnlyCheckbox.checked = true;
+            scanVisiblePage();
+            refreshPageSelectionTargets();
+
+            pagePickerObserver ||= new MutationObserver(
+                schedulePageSelectionRefresh
+            );
+            pagePickerObserver.observe(document.body, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['src', 'srcset', 'href']
+            });
+            addLog('Page picker enabled. Click media to select it; Shift-click selects the range between two items.');
+        } else {
+            pagePickerObserver?.disconnect();
+            clearDecoratedSelectionTargets();
+            addLog('Page picker closed. Your picked items remain selected.');
+        }
+
+        persistCurrentSettings?.();
+        refreshPagePickerControls?.();
+        updateCounters?.();
+    }
+
+    function initializePagePicker() {
+        document.addEventListener('click', handlePagePickerClick, true);
+        document.addEventListener('keydown', handlePickerKeydown, true);
+    }
+
+    async function downloadPickedEntries() {
+        if (!manualPickedKeys.size) {
+            addLog('Pick at least one media item first.', 'warn');
+            return;
+        }
+
+        pickedOnlyCheckbox.checked = true;
+        persistCurrentSettings();
+        setPagePickerActive(false);
+        await createAndDownloadZipParts();
+    }
+

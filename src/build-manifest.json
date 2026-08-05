@@ -6,7 +6,10 @@
   ],
   "afterAdapters": [
     "src/core/10-activate-adapter.user.js.part",
+    "src/core/15-persistence.user.js.part",
+    "src/core/16-page-picker.user.js.part",
     "src/core/20-selection.user.js.part",
+    "src/core/25-smart-planner.user.js.part",
     "src/core/30-scanner-position.user.js.part",
     "src/core/31-scanner-boundaries.user.js.part",
     "src/core/40-download-manifest.user.js.part",

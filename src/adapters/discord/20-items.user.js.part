@@ -91,8 +91,10 @@
 
         mediaEntries.set(key, {
             key,
+            fingerprint: key,
             url: originalUrl,
             previewUrl: rawUrl,
+            fallbackUrl: rawUrl,
             filename: filenameFromUrl(originalUrl),
             mediaType: mediaTypeFromUrl(originalUrl, sourceElement),
             sourceKind: 'discord-attachment',
@@ -152,8 +154,10 @@
 
         mediaEntries.set(key, {
             key,
+            fingerprint: key,
             url: mediaUrl,
             previewUrl: mediaUrl,
+            fallbackUrl: mediaUrl,
             filename,
             mediaType: 'external-gif',
             sourceKind: 'external-gif-preview',
@@ -186,6 +190,7 @@
         ].join(','));
 
         for (const element of elements) {
+            if (element.closest?.('#media-archiver-panel, #ma-picker-toolbar')) continue;
             if (!isExternalGifEmbedContext(element)) continue;
 
             const sourcePageUrl =
@@ -222,6 +227,7 @@
         ].join(',');
 
         document.querySelectorAll(selectors).forEach(element => {
+            if (element.closest?.('#media-archiver-panel, #ma-picker-toolbar')) return;
             const candidates = [
                 element.href,
                 element.currentSrc,
@@ -244,3 +250,93 @@
         return added;
     }
 
+
+
+    function discordNativeEntryKey(rawUrl, sourceElement) {
+        if (!isDiscordAttachmentUrl(rawUrl, sourceElement)) return null;
+        return canonicalKey(normalizeDiscordAttachmentUrl(rawUrl));
+    }
+
+    function discordExternalGifEntryKey(rawUrl, sourceElement) {
+        if (
+            !isDiscordExternalProxyUrl(rawUrl) ||
+            !isExternalGifEmbedContext(sourceElement)
+        ) {
+            return null;
+        }
+        return `external-gif:${canonicalKey(rawUrl)}`;
+    }
+
+    function discordSelectionWrapper(element) {
+        const gifWrapper = isExternalGifEmbedContext(element)
+            ? findGifEmbedWrapper(element)
+            : null;
+
+        return (
+            gifWrapper?.querySelector?.('a[data-role="img"]') ||
+            gifWrapper ||
+            element.closest?.('a[href*="/attachments/"]') ||
+            element.closest?.('[class*="imageWrapper"], [class*="mediaAttachmentsContainer"]') ||
+            element.closest?.('video') ||
+            element
+        );
+    }
+
+    function getDiscordSelectionTargets() {
+        const targets = [];
+        const seenElements = new Set();
+
+        const nativeElements = document.querySelectorAll([
+            'a[href*="/attachments/"]',
+            'img[src*="/attachments/"]',
+            'video[src*="/attachments/"]',
+            'source[src*="/attachments/"]'
+        ].join(','));
+
+        for (const element of nativeElements) {
+            if (element.closest?.('#media-archiver-panel, #ma-picker-toolbar')) continue;
+            const candidates = [
+                element.href,
+                element.currentSrc,
+                element.src,
+                element.getAttribute?.('href'),
+                element.getAttribute?.('src')
+            ].filter(Boolean);
+
+            for (const candidate of candidates) {
+                const key = discordNativeEntryKey(candidate, element);
+                if (!key || !mediaEntries.has(key)) continue;
+                const wrapper = discordSelectionWrapper(element);
+                if (!(wrapper instanceof Element) || seenElements.has(wrapper)) {
+                    break;
+                }
+                seenElements.add(wrapper);
+                targets.push({ element: wrapper, key });
+                break;
+            }
+        }
+
+        const gifElements = document.querySelectorAll([
+            'a[data-role="img"][data-safe-src]',
+            'video[aria-label*="GIF" i]',
+            '[aria-label="GIF"] video',
+            '[aria-label="GIF"] source[src]'
+        ].join(','));
+
+        for (const element of gifElements) {
+            if (element.closest?.('#media-archiver-panel, #ma-picker-toolbar')) continue;
+            for (const candidate of externalGifProxyCandidates(element)) {
+                const key = discordExternalGifEntryKey(candidate, element);
+                if (!key || !mediaEntries.has(key)) continue;
+                const wrapper = discordSelectionWrapper(element);
+                if (!(wrapper instanceof Element) || seenElements.has(wrapper)) {
+                    break;
+                }
+                seenElements.add(wrapper);
+                targets.push({ element: wrapper, key });
+                break;
+            }
+        }
+
+        return targets;
+    }

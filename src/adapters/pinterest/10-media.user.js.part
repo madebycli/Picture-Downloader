@@ -1,0 +1,218 @@
+    function pinterestLargestSrcsetCandidate(element) {
+        const srcset = element?.getAttribute?.('srcset') || '';
+        const candidates = srcset.split(',').map(part => {
+            const [url, descriptor] = part.trim().split(/\s+/);
+            const numeric = Number.parseFloat(descriptor) || 0;
+            return { url, numeric };
+        }).filter(candidate => candidate.url);
+
+        candidates.sort((left, right) => right.numeric - left.numeric);
+        return candidates[0]?.url || null;
+    }
+
+    function normalizePinterestMediaUrl(rawUrl) {
+        const url = new URL(rawUrl, location.href);
+        url.hash = '';
+
+        if (url.hostname === 'i.pinimg.com') {
+            // Pinterest image CDN URLs normally differ only by this size
+            // segment. Request originals while keeping the content path.
+            url.pathname = url.pathname.replace(
+                /^\/(?:\d+x|\d+x\d+|originals|originals_previews)\//i,
+                '/originals/'
+            );
+        }
+
+        for (const key of [...url.searchParams.keys()]) {
+            if (/^(?:width|height|resize|quality|format)$/i.test(key)) {
+                url.searchParams.delete(key);
+            }
+        }
+
+        return url.href;
+    }
+
+    function pinterestCanonicalKey(rawUrl) {
+        const normalized = new URL(
+            normalizePinterestMediaUrl(rawUrl),
+            location.href
+        );
+        return `${normalized.hostname}${normalized.pathname}`.toLowerCase();
+    }
+
+    function pinterestFilename(rawUrl) {
+        try {
+            const url = new URL(rawUrl, location.href);
+            return sanitizeFilename(
+                decodeURIComponent(url.pathname.split('/').pop() || 'pin.jpg'),
+                'pin.jpg'
+            );
+        } catch {
+            return 'pin.jpg';
+        }
+    }
+
+    function pinterestMediaType(rawUrl, sourceElement) {
+        const extension = extensionFromPath(
+            new URL(rawUrl, location.href).pathname
+        );
+        if (
+            VIDEO_EXTENSIONS.has(extension) ||
+            sourceElement?.tagName === 'VIDEO' ||
+            sourceElement?.closest?.('video')
+        ) {
+            return 'video';
+        }
+        return 'photo';
+    }
+
+    function findPinterestPinContainer(element) {
+        return element?.closest?.(
+            '[data-test-id="pin"], [data-test-id="pinWrapper"], ' +
+            '[data-grid-item], article, a[href*="/pin/"]'
+        ) || null;
+    }
+
+    function findPinterestPinLink(element) {
+        const container = findPinterestPinContainer(element);
+        return (
+            element?.closest?.('a[href*="/pin/"]') ||
+            container?.querySelector?.('a[href*="/pin/"]') ||
+            null
+        );
+    }
+
+    function findPinterestItemId(element) {
+        const href = findPinterestPinLink(element)?.href || '';
+        return href.match(/\/pin\/(\d+)/)?.[1] || null;
+    }
+
+    function findPinterestItemTimestamp(element) {
+        const container = findPinterestPinContainer(element);
+        const value = container?.querySelector?.('time[datetime]')
+            ?.getAttribute('datetime');
+        if (value) return value;
+
+        if (location.pathname.includes('/pin/')) {
+            return document.querySelector(
+                'meta[property="article:published_time"], ' +
+                'meta[name="article:published_time"]'
+            )?.content || null;
+        }
+
+        return null;
+    }
+
+    function pinterestBestCandidate(element) {
+        const candidates = [
+            pinterestLargestSrcsetCandidate(element),
+            element?.currentSrc,
+            element?.src,
+            element?.getAttribute?.('src'),
+            element?.querySelector?.('source[src]')?.src
+        ].filter(Boolean).filter(isPinterestMediaUrl);
+
+        return candidates[0] || null;
+    }
+
+    function addOrUpdatePinterestEntry(rawUrl, sourceElement) {
+        if (!isPinterestMediaUrl(rawUrl)) return false;
+
+        const normalizedUrl = normalizePinterestMediaUrl(rawUrl);
+        const key = pinterestCanonicalKey(normalizedUrl);
+        const existing = mediaEntries.get(key);
+
+        if (existing) {
+            existing.url = normalizedUrl;
+            existing.previewUrl = rawUrl;
+            if (!existing.itemId) existing.itemId = findPinterestItemId(sourceElement);
+            if (!existing.timestamp) {
+                existing.timestamp = findPinterestItemTimestamp(sourceElement);
+            }
+            return false;
+        }
+
+        const itemId = findPinterestItemId(sourceElement);
+        const sourcePageUrl = findPinterestPinLink(sourceElement)?.href || null;
+        const entry = {
+            key,
+            fingerprint: key,
+            url: normalizedUrl,
+            previewUrl: rawUrl,
+            fallbackUrl: rawUrl,
+            filename: pinterestFilename(normalizedUrl),
+            mediaType: pinterestMediaType(normalizedUrl, sourceElement),
+            sourceKind: 'pinterest-rendered-media',
+            sourcePageUrl,
+            itemId,
+            timestamp: findPinterestItemTimestamp(sourceElement),
+            firstSeen: firstSeenCounter++,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0,
+            contentHash: null
+        };
+
+        mediaEntries.set(key, entry);
+        scheduleRender();
+        return true;
+    }
+
+    function pinterestCandidateElements() {
+        return document.querySelectorAll([
+            'a[href*="/pin/"] img[src*="pinimg.com"]',
+            '[data-test-id="pin"] img[src*="pinimg.com"]',
+            '[data-grid-item] img[src*="pinimg.com"]',
+            'main video[src*="pinimg.com"]',
+            'main video source[src*="pinimg.com"]',
+            'main img[src*="pinimg.com"]'
+        ].join(','));
+    }
+
+    function scanPinterestVisibleMedia() {
+        let added = 0;
+
+        for (const element of pinterestCandidateElements()) {
+            if (element.closest?.('#media-archiver-panel, #ma-picker-toolbar')) continue;
+            const candidate = pinterestBestCandidate(element);
+            if (!candidate) continue;
+
+            const container = findPinterestPinContainer(element);
+            if (!container && !location.pathname.includes('/pin/')) continue;
+            const rect = (container || element).getBoundingClientRect();
+            if (rect.width < 80 || rect.height < 80) continue;
+
+            if (addOrUpdatePinterestEntry(candidate, element)) added++;
+        }
+
+        updateCounters();
+        return added;
+    }
+
+    function pinterestSelectionWrapper(element) {
+        return (
+            findPinterestPinContainer(element) ||
+            element.closest?.('a[href*="/pin/"]') ||
+            element
+        );
+    }
+
+    function getPinterestSelectionTargets() {
+        const targets = [];
+        const seen = new Set();
+
+        for (const element of pinterestCandidateElements()) {
+            if (element.closest?.('#media-archiver-panel, #ma-picker-toolbar')) continue;
+            const candidate = pinterestBestCandidate(element);
+            if (!candidate) continue;
+            const key = pinterestCanonicalKey(candidate);
+            if (!mediaEntries.has(key)) continue;
+            const wrapper = pinterestSelectionWrapper(element);
+            if (!(wrapper instanceof Element) || seen.has(wrapper)) continue;
+            seen.add(wrapper);
+            targets.push({ element: wrapper, key });
+        }
+
+        return targets;
+    }
+

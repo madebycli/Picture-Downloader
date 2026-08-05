@@ -1,0 +1,103 @@
+    function defaultFullTimelinePlan() {
+        return [
+            { type: 'move-newest' },
+            { type: 'scan', direction: 'older' }
+        ];
+    }
+
+    function describeScanPlan(plan) {
+        return plan.map(step => {
+            if (step.type === 'move-newest') return 'jump to newest';
+            if (step.type === 'move-oldest') return 'jump to oldest';
+            if (step.type === 'scan') {
+                return step.direction === 'older'
+                    ? 'scan toward older items'
+                    : 'scan toward newer items';
+            }
+            return step.type;
+        }).join(' → ');
+    }
+
+    function buildSmartScanPlan() {
+        const range = getDateRangeConfig();
+        const visible = visibleItemTimeRange();
+        const indexLatest = latestIndexedTimestampMilliseconds();
+        const context = {
+            range,
+            visible,
+            onlyNew: Boolean(onlyNewCheckbox?.checked),
+            indexLatest
+        };
+
+        if (typeof activeSiteAdapter.buildSmartScanPlan === 'function') {
+            const adapterPlan = activeSiteAdapter.buildSmartScanPlan(context);
+            if (Array.isArray(adapterPlan) && adapterPlan.length) {
+                return adapterPlan;
+            }
+        }
+
+        if (adapterDateRangeSupport() === 'none') {
+            return activeSiteAdapter.defaultSmartPlan || defaultFullTimelinePlan();
+        }
+
+        // Incremental sync and open-ended date ranges are fastest and safest
+        // from the newest end: scan backwards until the index/date frontier.
+        if (
+            onlyNewCheckbox?.checked ||
+            !range.enabled ||
+            range.endMode === 'latest'
+        ) {
+            return defaultFullTimelinePlan();
+        }
+
+        if (!visible) {
+            return defaultFullTimelinePlan();
+        }
+
+        if (visible.minMs >= range.endExclusiveMs) {
+            return [{ type: 'scan', direction: 'older' }];
+        }
+
+        if (visible.maxMs < range.startMs) {
+            return [{ type: 'scan', direction: 'newer' }];
+        }
+
+        // The current viewport intersects the requested period. Visit the
+        // nearest date boundary first, then reverse through the whole range.
+        const midpoint = (visible.minMs + visible.maxMs) / 2;
+        const distanceToStart = Math.abs(midpoint - range.startMs);
+        const distanceToEnd = Math.abs(range.endExclusiveMs - midpoint);
+
+        return distanceToStart <= distanceToEnd
+            ? [
+                { type: 'scan', direction: 'older' },
+                { type: 'scan', direction: 'newer' }
+            ]
+            : [
+                { type: 'scan', direction: 'newer' },
+                { type: 'scan', direction: 'older' }
+            ];
+    }
+
+    function buildManualScanPlan(mode) {
+        switch (mode) {
+            case 'current-to-oldest':
+                return [{ type: 'scan', direction: 'older' }];
+            case 'current-to-newest':
+                return [{ type: 'scan', direction: 'newer' }];
+            case 'full-finish-down':
+                return [
+                    { type: 'scan', direction: 'older' },
+                    { type: 'scan', direction: 'newer' }
+                ];
+            default:
+                return defaultFullTimelinePlan();
+        }
+    }
+
+    function selectedScanPlan() {
+        return scanStrategySelect?.value === 'manual'
+            ? buildManualScanPlan(scanDirectionSelect.value)
+            : buildSmartScanPlan();
+    }
+

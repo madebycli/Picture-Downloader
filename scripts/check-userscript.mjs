@@ -52,6 +52,7 @@ if (packageJson.version !== metadataVersion) {
 for (const adapter of adapterManifest.adapters || []) {
     requireText(`id: '${adapter.id}'`, `runtime adapter ${adapter.id}`);
     requireText(`label: '${adapter.label}'`, `adapter label ${adapter.label}`);
+    requireText('scrollSign(direction)', `scroll direction contract for ${adapter.id}`);
 
     for (const match of adapter.matches || []) {
         requireText(`// @match        ${match}`, `@match ${match}`);
@@ -66,15 +67,27 @@ for (const marker of [
     'resolveSiteAdapter',
     'activeSiteAdapter',
     'createDiscordAdapter',
+    'createPinterestAdapter',
+    'buildSmartScanPlan',
+    'stabilizedScrollStep',
+    'partitionRecordsBalanced',
+    'markArchivedRecords',
+    'restoreSessionCheckpoint',
+    'manualPickedKeys',
+    'selectPickedRange',
     'buildFallbackStoredZip',
     'getDateRangeConfig',
     'autoScrollToOldest',
     'autoScrollToNewest',
     'media-archiver-panel',
+    'ma-picker-toolbar',
     'data-ma-tab="setup"',
     'data-ma-tab="media"',
+    'data-ma-tab="library"',
     'data-ma-tab="activity"',
-    'manifest_part.csv'
+    'manifest_part.csv',
+    '// @grant        GM_getValue',
+    '// @grant        GM_setValue'
 ]) {
     requireText(marker, marker);
 }
@@ -92,7 +105,9 @@ forbid(/\/api\/v\d+\/channels\//i, 'Discord channel API access');
 for (const [pattern, description] of [
     [/discord(?:app)?\.com|discordapp\.net/i, 'Discord host in core modules'],
     [/chat-messages|message-timestamp/i, 'Discord DOM selector in core modules'],
-    [/DISCORD_EPOCH/i, 'Discord timestamp constant in core modules']
+    [/DISCORD_EPOCH/i, 'Discord timestamp constant in core modules'],
+    [/pinimg\.com|pinterest\.com/i, 'Pinterest host in core modules'],
+    [/data-test-id=\"pin|\/pin\//i, 'Pinterest DOM selector in core modules']
 ]) {
     if (pattern.test(coreSource)) {
         failures.push(`Site coupling in core: ${description}`);
