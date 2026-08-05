@@ -1,0 +1,216 @@
+    (() => {
+        function createSelectionStore(options = {}) {
+            const selected = new Set();
+            const initialized = new Set();
+            let anchorKey = null;
+            let version = 0;
+            const isEligible = options.isEligible || (
+                item => globalThis.MediaArchiverDomain
+                    ? globalThis.MediaArchiverDomain.isArchiveItemEligible(item)
+                    : item?.eligible !== false
+            );
+
+            function touch() {
+                version++;
+            }
+
+            function itemKey(itemOrKey) {
+                return typeof itemOrKey === 'string'
+                    ? itemOrKey
+                    : itemOrKey?.key;
+            }
+
+            function ensureItems(items) {
+                let changed = false;
+                for (const item of items || []) {
+                    const key = itemKey(item);
+                    if (!key) continue;
+
+                    if (!initialized.has(key)) {
+                        initialized.add(key);
+                        if (isEligible(item)) selected.add(key);
+                        changed = true;
+                    }
+
+                    item.manuallySelected = selected.has(key);
+                }
+                if (changed) touch();
+                return changed;
+            }
+
+            function syncItems(items) {
+                for (const item of items || []) {
+                    if (item?.key) item.manuallySelected = selected.has(item.key);
+                }
+            }
+
+            function setSelected(key, value, { setAnchor = true } = {}) {
+                if (!key) return false;
+                initialized.add(key);
+                const had = selected.has(key);
+                if (value) selected.add(key);
+                else selected.delete(key);
+                if (setAnchor) anchorKey = key;
+                if (had !== Boolean(value)) touch();
+                return had !== Boolean(value);
+            }
+
+            function toggle(key, options = {}) {
+                return setSelected(key, !selected.has(key), options);
+            }
+
+            function selectOnly(key) {
+                if (!key) return false;
+                const unchanged = selected.size === 1 && selected.has(key);
+                selected.clear();
+                selected.add(key);
+                initialized.add(key);
+                anchorKey = key;
+                if (!unchanged) touch();
+                return !unchanged;
+            }
+
+            function selectNone() {
+                if (!selected.size) return false;
+                selected.clear();
+                touch();
+                return true;
+            }
+
+            function selectAllEligible(items) {
+                let changed = false;
+                for (const item of items || []) {
+                    if (!item?.key) continue;
+                    initialized.add(item.key);
+                    if (isEligible(item) && !selected.has(item.key)) {
+                        selected.add(item.key);
+                        changed = true;
+                    }
+                }
+                if (changed) touch();
+                return changed;
+            }
+
+            function selectAllVisible(viewItems) {
+                return selectAllEligible(viewItems);
+            }
+
+            function invertVisible(viewItems) {
+                let changed = false;
+                for (const item of viewItems || []) {
+                    if (!item?.key || !isEligible(item)) continue;
+                    initialized.add(item.key);
+                    if (selected.has(item.key)) selected.delete(item.key);
+                    else selected.add(item.key);
+                    changed = true;
+                }
+                if (changed) touch();
+                return changed;
+            }
+
+            function applyRange(viewItems, targetKey, { additive = false } = {}) {
+                const eligibleItems = (viewItems || []).filter(item => item?.key && isEligible(item));
+                const keys = eligibleItems.map(item => item.key);
+                const targetIndex = keys.indexOf(targetKey);
+                if (targetIndex < 0) return false;
+
+                const anchorIndex = keys.indexOf(anchorKey);
+                const effectiveAnchorIndex = anchorIndex >= 0 ? anchorIndex : targetIndex;
+                const start = Math.min(effectiveAnchorIndex, targetIndex);
+                const end = Math.max(effectiveAnchorIndex, targetIndex);
+                const rangeKeys = keys.slice(start, end + 1);
+                const before = new Set(selected);
+
+                if (!additive) selected.clear();
+                for (const key of rangeKeys) {
+                    initialized.add(key);
+                    selected.add(key);
+                }
+                anchorKey = anchorKey && anchorIndex >= 0 ? anchorKey : targetKey;
+
+                const changed = before.size !== selected.size ||
+                    [...before].some(key => !selected.has(key));
+                if (changed) touch();
+                return changed;
+            }
+
+            function applyClick({
+                key,
+                viewItems,
+                checkmark = false,
+                ctrlKey = false,
+                metaKey = false,
+                shiftKey = false
+            }) {
+                const additive = Boolean(ctrlKey || metaKey);
+
+                if (shiftKey) {
+                    return applyRange(viewItems, key, { additive });
+                }
+                if (checkmark || additive) {
+                    return toggle(key);
+                }
+                return selectOnly(key);
+            }
+
+            function removeMissing(validKeys) {
+                const allowed = validKeys instanceof Set ? validKeys : new Set(validKeys || []);
+                let changed = false;
+                for (const key of [...selected]) {
+                    if (!allowed.has(key)) {
+                        selected.delete(key);
+                        initialized.delete(key);
+                        changed = true;
+                    }
+                }
+                if (anchorKey && !allowed.has(anchorKey)) anchorKey = null;
+                if (changed) touch();
+                return changed;
+            }
+
+            return Object.freeze({
+                ensureItems,
+                syncItems,
+                isSelected: key => selected.has(key),
+                setSelected,
+                toggle,
+                selectOnly,
+                selectNone,
+                selectAllEligible,
+                selectAllVisible,
+                invertVisible,
+                applyRange,
+                applyClick,
+                removeMissing,
+                setAnchor(key) {
+                    anchorKey = key || null;
+                },
+                get anchorKey() {
+                    return anchorKey;
+                },
+                get version() {
+                    return version;
+                },
+                get count() {
+                    return selected.size;
+                },
+                selectedKeys() {
+                    return new Set(selected);
+                },
+                snapshot() {
+                    return Object.freeze({
+                        selectedKeys: Object.freeze([...selected]),
+                        anchorKey,
+                        version
+                    });
+                }
+            });
+        }
+
+        Object.defineProperty(globalThis, 'MediaArchiverSelection', {
+            value: Object.freeze({ createSelectionStore }),
+            configurable: true,
+            writable: false
+        });
+    })();
+

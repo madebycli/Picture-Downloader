@@ -67,6 +67,58 @@
         );
     }
 
+    function createDiscordMediaItem({
+        key,
+        url,
+        previewUrl,
+        filename,
+        mediaType,
+        sourceKind,
+        sourcePageUrl,
+        sourceElement
+    }) {
+        const itemId = findItemId(sourceElement);
+        const timestamp = findItemTimestamp(sourceElement);
+        return {
+            key,
+            kind: 'media',
+            adapterId: 'discord',
+            canonical: true,
+            canonicalKey: key,
+            duplicateCount: 0,
+            eligibility: {
+                adapter: true,
+                type: true,
+                date: true
+            },
+            manuallySelected: true,
+            url,
+            previewUrl,
+            filename,
+            mediaType,
+            sourceKind,
+            sourcePageUrl,
+            itemId,
+            sourceId: itemId,
+            timestamp,
+            firstSeen: firstSeenCounter++,
+            discoveryIndex: firstSeenCounter - 1,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0,
+            payload: {
+                url,
+                previewUrl,
+                filename,
+                originalFilename: filename,
+                mediaType,
+                sourceKind,
+                sourcePageUrl,
+                itemId
+            }
+        };
+    }
+
     function addOrUpdateMediaEntry(rawUrl, sourceElement) {
         if (!isDiscordAttachmentUrl(rawUrl, sourceElement)) return false;
 
@@ -75,21 +127,27 @@
         const existing = mediaEntries.get(key);
 
         if (existing) {
+            recordCanonicalDuplicate(existing, 'discord-attachment-canonical-url');
             if (urlQualityScore(originalUrl) > urlQualityScore(existing.url)) {
                 existing.url = originalUrl;
+                existing.payload.url = originalUrl;
             }
 
-            // A freshly loaded URL usually has the newest signature.
             if (new URL(originalUrl).searchParams.has('ex')) {
                 existing.url = originalUrl;
+                existing.payload.url = originalUrl;
             }
 
-            if (!existing.itemId) existing.itemId = findItemId(sourceElement);
+            if (!existing.itemId) {
+                existing.itemId = findItemId(sourceElement);
+                existing.sourceId = existing.itemId;
+                existing.payload.itemId = existing.itemId;
+            }
             if (!existing.timestamp) existing.timestamp = findItemTimestamp(sourceElement);
             return false;
         }
 
-        mediaEntries.set(key, {
+        const item = createDiscordMediaItem({
             key,
             url: originalUrl,
             previewUrl: rawUrl,
@@ -97,14 +155,11 @@
             mediaType: mediaTypeFromUrl(originalUrl, sourceElement),
             sourceKind: 'discord-attachment',
             sourcePageUrl: null,
-            itemId: findItemId(sourceElement),
-            timestamp: findItemTimestamp(sourceElement),
-            firstSeen: firstSeenCounter++,
-            status: STATUS.COLLECTED,
-            error: '',
-            size: 0
+            sourceElement
         });
-
+        mediaEntries.set(key, item);
+        ensureSelectionForEntries([item]);
+        liveMetrics.record('found', 1);
         scheduleRender();
         return true;
     }
@@ -126,15 +181,21 @@
         const existing = mediaEntries.get(key);
 
         if (existing) {
+            recordCanonicalDuplicate(existing, 'discord-external-gif-canonical-url');
             existing.url = mediaUrl;
             existing.previewUrl = mediaUrl;
+            existing.payload.url = mediaUrl;
+            existing.payload.previewUrl = mediaUrl;
 
             if (!existing.sourcePageUrl && sourcePageUrl) {
                 existing.sourcePageUrl = sourcePageUrl;
+                existing.payload.sourcePageUrl = sourcePageUrl;
             }
 
             if (!existing.itemId) {
                 existing.itemId = findItemId(sourceElement);
+                existing.sourceId = existing.itemId;
+                existing.payload.itemId = existing.itemId;
             }
 
             if (!existing.timestamp) {
@@ -150,24 +211,19 @@
             filename = 'external-gif-preview.mp4';
         }
 
-        mediaEntries.set(key, {
+        const item = createDiscordMediaItem({
             key,
             url: mediaUrl,
             previewUrl: mediaUrl,
             filename,
             mediaType: 'external-gif',
             sourceKind: 'external-gif-preview',
-            sourcePageUrl:
-                sourcePageUrl ||
-                findExternalGifPageUrl(sourceElement),
-            itemId: findItemId(sourceElement),
-            timestamp: findItemTimestamp(sourceElement),
-            firstSeen: firstSeenCounter++,
-            status: STATUS.COLLECTED,
-            error: '',
-            size: 0
+            sourcePageUrl: sourcePageUrl || findExternalGifPageUrl(sourceElement),
+            sourceElement
         });
-
+        mediaEntries.set(key, item);
+        ensureSelectionForEntries([item]);
+        liveMetrics.record('found', 1);
         scheduleRender();
         return true;
     }
@@ -239,7 +295,11 @@
         });
 
         added += scanExternalGifPreviews();
-
+        liveMetrics.update({
+            found: mediaEntries.size,
+            duplicatesMerged: [...mediaEntries.values()]
+                .reduce((total, entry) => total + (entry.duplicateCount || 0), 0)
+        });
         updateCounters();
         return added;
     }

@@ -1,0 +1,45 @@
+    const selectionStore = globalThis.MediaArchiverSelection.createSelectionStore({
+        isEligible(item) {
+            return item?.canonical !== false && item?.eligibility?.adapter !== false;
+        }
+    });
+
+    const diagnostics = globalThis.MediaArchiverDiagnostics.createDiagnosticsStore({
+        runtimeTarget: 'userscript',
+        appVersion: VERSION,
+        limit: 2_000
+    });
+
+    const liveMetrics = globalThis.MediaArchiverDiagnostics.createLiveMetrics({
+        heartbeatMs: 750,
+        onSnapshot(snapshot) {
+            if (typeof refreshLiveMetrics === 'function') {
+                refreshLiveMetrics(snapshot);
+            }
+        }
+    });
+
+    const workflowState = globalThis.MediaArchiverWorkflowState
+        .createWorkflowStateMachine({ mode: 'quick' });
+
+    function ensureSelectionForEntries(entries = [...archiveItems.values()]) {
+        selectionStore.ensureItems(entries);
+        selectionStore.syncItems(entries);
+        return entries;
+    }
+
+    function recordCanonicalDuplicate(entry, reason = 'canonical-key') {
+        entry.duplicateCount = (entry.duplicateCount || 0) + 1;
+        liveMetrics.record('duplicatesMerged', 1);
+        diagnostics.debug(
+            'ADAPTER_DUPLICATE_MERGED',
+            'Repeated rendered representation merged into one canonical item.',
+            {
+                itemKey: entry.key,
+                reason,
+                duplicateCount: entry.duplicateCount
+            },
+            { category: 'adapter', adapterId: entry.adapterId || activeSiteAdapter?.id }
+        );
+    }
+

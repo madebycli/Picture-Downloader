@@ -5,7 +5,11 @@
     "src/core/00-bootstrap.user.js.part",
     "src/shared/runtime-contract.user.js.part",
     "src/shared/domain.user.js.part",
-    "src/shared/workflow-state.user.js.part"
+    "src/shared/workflow-state.user.js.part",
+    "src/shared/selection-store.user.js.part",
+    "src/shared/naming-service.user.js.part",
+    "src/shared/diagnostics-metrics.user.js.part",
+    "src/core/08-shared-services.user.js.part"
   ],
   "afterAdapters": [
     "src/core/10-activate-adapter.user.js.part",

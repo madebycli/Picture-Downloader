@@ -1,0 +1,429 @@
+    (() => {
+        const ERROR_CODES = Object.freeze([
+            'ADAPTER_UNSUPPORTED_PAGE',
+            'ADAPTER_TIMELINE_NOT_FOUND',
+            'ADAPTER_DISCOVERY_FAILED',
+            'SCAN_BOUNDARY_TIMEOUT',
+            'SCAN_ITERATION_LIMIT',
+            'SCAN_POSITION_RESTORE_FAILED',
+            'NETWORK_HTTP_403',
+            'NETWORK_HTTP_404',
+            'NETWORK_HTTP_429',
+            'NETWORK_HTTP_5XX',
+            'NETWORK_TIMEOUT',
+            'NETWORK_ABORTED',
+            'NETWORK_HOST_REJECTED',
+            'NETWORK_RETRY_EXHAUSTED',
+            'NAMING_TEMPLATE_INVALID',
+            'NAMING_COLLISION_RESOLVED',
+            'NAMING_PLAN_FAILED',
+            'ZIP_ENGINE_UNAVAILABLE',
+            'ZIP_FALLBACK_ACTIVE',
+            'ZIP_PART_BUILD_FAILED',
+            'ZIP_PART_TOO_LARGE',
+            'ZIP_DOWNLOAD_BLOCKED',
+            'RUNTIME_CLIPBOARD_FAILED',
+            'RUNTIME_SAVE_FAILED',
+            'RUNTIME_STORAGE_FAILED',
+            'UI_LIBRARY_RENDER_FAILED'
+        ]);
+
+        const LEVELS = new Set(['debug', 'info', 'success', 'warn', 'error']);
+        const CATEGORIES = new Set([
+            'runtime', 'adapter', 'scan', 'selection', 'network',
+            'naming', 'archive', 'zip', 'ui'
+        ]);
+        const SENSITIVE_KEY = /(token|cookie|authorization|password|secret|signature|signed|query|fragment|bodyText|bodyHtml|username|sourceLabel|localPath|extensionId)/i;
+
+        function sanitizeUrl(value) {
+            try {
+                const url = new URL(String(value));
+                return `${url.protocol}//${url.host}${url.pathname}`;
+            } catch {
+                return String(value)
+                    .replace(/[?#].*$/, '')
+                    .replace(/(?:token|signature|authorization|cookie)=[^\s&]+/gi, '$1=[redacted]');
+            }
+        }
+
+        function redactValue(value, key = '', seen = new WeakSet()) {
+            if (SENSITIVE_KEY.test(key)) return '[redacted]';
+            if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+            if (typeof value === 'string') {
+                if (/^https?:\/\//i.test(value)) return sanitizeUrl(value);
+                return value
+                    .replace(/(?:Bearer|Bot)\s+[A-Za-z0-9._~+\/-]+/gi, '[redacted credential]')
+                    .replace(/(?:token|cookie|authorization|signature)=([^\s&]+)/gi, '$1=[redacted]')
+                    .replace(/(?:[A-Za-z]:\\|\/home\/|\/Users\/)[^\s]+/g, '[redacted path]');
+            }
+            if (typeof value !== 'object') return String(value);
+            if (seen.has(value)) return '[circular]';
+            seen.add(value);
+            if (Array.isArray(value)) return value.map(item => redactValue(item, key, seen));
+
+            const output = {};
+            for (const [childKey, childValue] of Object.entries(value)) {
+                output[childKey] = redactValue(childValue, childKey, seen);
+            }
+            return output;
+        }
+
+        function sanitizeError(error) {
+            if (!error) return null;
+            return Object.freeze({
+                name: error.name || 'Error',
+                message: redactValue(error.message || String(error)),
+                stack: redactValue(error.stack || ''),
+                causeCode: error.cause?.code || error.causeCode || null
+            });
+        }
+
+        function createDiagnosticsStore(options = {}) {
+            const limit = Math.max(100, Number(options.limit) || 2_000);
+            const runtimeTarget = options.runtimeTarget || 'unknown';
+            const appVersion = options.appVersion || 'unknown';
+            let sessionId = null;
+            let sequence = 0;
+            let sessionMetadata = {};
+            const events = [];
+            const listeners = new Set();
+
+            function preserveBoundedHistory() {
+                while (events.length > limit) {
+                    const removable = events.findIndex((event, index) =>
+                        index > 0 &&
+                        index < events.length - 1 &&
+                        event.level !== 'error' &&
+                        event.level !== 'warn'
+                    );
+                    if (removable >= 0) events.splice(removable, 1);
+                    else events.splice(1, 1);
+                }
+            }
+
+            function emit(level, code, message, context = {}, error = null, extra = {}) {
+                const normalizedLevel = LEVELS.has(level) ? level : 'info';
+                const category = CATEGORIES.has(extra.category) ? extra.category : 'runtime';
+                const now = new Date();
+                const event = Object.freeze({
+                    id: `${sessionId || 'session'}-${++sequence}`,
+                    sessionId,
+                    timestamp: now.toISOString(),
+                    monotonicMs: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+                    level: normalizedLevel,
+                    category,
+                    code: String(code || 'UNSPECIFIED'),
+                    message: String(message || ''),
+                    userMessage: String(extra.userMessage || message || ''),
+                    phase: extra.phase || null,
+                    adapterId: extra.adapterId || sessionMetadata.adapterId || null,
+                    runtimeTarget,
+                    context: Object.freeze(redactValue(context || {})),
+                    error: sanitizeError(error)
+                });
+                events.push(event);
+                preserveBoundedHistory();
+                for (const listener of listeners) listener(event);
+                return event;
+            }
+
+            function activityEvents() {
+                return events.filter(event => event.level !== 'debug');
+            }
+
+            function copyableActivityText() {
+                return activityEvents().map(event => {
+                    const time = event.timestamp.slice(11, 19);
+                    return `[${time}] ${event.userMessage}${event.level === 'error' ? ` Code: ${event.code}` : ''}`;
+                }).join('\n');
+            }
+
+            function groupedErrors() {
+                const counts = new Map();
+                for (const event of events) {
+                    if (event.level !== 'error') continue;
+                    counts.set(event.code, (counts.get(event.code) || 0) + 1);
+                }
+                return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+            }
+
+            function markdownValue(value) {
+                if (value == null || value === '') return 'n/a';
+                return String(value).replace(/\r?\n/g, ' ');
+            }
+
+            function exportMarkdown(exportOptions = {}) {
+                const metrics = redactValue(exportOptions.metrics || {});
+                const config = redactValue(exportOptions.configuration || {});
+                const environment = {
+                    appVersion,
+                    runtimeTarget,
+                    adapterId: sessionMetadata.adapterId || 'unknown',
+                    pageType: sessionMetadata.pageType || 'unknown',
+                    sessionId: sessionId || 'none',
+                    startedAt: sessionMetadata.startedAt || 'unknown',
+                    finishedAt: exportOptions.finishedAt || new Date().toISOString(),
+                    ...(redactValue(exportOptions.environment || {}))
+                };
+                const lines = [
+                    '# Media Archiver diagnostic report',
+                    '',
+                    '## Environment'
+                ];
+                for (const [key, value] of Object.entries(environment)) {
+                    lines.push(`- ${key}: ${markdownValue(value)}`);
+                }
+                lines.push('', '## Configuration');
+                for (const [key, value] of Object.entries(config)) {
+                    lines.push(`- ${key}: ${markdownValue(Array.isArray(value) ? value.join(', ') : value)}`);
+                }
+                lines.push('', '## Final statistics');
+                for (const [key, value] of Object.entries(metrics)) {
+                    lines.push(`- ${key}: ${markdownValue(value)}`);
+                }
+                lines.push('', '## Error summary');
+                const errors = groupedErrors();
+                if (!errors.length) lines.push('- None');
+                else for (const [code, count] of errors) lines.push(`- ${code}: ${count}`);
+
+                lines.push('', '## Activity timeline');
+                const activity = activityEvents();
+                if (!activity.length) lines.push('- No activity events.');
+                else for (const event of activity) {
+                    lines.push(`- ${event.timestamp} [${event.level.toUpperCase()}] ${event.userMessage} (${event.code})`);
+                }
+
+                lines.push('', '## Developer events');
+                for (const event of events) {
+                    lines.push(`### ${event.timestamp} ${event.level.toUpperCase()} ${event.category.toUpperCase()} ${event.code}`);
+                    lines.push('', event.message || 'No message.', '');
+                    if (Object.keys(event.context).length) {
+                        lines.push('```json', JSON.stringify(event.context, null, 2), '```', '');
+                    }
+                    if (event.error) {
+                        lines.push('```json', JSON.stringify(event.error, null, 2), '```', '');
+                    }
+                }
+                lines.push(
+                    '## Redaction notice',
+                    '',
+                    'Sensitive URL parameters, credentials, private content, source labels, local paths, and unnecessary extension identifiers are redacted by default.',
+                    ''
+                );
+                return lines.join('\n');
+            }
+
+            const api = {
+                startSession(metadata = {}) {
+                    sessionId = metadata.sessionId || `ma-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+                    sessionMetadata = {
+                        ...redactValue(metadata),
+                        startedAt: metadata.startedAt || new Date().toISOString()
+                    };
+                    emit('info', 'SESSION_STARTED', 'Session started.', sessionMetadata, null, {
+                        category: 'runtime',
+                        userMessage: 'Session started.'
+                    });
+                    return sessionId;
+                },
+                endSession(summary = {}) {
+                    return emit('success', 'SESSION_COMPLETED', 'Session completed.', summary, null, {
+                        category: 'runtime',
+                        userMessage: 'Session completed.'
+                    });
+                },
+                debug(code, message, context, extra = {}) {
+                    return emit('debug', code, message, context, null, extra);
+                },
+                info(code, message, context, extra = {}) {
+                    return emit('info', code, message, context, null, extra);
+                },
+                success(code, message, context, extra = {}) {
+                    return emit('success', code, message, context, null, extra);
+                },
+                warn(code, message, context, extra = {}) {
+                    return emit('warn', code, message, context, null, extra);
+                },
+                error(code, message, error, context, extra = {}) {
+                    return emit('error', code, message, context, error, extra);
+                },
+                subscribe(listener) {
+                    listeners.add(listener);
+                    return () => listeners.delete(listener);
+                },
+                clear() {
+                    events.length = 0;
+                },
+                events(filter = {}) {
+                    return events.filter(event =>
+                        (!filter.levels || filter.levels.includes(event.level)) &&
+                        (!filter.categories || filter.categories.includes(event.category)) &&
+                        (!filter.query || `${event.code} ${event.message}`.toLowerCase().includes(String(filter.query).toLowerCase()))
+                    );
+                },
+                activityEvents,
+                copyableActivityText,
+                exportMarkdown,
+                get sessionId() {
+                    return sessionId;
+                }
+            };
+            return Object.freeze(api);
+        }
+
+        function createLiveMetrics(options = {}) {
+            const now = options.now || (() => Date.now());
+            const setTimer = options.setTimer || ((callback, interval) => setInterval(callback, interval));
+            const clearTimer = options.clearTimer || (handle => clearInterval(handle));
+            const heartbeatMs = Math.min(1_000, Math.max(500, Number(options.heartbeatMs) || 750));
+            const listeners = new Set();
+            let timer = null;
+            let dirty = true;
+            let version = 0;
+            let lastFlushedVersion = -1;
+            const state = {
+                sessionId: null,
+                startedAt: 0,
+                elapsedMs: 0,
+                phase: 'idle',
+                found: 0,
+                eligible: 0,
+                selected: 0,
+                duplicatesMerged: 0,
+                downloading: 0,
+                downloaded: 0,
+                saved: 0,
+                skipped: 0,
+                errors: 0,
+                bytesDownloaded: 0,
+                currentZipPart: 0,
+                totalZipPartsKnown: 0,
+                currentItem: 0,
+                totalItems: 0,
+                scanIterations: 0,
+                lastUpdatedAt: 0
+            };
+
+            function snapshot() {
+                return Object.freeze({ ...state });
+            }
+
+            function notify(force = false) {
+                if (!force && !dirty && lastFlushedVersion === version) return snapshot();
+                if (state.startedAt) state.elapsedMs = Math.max(0, now() - state.startedAt);
+                state.lastUpdatedAt = now();
+                dirty = false;
+                lastFlushedVersion = version;
+                const value = snapshot();
+                for (const listener of listeners) listener(value);
+                options.onSnapshot?.(value);
+                return value;
+            }
+
+            function markDirty() {
+                dirty = true;
+                version++;
+            }
+
+            function update(patch = {}) {
+                let changed = false;
+                for (const [key, value] of Object.entries(patch)) {
+                    if (!(key in state) || state[key] === value) continue;
+                    state[key] = value;
+                    changed = true;
+                }
+                if (changed) markDirty();
+                return changed;
+            }
+
+            function record(field, delta = 1) {
+                if (!(field in state)) throw new TypeError(`Unknown live metric: ${field}`);
+                state[field] = Math.max(0, (Number(state[field]) || 0) + Number(delta || 0));
+                markDirty();
+                return state[field];
+            }
+
+            function startTimer() {
+                if (!timer) timer = setTimer(() => notify(false), heartbeatMs);
+            }
+
+            return Object.freeze({
+                startSession(metadata = {}) {
+                    if (timer) clearTimer(timer);
+                    Object.assign(state, {
+                        sessionId: metadata.sessionId || `ma-${now().toString(36)}`,
+                        startedAt: now(),
+                        elapsedMs: 0,
+                        phase: metadata.phase || 'scanning',
+                        found: 0,
+                        eligible: 0,
+                        selected: 0,
+                        duplicatesMerged: 0,
+                        downloading: 0,
+                        downloaded: 0,
+                        saved: 0,
+                        skipped: 0,
+                        errors: 0,
+                        bytesDownloaded: 0,
+                        currentZipPart: 0,
+                        totalZipPartsKnown: 0,
+                        currentItem: 0,
+                        totalItems: 0,
+                        scanIterations: 0,
+                        lastUpdatedAt: now()
+                    });
+                    markDirty();
+                    startTimer();
+                    return notify(true);
+                },
+                update,
+                record,
+                markDirty,
+                setPhase(phase) {
+                    update({ phase });
+                },
+                flushNow() {
+                    return notify(true);
+                },
+                stopSession(finalPatch = {}) {
+                    update(finalPatch);
+                    const finalSnapshot = notify(true);
+                    if (timer) clearTimer(timer);
+                    timer = null;
+                    return finalSnapshot;
+                },
+                handleVisibilityChange(isVisible) {
+                    return isVisible ? notify(true) : snapshot();
+                },
+                subscribe(listener) {
+                    listeners.add(listener);
+                    return () => listeners.delete(listener);
+                },
+                snapshot,
+                get heartbeatMs() {
+                    return heartbeatMs;
+                },
+                get active() {
+                    return Boolean(timer);
+                },
+                get version() {
+                    return version;
+                }
+            });
+        }
+
+        const api = Object.freeze({
+            ERROR_CODES,
+            redactValue,
+            sanitizeUrl,
+            createDiagnosticsStore,
+            createLiveMetrics
+        });
+
+        Object.defineProperty(globalThis, 'MediaArchiverDiagnostics', {
+            value: api,
+            configurable: true,
+            writable: false
+        });
+    })();
+
