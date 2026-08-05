@@ -2,13 +2,19 @@
         const selectedEntries = selectedMediaEntries();
 
         if (packing || selectedEntries.length === 0) {
-            if (!packing && selectedEntries.length === 0) {
+            if (!packing) {
                 setPhase('NOTHING SELECTED');
-                addLog('Enable photos, videos, external GIF previews, or a combination before creating ZIP files.', 'warn');
+                addLog(
+                    pickedOnlyCheckbox?.checked
+                        ? 'No picked media currently passes the active filters.'
+                        : 'No media currently passes the active filters.',
+                    'warn'
+                );
             }
             return;
         }
 
+        saveSessionCheckpoint();
         packing = true;
         running = true;
         scanning = false;
@@ -19,33 +25,128 @@
         const entries = selectedEntries;
         const digits = Math.max(6, String(entries.length).length);
         const archiveNames = new Map();
-        const archiveContext = activeSiteAdapter.getArchiveContext();
-        const stamp = new Date()
-            .toISOString()
-            .slice(0, 16)
-            .replace('T', '_')
-            .replace(':', '-');
+        const usedArchiveNames = new Set();
         const archiveKind = selectedArchiveKind(entries);
         const selectedCounts = countMediaTypes(entries);
-        const initialZipLibrary = resolveFflateLibrary();
-
-        addLog(
-            initialZipLibrary
-                ? 'ZIP engine: fflate loaded successfully.'
-                : 'ZIP engine: fflate is unavailable. Using the built-in Firefox-safe ZIP fallback; ZIP creation may take longer.',
-            initialZipLibrary ? 'success' : 'warn'
-        );
+        const zipPreference = zipEngineSelect?.value || 'auto';
+        const targetBytes = getZipTargetBytes();
+        const hardMaximumBytes = getZipHardMaximumBytes();
+        const runContentHashes = new Set();
+        const pendingDuplicateEntries = [];
+        const pendingRecords = [];
 
         let zipPart = 0;
         let zippedCount = 0;
+        let duplicateCount = 0;
         let errorCount = 0;
         let groupStart = 0;
+        let downloadedBytes = 0;
 
         addLog(
-            `${entries.length} selected files (${selectedCounts.photos} photos/native GIFs, ` +
-            `${selectedCounts.videos} videos, ${selectedCounts.externalGifs} external GIF previews). ` +
-            `Using ${DOWNLOAD_CONCURRENCY} parallel media downloads.`
+            `${entries.length} files selected: ${selectedCounts.photos} photos/native GIFs, ` +
+            `${selectedCounts.videos} videos, ${selectedCounts.externalGifs} rendered GIF previews.`
         );
+        addLog(
+            `Adaptive ZIP target: about ${formatBytes(targetBytes)} per part ` +
+            `(hard limit ${formatBytes(hardMaximumBytes)}). Engine: ${zipPreference}.`
+        );
+
+        async function emitZipPart(partRecords) {
+            if (!partRecords.length || stopRequested) return;
+
+            zipPart++;
+            const partLabel = String(zipPart).padStart(3, '0');
+            const files = {};
+
+            for (const record of partRecords) {
+                const archiveName = uniqueArchiveName(
+                    record.globalIndex,
+                    record.entry,
+                    digits,
+                    usedArchiveNames
+                );
+                archiveNames.set(record.entry.key, archiveName);
+                record.entry.part = zipPart;
+                files[archiveName] = record.data;
+            }
+
+            files['manifest_part.csv'] = encodeUtf8(
+                buildPartManifest(
+                    partRecords,
+                    archiveNames,
+                    zipPart
+                )
+            );
+
+            setPhase(
+                `CREATING ZIP PART ${partLabel}: ${partRecords.length} files`
+            );
+            progressFill.style.width = '0%';
+            await sleep(20);
+
+            let zipResult;
+            try {
+                zipResult = await createZipBlob(
+                    files,
+                    progress => {
+                        setPhase(
+                            `CREATING ZIP PART ${partLabel}: ` +
+                            `${progress.completed}/${progress.total} files · ` +
+                            `${progress.percent.toFixed(0)}%`
+                        );
+                        progressFill.style.width = `${progress.percent}%`;
+                    },
+                    zipPreference
+                );
+            } catch (error) {
+                addLog(
+                    `ZIP part ${partLabel} failed: ${error.message}`,
+                    'error'
+                );
+                errorCount += partRecords.length;
+                for (const record of partRecords) {
+                    record.entry.status = STATUS.ERROR;
+                    record.entry.error = `ZIP: ${error.message}`;
+                }
+                return;
+            }
+
+            const blob = zipResult.blob;
+            const filename = buildZipFilename(zipPart, archiveKind);
+            downloadZipBlob(blob, filename);
+
+            for (const record of partRecords) {
+                record.entry.status = STATUS.PACKED;
+                zippedCount++;
+                record.data = null;
+            }
+
+            markArchivedRecords(partRecords, { filename, part: zipPart });
+
+            // Sources proven to have the same bytes as a file in this part
+            // can now be safely linked to the persistent index as duplicates.
+            for (let index = pendingDuplicateEntries.length - 1; index >= 0; index--) {
+                const duplicate = pendingDuplicateEntries[index];
+                if (isContentHashArchived(duplicate.contentHash)) {
+                    markVerifiedDuplicate(
+                        duplicate.entry,
+                        duplicate.contentHash
+                    );
+                    pendingDuplicateEntries.splice(index, 1);
+                }
+            }
+
+            progressFill.style.width = '100%';
+            scheduleRender();
+            updateCounters();
+            addLog(
+                `ZIP part ${partLabel}: ${partRecords.length} files, ` +
+                `${formatBytes(blob.size)}, ${zipResult.backend}; sent to the browser.`,
+                'success'
+            );
+
+            await sleep(850);
+        }
 
         while (groupStart < entries.length && !stopRequested) {
             const group = takeAdaptiveWorkGroup(entries, groupStart);
@@ -53,10 +154,9 @@
 
             const records = new Array(group.length);
             let finishedInGroup = 0;
-            let bytesInGroup = 0;
 
             setPhase(
-                `DOWNLOADING ORIGINALS: ${groupStart + 1}–` +
+                `DOWNLOADING: ${groupStart + 1}–` +
                 `${groupStart + group.length}/${entries.length}`
             );
 
@@ -71,19 +171,65 @@
                     scheduleRender();
 
                     try {
-                        const buffer = await requestArrayBuffer(entry.url);
+                        let buffer;
+                        try {
+                            buffer = await requestArrayBuffer(entry.url);
+                        } catch (primaryError) {
+                            if (
+                                entry.fallbackUrl &&
+                                entry.fallbackUrl !== entry.url &&
+                                activeSiteAdapter.isDownloadUrlAllowed(entry.fallbackUrl)
+                            ) {
+                                addLog(
+                                    `Original-quality request failed for ${entry.filename}; using the rendered fallback.`,
+                                    'warn'
+                                );
+                                buffer = await requestArrayBuffer(entry.fallbackUrl);
+                            } else {
+                                throw primaryError;
+                            }
+                        }
                         if (stopRequested) return;
 
-                        entry.size = buffer.byteLength;
-                        bytesInGroup += buffer.byteLength;
-                        records[localIndex] = {
-                            entry,
-                            globalIndex: groupStart + localIndex,
-                            data: new Uint8Array(buffer)
-                        };
+                        const data = new Uint8Array(buffer);
+                        entry.size = data.byteLength;
+                        downloadedBytes += data.byteLength;
+
+                        let contentHash = null;
+                        if (exactDedupeCheckbox?.checked) {
+                            contentHash = await sha256Hex(data);
+                            entry.contentHash = contentHash;
+                        }
+
+                        const duplicate = contentHash && (
+                            isContentHashArchived(contentHash) ||
+                            runContentHashes.has(contentHash)
+                        );
+
+                        if (duplicate) {
+                            entry.status = STATUS.DUPLICATE;
+                            entry.error = 'Exact duplicate bytes';
+                            duplicateCount++;
+
+                            if (isContentHashArchived(contentHash)) {
+                                markVerifiedDuplicate(entry, contentHash);
+                            } else {
+                                pendingDuplicateEntries.push({
+                                    entry,
+                                    contentHash
+                                });
+                            }
+                        } else {
+                            if (contentHash) runContentHashes.add(contentHash);
+                            records[localIndex] = {
+                                entry,
+                                globalIndex: groupStart + localIndex,
+                                data,
+                                contentHash
+                            };
+                        }
                     } catch (error) {
                         if (stopRequested) return;
-
                         entry.status = STATUS.ERROR;
                         entry.error = error?.message || String(error);
                         errorCount++;
@@ -95,8 +241,8 @@
 
                     finishedInGroup++;
                     setPhase(
-                        `DOWNLOADING ORIGINALS: ${finishedInGroup}/${group.length} · ` +
-                        `${formatBytes(bytesInGroup)}`
+                        `DOWNLOADING: ${finishedInGroup}/${group.length} · ` +
+                        `${formatBytes(downloadedBytes)}`
                     );
                     progressFill.style.width =
                         `${(finishedInGroup / group.length) * 100}%`;
@@ -106,103 +252,26 @@
 
             if (stopRequested) break;
 
-            const successfulRecords = records.filter(Boolean);
-            const sizeGroups = splitRecordsBySize(
-                successfulRecords,
-                ZIP_MAX_BYTES
-            );
-
-            for (const partRecords of sizeGroups) {
+            pendingRecords.push(...records.filter(Boolean));
+            for (const readyGroup of takeFlushableRecordGroups(
+                pendingRecords,
+                false
+            )) {
+                await emitZipPart(readyGroup);
                 if (stopRequested) break;
-
-                zipPart++;
-                const partLabel = String(zipPart).padStart(3, '0');
-                const files = {};
-
-                for (const record of partRecords) {
-                    const archiveName = uniqueArchiveName(
-                        record.globalIndex,
-                        record.entry,
-                        digits
-                    );
-                    archiveNames.set(record.entry.key, archiveName);
-                    record.entry.part = zipPart;
-                    files[archiveName] = record.data;
-                }
-
-                files['manifest_part.csv'] = encodeUtf8(
-                    buildPartManifest(
-                        partRecords,
-                        archiveNames,
-                        zipPart
-                    )
-                );
-
-                setPhase(
-                    `CREATING ZIP PART ${partLabel}: ` +
-                    `${partRecords.length} files`
-                );
-                progressFill.style.width = '0%';
-                await sleep(20);
-
-                let zipResult;
-                try {
-                    zipResult = await createZipBlob(
-                        files,
-                        progress => {
-                            setPhase(
-                                `CREATING ZIP PART ${partLabel}: ` +
-                                `${progress.completed}/${progress.total} files · ` +
-                                `${progress.percent.toFixed(0)}%`
-                            );
-                            progressFill.style.width =
-                                `${progress.percent}%`;
-                        }
-                    );
-                } catch (error) {
-                    addLog(
-                        `ZIP part ${partLabel} failed: ${error.message}`,
-                        'error'
-                    );
-                    errorCount += partRecords.length;
-
-                    for (const record of partRecords) {
-                        record.entry.status = STATUS.ERROR;
-                        record.entry.error = `ZIP: ${error.message}`;
-                    }
-                    continue;
-                }
-
-                const blob = zipResult.blob;
-                const usedZipBackend = zipResult.backend;
-                const filename =
-                    `${activeSiteAdapter.archivePrefix}_${archiveKind}_${archiveContext.id}_` +
-                    `${dateRangeFilenameToken()}_${stamp}_part_${partLabel}.zip`;
-
-                downloadZipBlob(blob, filename);
-
-                for (const record of partRecords) {
-                    record.entry.status = STATUS.PACKED;
-                    zippedCount++;
-                    record.data = null;
-                }
-
-                zipResult = null;
-                progressFill.style.width = '100%';
-                scheduleRender();
-                updateCounters();
-                addLog(
-                    `ZIP part ${partLabel}: ${partRecords.length} files, ` +
-                    `${formatBytes(blob.size)}, engine ${usedZipBackend}; ` +
-                    `sent to the browser.`,
-                    'success'
-                );
-
-                // Give the browser time to accept consecutive ZIP downloads.
-                await sleep(900);
             }
 
             groupStart += group.length;
+        }
+
+        if (!stopRequested) {
+            for (const finalGroup of takeFlushableRecordGroups(
+                pendingRecords,
+                true
+            )) {
+                await emitZipPart(finalGroup);
+                if (stopRequested) break;
+            }
         }
 
         abortActiveRequests();
@@ -212,7 +281,7 @@
         if (stopRequested) {
             setPhase(`STOPPED: ${zippedCount} files already saved`);
             addLog(
-                'The operation was stopped. Completed ZIP parts remain available.',
+                'The operation was stopped. Completed ZIP parts and their index records remain available.',
                 'warn'
             );
         } else {
@@ -220,12 +289,14 @@
             progressFill.style.width = '100%';
             addLog(
                 `Finished: ${zippedCount} files in ${zipPart} ZIP parts, ` +
-                `${errorCount} errors.`,
+                `${duplicateCount} exact duplicates skipped, ${errorCount} errors.`,
                 errorCount ? 'warn' : 'success'
             );
+            if (zippedCount > 0 && errorCount === 0) {
+                clearSessionCheckpoint();
+            }
         }
 
         updateButtons();
         updateCounters();
     }
-
