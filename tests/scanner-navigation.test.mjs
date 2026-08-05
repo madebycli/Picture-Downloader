@@ -40,7 +40,10 @@ test('fast scanning retains duplicate-safe canonical collection and date boundar
     const discordItems = await read('src/adapters/discord/20-items.user.js.part');
     const boundaries = await read('src/core/31-scanner-boundaries.user.js.part');
 
-    assert.match(discordItems, /upsertArchiveItem/);
+    assert.match(discordItems, /const key = canonicalKey\(originalUrl\)/);
+    assert.match(discordItems, /const existing = mediaEntries\.get\(key\)/);
+    assert.match(discordItems, /recordCanonicalDuplicate\(existing/);
+    assert.match(discordItems, /mediaEntries\.set\(key, item\)/);
     assert.match(boundaries, /selectedDateBoundaryReached\('older'\)/);
     assert.match(boundaries, /selectedDateBoundaryReached\('newer'\)/);
     assert.match(boundaries, /scanVisiblePage\(\);\s*await sleep\(120\);\s*scanVisiblePage\(\)/s);
