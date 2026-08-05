@@ -1,11 +1,28 @@
+    let reviewArchiveConfirmed = false;
+    let activeArchiveNamePlan = null;
+
     async function createAndDownloadZipParts() {
+        const reviewMode = getAfterScanMode() === 'review';
+        if (reviewMode && !reviewArchiveConfirmed) {
+            openLibrary();
+            setPhase('REVIEW READY');
+            addLog(
+                'Review mode is active. Confirm “Archive selected” in the Library before original files are downloaded.'
+            );
+            return;
+        }
+
         const selectedEntries = selectedMediaEntries();
 
         if (packing || selectedEntries.length === 0) {
             if (!packing && selectedEntries.length === 0) {
                 setPhase('NOTHING SELECTED');
-                addLog('Enable photos, videos, external GIF previews, or a combination before creating ZIP files.', 'warn');
+                addLog(
+                    'No eligible selected items are available. Adjust filters or select items in the Library.',
+                    'warn'
+                );
             }
+            reviewArchiveConfirmed = false;
             return;
         }
 
@@ -16,18 +33,92 @@
         resetEntryStatuses();
         updateButtons();
 
-        const entries = selectedEntries;
-        const digits = Math.max(6, String(entries.length).length);
-        const archiveNames = new Map();
+        const rawSelectedEntries = [...selectedEntries];
         const archiveContext = activeSiteAdapter.getArchiveContext();
+        const preparedArchive = globalThis.MediaArchiverCommentExport
+            ? globalThis.MediaArchiverCommentExport.prepareArchiveItems(
+                rawSelectedEntries,
+                archiveContext
+            )
+            : {
+                selectedCommentCount: 0,
+                selectedBinaryCount: rawSelectedEntries.length,
+                finalItems: rawSelectedEntries
+            };
+        const entries = [...preparedArchive.finalItems];
+        const namingSettings = currentNamingSettings();
+
+        if (!entries.length) {
+            packing = false;
+            running = false;
+            reviewArchiveConfirmed = false;
+            setPhase('NOTHING TO ARCHIVE');
+            addLog('The confirmed selection produced no archive items.', 'warn');
+            updateButtons();
+            return;
+        }
+
+        try {
+            activeArchiveNamePlan = globalThis.MediaArchiverNaming.planArchiveNames(
+                entries,
+                namingSettings,
+                {
+                    site: activeSiteAdapter.id,
+                    adapterLabel: activeSiteAdapter.label,
+                    sourceLabel: archiveContext.label || activeSiteAdapter.label
+                }
+            );
+        } catch (error) {
+            packing = false;
+            running = false;
+            reviewArchiveConfirmed = false;
+            setPhase('NAMING ERROR');
+            diagnostics.error(
+                error.code || 'NAMING_PLAN_FAILED',
+                'Final archive names could not be planned.',
+                error,
+                { selectedCount: rawSelectedEntries.length, finalItemCount: entries.length },
+                {
+                    category: 'naming',
+                    userMessage: `Archive naming failed. Correct the File naming settings and try again. Code: ${error.code || 'NAMING_PLAN_FAILED'}`
+                }
+            );
+            addLog(
+                `Archive naming failed. Correct the File naming settings and try again. Code: ${error.code || 'NAMING_PLAN_FAILED'}`,
+                'error'
+            );
+            updateButtons();
+            return;
+        }
+
+        const archiveNames = activeArchiveNamePlan.namesByKey;
         const stamp = new Date()
             .toISOString()
             .slice(0, 16)
             .replace('T', '_')
             .replace(':', '-');
         const archiveKind = selectedArchiveKind(entries);
-        const selectedCounts = countMediaTypes(entries);
+        const selectedCounts = countMediaTypes(rawSelectedEntries);
         const initialZipLibrary = resolveFflateLibrary();
+        const initialStats = selectionStatistics();
+
+        liveMetrics.startSession({ phase: 'fetching-selected' });
+        liveMetrics.update({
+            found: initialStats.total,
+            eligible: initialStats.eligible,
+            selected: rawSelectedEntries.length,
+            duplicatesMerged: initialStats.duplicatesMerged,
+            totalItems: entries.length
+        });
+
+        try {
+            if (workflowState.phase === globalThis.MediaArchiverWorkflowState.phases.REVIEWING ||
+                workflowState.phase === globalThis.MediaArchiverWorkflowState.phases.REVIEW_READY) {
+                workflowState.transition(globalThis.MediaArchiverWorkflowState.phases.FETCHING_SELECTED);
+            }
+        } catch {
+            // Compatibility state is diagnostic only during incremental migration.
+        }
 
         addLog(
             initialZipLibrary
@@ -40,10 +131,18 @@
         let zippedCount = 0;
         let errorCount = 0;
         let groupStart = 0;
+        let savedGeneratedDocumentCount = 0;
 
+        const contentSummary = [
+            `${selectedCounts.photos} photos/native GIFs`,
+            `${selectedCounts.videos} videos`,
+            `${selectedCounts.externalGifs} rendered GIF previews`,
+            `${preparedArchive.selectedCommentCount} comments`
+        ].join(', ');
         addLog(
-            `${entries.length} selected files (${selectedCounts.photos} photos/native GIFs, ` +
-            `${selectedCounts.videos} videos, ${selectedCounts.externalGifs} external GIF previews). ` +
+            `${rawSelectedEntries.length} selected records (${contentSummary}). ` +
+            `${preparedArchive.selectedCommentCount ? 'Selected comments will be generated locally as comments.json, comments.md, and comments.csv. ' : ''}` +
+            `Only ${preparedArchive.selectedBinaryCount} selected media originals can create network requests. ` +
             `Using ${DOWNLOAD_CONCURRENCY} parallel media downloads.`
         );
 
@@ -54,11 +153,18 @@
             const records = new Array(group.length);
             let finishedInGroup = 0;
             let bytesInGroup = 0;
+            const binaryItemsInGroup = group.filter(entry => entry.kind === 'media').length;
 
             setPhase(
-                `DOWNLOADING ORIGINALS: ${groupStart + 1}–` +
+                `PREPARING CONFIRMED ITEMS: ${groupStart + 1}–` +
                 `${groupStart + group.length}/${entries.length}`
             );
+            liveMetrics.setPhase('fetching-selected');
+            liveMetrics.update({
+                downloading: binaryItemsInGroup,
+                currentItem: groupStart,
+                totalItems: entries.length
+            });
 
             await runWorkerPool(
                 group,
@@ -69,17 +175,32 @@
                     entry.status = STATUS.FETCHING;
                     entry.error = '';
                     scheduleRender();
+                    updateLibraryCardState(entry.key);
 
                     try {
-                        const buffer = await requestArrayBuffer(entry.url);
-                        if (stopRequested) return;
+                        let data;
+                        if (entry.kind === 'generated-document') {
+                            data = entry.payload.generatedBytes instanceof Uint8Array
+                                ? entry.payload.generatedBytes
+                                : encodeUtf8(entry.payload.generatedText || '');
+                        } else if (entry.kind === 'media') {
+                            const buffer = await requestArrayBuffer(entry.url);
+                            if (stopRequested) return;
+                            data = new Uint8Array(buffer);
+                            liveMetrics.record('downloaded', 1);
+                            liveMetrics.record('bytesDownloaded', buffer.byteLength);
+                        } else {
+                            const error = new Error(`No archive handler for item kind ${entry.kind}.`);
+                            error.code = 'ARCHIVE_HANDLER_UNAVAILABLE';
+                            throw error;
+                        }
 
-                        entry.size = buffer.byteLength;
-                        bytesInGroup += buffer.byteLength;
+                        entry.size = data.byteLength;
+                        bytesInGroup += data.byteLength;
                         records[localIndex] = {
                             entry,
                             globalIndex: groupStart + localIndex,
-                            data: new Uint8Array(buffer)
+                            data
                         };
                     } catch (error) {
                         if (stopRequested) return;
@@ -87,20 +208,30 @@
                         entry.status = STATUS.ERROR;
                         entry.error = error?.message || String(error);
                         errorCount++;
+                        liveMetrics.record('errors', 1);
                         addLog(
-                            `Failed: ${entry.filename} — ${entry.error}`,
+                            `Failed: ${entry.filename || entry.key} — ${entry.error}. Remaining selected items continue. Code: ${error?.code || 'NETWORK_RETRY_EXHAUSTED'}`,
                             'error'
                         );
                     }
 
                     finishedInGroup++;
+                    liveMetrics.update({
+                        currentItem: groupStart + finishedInGroup,
+                        downloading: Math.max(
+                            0,
+                            group.slice(finishedInGroup)
+                                .filter(candidate => candidate.kind === 'media').length
+                        )
+                    });
                     setPhase(
-                        `DOWNLOADING ORIGINALS: ${finishedInGroup}/${group.length} · ` +
+                        `PREPARING CONFIRMED ITEMS: ${finishedInGroup}/${group.length} · ` +
                         `${formatBytes(bytesInGroup)}`
                     );
                     progressFill.style.width =
                         `${(finishedInGroup / group.length) * 100}%`;
                     scheduleRender();
+                    updateLibraryCardState(entry.key);
                 }
             );
 
@@ -111,6 +242,7 @@
                 successfulRecords,
                 ZIP_MAX_BYTES
             );
+            liveMetrics.update({ totalZipPartsKnown: zipPart + sizeGroups.length });
 
             for (const partRecords of sizeGroups) {
                 if (stopRequested) break;
@@ -120,12 +252,10 @@
                 const files = {};
 
                 for (const record of partRecords) {
-                    const archiveName = uniqueArchiveName(
-                        record.globalIndex,
-                        record.entry,
-                        digits
-                    );
-                    archiveNames.set(record.entry.key, archiveName);
+                    const archiveName = archiveNames.get(record.entry.key);
+                    if (!archiveName) {
+                        throw new Error(`Immutable naming plan is missing ${record.entry.key}.`);
+                    }
                     record.entry.part = zipPart;
                     files[archiveName] = record.data;
                 }
@@ -142,6 +272,12 @@
                     `CREATING ZIP PART ${partLabel}: ` +
                     `${partRecords.length} files`
                 );
+                liveMetrics.setPhase('packing');
+                liveMetrics.update({
+                    currentZipPart: zipPart,
+                    currentItem: 0,
+                    totalItems: partRecords.length
+                });
                 progressFill.style.width = '0%';
                 await sleep(20);
 
@@ -150,6 +286,7 @@
                     zipResult = await createZipBlob(
                         files,
                         progress => {
+                            liveMetrics.update({ currentItem: progress.completed });
                             setPhase(
                                 `CREATING ZIP PART ${partLabel}: ` +
                                 `${progress.completed}/${progress.total} files · ` +
@@ -161,14 +298,23 @@
                     );
                 } catch (error) {
                     addLog(
-                        `ZIP part ${partLabel} failed: ${error.message}`,
+                        `ZIP part ${partLabel} failed for ${partRecords.length} files. Remaining work continues when possible. Try smaller ZIP limits. Code: ZIP_PART_BUILD_FAILED`,
                         'error'
                     );
+                    diagnostics.error(
+                        'ZIP_PART_BUILD_FAILED',
+                        `ZIP part ${partLabel} failed.`,
+                        error,
+                        { affectedFiles: partRecords.length, zipPart, continued: true },
+                        { category: 'zip' }
+                    );
                     errorCount += partRecords.length;
+                    liveMetrics.record('errors', partRecords.length);
 
                     for (const record of partRecords) {
                         record.entry.status = STATUS.ERROR;
                         record.entry.error = `ZIP: ${error.message}`;
+                        updateLibraryCardState(record.entry.key);
                     }
                     continue;
                 }
@@ -179,12 +325,28 @@
                     `${activeSiteAdapter.archivePrefix}_${archiveKind}_${archiveContext.id}_` +
                     `${dateRangeFilenameToken()}_${stamp}_part_${partLabel}.zip`;
 
-                downloadZipBlob(blob, filename);
+                try {
+                    await downloadZipBlob(blob, filename);
+                } catch (error) {
+                    diagnostics.error(
+                        'RUNTIME_SAVE_FAILED',
+                        `Saving ZIP part ${partLabel} failed.`,
+                        error,
+                        { affectedFiles: partRecords.length, zipPart, continued: false },
+                        { category: 'runtime' }
+                    );
+                    throw error;
+                }
 
                 for (const record of partRecords) {
                     record.entry.status = STATUS.PACKED;
                     zippedCount++;
+                    if (record.entry.kind === 'generated-document') {
+                        savedGeneratedDocumentCount++;
+                    }
+                    liveMetrics.record('saved', 1);
                     record.data = null;
+                    updateLibraryCardState(record.entry.key);
                 }
 
                 zipResult = null;
@@ -198,7 +360,6 @@
                     'success'
                 );
 
-                // Give the browser time to accept consecutive ZIP downloads.
                 await sleep(900);
             }
 
@@ -208,6 +369,16 @@
         abortActiveRequests();
         packing = false;
         running = false;
+        reviewArchiveConfirmed = false;
+
+        if (savedGeneratedDocumentCount > 0) {
+            for (const entry of rawSelectedEntries) {
+                if (entry.kind === 'comment') {
+                    entry.status = STATUS.PACKED;
+                    updateLibraryCardState(entry.key);
+                }
+            }
+        }
 
         if (stopRequested) {
             setPhase(`STOPPED: ${zippedCount} files already saved`);
@@ -215,17 +386,40 @@
                 'The operation was stopped. Completed ZIP parts remain available.',
                 'warn'
             );
+            liveMetrics.stopSession({ phase: 'scan-stopped' });
         } else {
             setPhase('FINISHED');
             progressFill.style.width = '100%';
             addLog(
-                `Finished: ${zippedCount} files in ${zipPart} ZIP parts, ` +
+                `Finished: ${zippedCount} archive files in ${zipPart} ZIP parts, ` +
                 `${errorCount} errors.`,
                 errorCount ? 'warn' : 'success'
             );
+            liveMetrics.stopSession({ phase: 'completed' });
+            diagnostics.endSession({
+                selectedRecords: rawSelectedEntries.length,
+                selectedComments: preparedArchive.selectedCommentCount,
+                binaryRequestsPlanned: preparedArchive.selectedBinaryCount,
+                archiveFilesSaved: zippedCount,
+                errors: errorCount,
+                zipParts: zipPart
+            });
         }
 
+        activeArchiveNamePlan = null;
         updateButtons();
         updateCounters();
+        renderNamingPreview();
     }
 
+    async function archiveSelectedFromLibrary() {
+        const selected = selectedMediaEntries();
+        if (!selected.length) {
+            setLibraryMessage('Select at least one eligible item before archiving.', true);
+            return;
+        }
+
+        reviewArchiveConfirmed = true;
+        closeLibrary();
+        await createAndDownloadZipParts();
+    }

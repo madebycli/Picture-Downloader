@@ -148,11 +148,20 @@
         return Boolean(photoCheckbox?.checked);
     }
 
+    function updateEntryEligibility(entry) {
+        const eligibility = {
+            adapter: entry.canonical !== false,
+            type: mediaTypeIsEnabled(entry),
+            date: isEntryInsideDateRange(entry)
+        };
+        entry.eligibility = eligibility;
+        entry.manuallySelected = selectionStore.isSelected(entry.key);
+        return eligibility;
+    }
+
     function isEntryIncluded(entry) {
-        return (
-            mediaTypeIsEnabled(entry) &&
-            isEntryInsideDateRange(entry)
-        );
+        const eligibility = updateEntryEligibility(entry);
+        return eligibility.adapter && eligibility.type && eligibility.date;
     }
 
     function entrySkipReason(entry) {
@@ -166,36 +175,77 @@
                 : 'Skipped because its source date is unknown';
         }
 
+        if (!selectionStore.isSelected(entry.key)) {
+            return 'Deselected in the Library';
+        }
+
         return '';
     }
 
+    function eligibleMediaEntries() {
+        const entries = sortedMediaEntries();
+        ensureSelectionForEntries(entries);
+        return entries.filter(isEntryIncluded);
+    }
+
     function selectedMediaEntries() {
-        return sortedMediaEntries().filter(isEntryIncluded);
+        return eligibleMediaEntries().filter(entry =>
+            selectionStore.isSelected(entry.key)
+        );
     }
 
     function selectionStatistics() {
+        const entries = [...mediaEntries.values()];
+        ensureSelectionForEntries(entries);
         let inDateRange = 0;
         let excludedByDate = 0;
         let excludedByType = 0;
+        let eligible = 0;
         let selected = 0;
+        let manuallyDeselected = 0;
+        let duplicatesMerged = 0;
 
-        for (const entry of mediaEntries.values()) {
+        for (const entry of entries) {
             const insideDate = isEntryInsideDateRange(entry);
             const typeEnabled = mediaTypeIsEnabled(entry);
+            const canonical = entry.canonical !== false;
+            const manuallySelected = selectionStore.isSelected(entry.key);
+
+            entry.eligibility = {
+                adapter: canonical,
+                type: typeEnabled,
+                date: insideDate
+            };
+            entry.manuallySelected = manuallySelected;
+            duplicatesMerged += entry.duplicateCount || 0;
 
             if (insideDate) inDateRange++;
             else excludedByDate++;
 
             if (insideDate && !typeEnabled) excludedByType++;
-            if (insideDate && typeEnabled) selected++;
+            if (canonical && insideDate && typeEnabled) {
+                eligible++;
+                if (manuallySelected) selected++;
+                else manuallyDeselected++;
+            }
         }
 
+        liveMetrics.update({
+            found: entries.length,
+            eligible,
+            selected,
+            duplicatesMerged
+        });
+
         return {
-            total: mediaEntries.size,
+            total: entries.length,
             inDateRange,
             excludedByDate,
             excludedByType,
-            selected
+            eligible,
+            selected,
+            manuallyDeselected,
+            duplicatesMerged
         };
     }
 
@@ -206,9 +256,6 @@
         const visible = visibleItemTimeRange();
         if (!visible) return null;
 
-        // The whole visible viewport must be outside the selected range.
-        // This keeps the complete boundary day and avoids skipping media near
-        // the top or bottom edge of a virtualized timeline.
         if (
             direction === 'older' &&
             visible.maxMs < range.startMs
@@ -318,4 +365,3 @@
 
         return group;
     }
-

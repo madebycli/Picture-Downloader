@@ -1,0 +1,228 @@
+    const virusTotalService = globalThis.MediaArchiverVirusTotal.createService(runtime);
+    let virusTotalSettingsReady;
+
+    const virusTotalGroup = document.createElement('section');
+    virusTotalGroup.className = 'ma-group';
+    virusTotalGroup.id = 'ma-virustotal-settings';
+    virusTotalGroup.innerHTML = `
+        <div class="ma-group-heading">
+            <div>
+                <h2>VirusTotal check</h2>
+                <p>Optionally check confirmed files after download and before they enter a ZIP.</p>
+            </div>
+        </div>
+        <div class="ma-field-grid">
+            <label class="ma-field-wide">
+                <span>Scan mode</span>
+                <select id="ma-vt-mode">
+                    <option value="off">Off</option>
+                    <option value="hash-only">SHA-256 report lookup only</option>
+                    <option value="upload-unknown">Lookup, then upload unknown files</option>
+                </select>
+            </label>
+            <label>
+                <span>Block threshold</span>
+                <select id="ma-vt-threshold">
+                    <option value="malicious">Malicious only</option>
+                    <option value="suspicious">Suspicious or malicious</option>
+                </select>
+            </label>
+            <label>
+                <span>Unknown/error result</span>
+                <select id="ma-vt-unknown-policy">
+                    <option value="allow">Allow into ZIP</option>
+                    <option value="block">Block from ZIP</option>
+                </select>
+            </label>
+        </div>
+        <div class="ma-button-row">
+            <button id="ma-vt-set-key" class="ma-secondary" type="button">Set API key</button>
+            <button id="ma-vt-clear-key" class="ma-text-button" type="button">Clear key</button>
+            <span id="ma-vt-key-status" class="ma-inline-status">No API key stored.</span>
+        </div>
+        <label id="ma-vt-upload-consent-row" class="ma-option-row" hidden>
+            <span>
+                <strong>I consent to uploading unknown files to VirusTotal</strong>
+                <small>Standard VirusTotal uploads may be shared with security partners. This consent applies only to the current page session.</small>
+            </span>
+            <input id="ma-vt-upload-consent" type="checkbox">
+        </label>
+        <div id="ma-vt-note" class="ma-inline-status">
+            VirusTotal is disabled by default. API requests are rate-limited and the API key is stored only in this browser profile.
+        </div>
+    `;
+
+    const setupPanel = panel.querySelector('[data-ma-panel="setup"]');
+    const autoArchiveGroup = setupPanel?.querySelector('.ma-compact-group');
+    if (autoArchiveGroup) autoArchiveGroup.before(virusTotalGroup);
+    else setupPanel?.appendChild(virusTotalGroup);
+
+    const virusTotalModeSelect = virusTotalGroup.querySelector('#ma-vt-mode');
+    const virusTotalThresholdSelect = virusTotalGroup.querySelector('#ma-vt-threshold');
+    const virusTotalUnknownPolicySelect = virusTotalGroup.querySelector('#ma-vt-unknown-policy');
+    const virusTotalSetKeyButton = virusTotalGroup.querySelector('#ma-vt-set-key');
+    const virusTotalClearKeyButton = virusTotalGroup.querySelector('#ma-vt-clear-key');
+    const virusTotalKeyStatus = virusTotalGroup.querySelector('#ma-vt-key-status');
+    const virusTotalUploadConsentRow = virusTotalGroup.querySelector('#ma-vt-upload-consent-row');
+    const virusTotalUploadConsentCheckbox = virusTotalGroup.querySelector('#ma-vt-upload-consent');
+    const virusTotalNote = virusTotalGroup.querySelector('#ma-vt-note');
+
+    function refreshVirusTotalControls() {
+        const mode = virusTotalModeSelect.value;
+        virusTotalUploadConsentRow.hidden = mode !== 'upload-unknown';
+        virusTotalThresholdSelect.disabled = mode === 'off';
+        virusTotalUnknownPolicySelect.disabled = mode === 'off';
+        virusTotalNote.textContent = mode === 'off'
+            ? 'VirusTotal is disabled. No hashes or files are sent.'
+            : mode === 'hash-only'
+                ? 'Only the SHA-256 hash is queried. Unknown files are not uploaded.'
+                : 'Unknown files are uploaded only after the session consent checkbox is selected.';
+    }
+
+    async function updateVirusTotalKeyStatus() {
+        const key = String(await runtime.getSetting('virustotal.apiKey', '') || '').trim();
+        virusTotalKeyStatus.textContent = key
+            ? 'API key stored locally.'
+            : 'No API key stored.';
+        virusTotalKeyStatus.classList.toggle('ma-date-error', !key && virusTotalModeSelect.value !== 'off');
+        return Boolean(key);
+    }
+
+    async function persistVirusTotalPreferences() {
+        await Promise.all([
+            runtime.setSetting('virustotal.mode', virusTotalModeSelect.value),
+            runtime.setSetting('virustotal.blockThreshold', virusTotalThresholdSelect.value),
+            runtime.setSetting('virustotal.unknownPolicy', virusTotalUnknownPolicySelect.value)
+        ]);
+        refreshVirusTotalControls();
+        await updateVirusTotalKeyStatus();
+    }
+
+    async function initializeVirusTotalSettings() {
+        const [mode, threshold, unknownPolicy] = await Promise.all([
+            runtime.getSetting('virustotal.mode', 'off'),
+            runtime.getSetting('virustotal.blockThreshold', 'malicious'),
+            runtime.getSetting('virustotal.unknownPolicy', 'allow')
+        ]);
+        virusTotalModeSelect.value = ['off', 'hash-only', 'upload-unknown'].includes(mode)
+            ? mode
+            : 'off';
+        virusTotalThresholdSelect.value = threshold === 'suspicious'
+            ? 'suspicious'
+            : 'malicious';
+        virusTotalUnknownPolicySelect.value = unknownPolicy === 'block'
+            ? 'block'
+            : 'allow';
+        refreshVirusTotalControls();
+        await updateVirusTotalKeyStatus();
+    }
+
+    virusTotalSettingsReady = initializeVirusTotalSettings().catch(error => {
+        diagnostics.error(
+            'VIRUSTOTAL_SETTINGS_FAILED',
+            'VirusTotal settings could not be loaded.',
+            error,
+            {},
+            { category: 'virustotal' }
+        );
+        virusTotalModeSelect.value = 'off';
+        refreshVirusTotalControls();
+    });
+
+    for (const select of [
+        virusTotalModeSelect,
+        virusTotalThresholdSelect,
+        virusTotalUnknownPolicySelect
+    ]) {
+        select.addEventListener('change', () => {
+            persistVirusTotalPreferences().catch(error => {
+                addLog(`VirusTotal settings could not be saved. Code: ${error.code || 'VIRUSTOTAL_SETTINGS_FAILED'}`, 'error');
+            });
+        });
+    }
+
+    virusTotalSetKeyButton.addEventListener('click', async () => {
+        const key = prompt(
+            'Enter your VirusTotal API key. It will be stored only in this browser profile and never written to logs or ZIP manifests.',
+            ''
+        );
+        if (key == null) return;
+        const normalized = key.trim();
+        if (!normalized) {
+            addLog('VirusTotal API key was not changed.', 'warn');
+            return;
+        }
+        await runtime.setSetting('virustotal.apiKey', normalized);
+        await updateVirusTotalKeyStatus();
+        addLog('VirusTotal API key stored locally.', 'success');
+    });
+
+    virusTotalClearKeyButton.addEventListener('click', async () => {
+        await runtime.setSetting('virustotal.apiKey', '');
+        virusTotalUploadConsentCheckbox.checked = false;
+        await updateVirusTotalKeyStatus();
+        addLog('VirusTotal API key cleared.');
+    });
+
+    async function prepareVirusTotalArchiveOptions() {
+        await virusTotalSettingsReady;
+        const mode = virusTotalModeSelect.value;
+        if (mode === 'off') {
+            return Object.freeze({
+                mode: 'off',
+                blockThreshold: virusTotalThresholdSelect.value,
+                unknownPolicy: virusTotalUnknownPolicySelect.value,
+                uploadConsent: false
+            });
+        }
+
+        const apiKey = String(await runtime.getSetting('virustotal.apiKey', '') || '').trim();
+        if (!apiKey) {
+            const error = new Error('Add a VirusTotal API key or turn VirusTotal off.');
+            error.code = 'VIRUSTOTAL_API_KEY_MISSING';
+            throw error;
+        }
+        if (mode === 'upload-unknown' && !virusTotalUploadConsentCheckbox.checked) {
+            const error = new Error('Confirm the VirusTotal upload consent checkbox before archiving.');
+            error.code = 'VIRUSTOTAL_UPLOAD_CONSENT_REQUIRED';
+            throw error;
+        }
+
+        return Object.freeze({
+            mode,
+            apiKey,
+            blockThreshold: virusTotalThresholdSelect.value,
+            unknownPolicy: virusTotalUnknownPolicySelect.value,
+            uploadConsent: mode === 'upload-unknown' && virusTotalUploadConsentCheckbox.checked
+        });
+    }
+
+    async function scanArchiveEntryWithVirusTotal(entry, data, options) {
+        if (!options || options.mode === 'off' || entry.kind !== 'media') return null;
+        setPhase(`VIRUSTOTAL: ${entry.filename || entry.key}`);
+        const result = await virusTotalService.scanBytes(data, entry.filename, options);
+        entry.payload = {
+            ...entry.payload,
+            virusTotal: result
+        };
+        const stats = result.stats || {};
+        addLog(
+            `VirusTotal ${result.verdict}: ${entry.filename || entry.key} ` +
+            `(malicious ${stats.malicious || 0}, suspicious ${stats.suspicious || 0}).`,
+            result.verdict === 'clean'
+                ? 'success'
+                : result.verdict === 'unknown'
+                    ? 'warn'
+                    : 'error'
+        );
+        if (virusTotalService.shouldBlock(result, options)) {
+            const error = new Error(
+                `VirusTotal verdict ${result.verdict} blocked this file from the ZIP.`
+            );
+            error.code = 'VIRUSTOTAL_FILE_BLOCKED';
+            error.virusTotal = result;
+            throw error;
+        }
+        return result;
+    }
+

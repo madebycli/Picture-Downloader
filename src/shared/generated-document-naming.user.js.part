@@ -1,0 +1,82 @@
+    (() => {
+        const base = globalThis.MediaArchiverNaming;
+        if (!base) return;
+
+        function fixedDocumentPlan(items, settings = {}, context = {}) {
+            const fixedItems = items.filter(item => item?.payload?.fixedArchiveName);
+            if (!fixedItems.length) return base.planArchiveNames(items, settings, context);
+
+            const normalItems = items.filter(item => !item?.payload?.fixedArchiveName);
+            const normalPlan = base.planArchiveNames(normalItems, settings, context);
+            const namesByKey = new Map(normalPlan.namesByKey);
+            const recordByKey = new Map(normalPlan.records.map(record => [record.itemKey, record]));
+            const reservedStems = new Set(
+                normalPlan.records.map(record => base.normalizeCollisionKey(record.archiveStem))
+            );
+            const reservedPaths = new Set(
+                normalPlan.records.map(record => base.normalizeCollisionKey(record.archiveFilename))
+            );
+
+            for (const item of fixedItems) {
+                const requested = String(item.payload.fixedArchiveName || item.payload.filename || 'document.txt');
+                const extension = base.trueExtension(item);
+                const rawStem = requested.toLowerCase().endsWith(extension.toLowerCase())
+                    ? requested.slice(0, -extension.length)
+                    : requested;
+                const sequence = String(items.indexOf(item) + 1).padStart(
+                    Math.max(6, String(items.length).length),
+                    '0'
+                );
+                let stem = base.sanitizeComponent(rawStem, `document_${sequence}`);
+                let filename = `${stem}${extension}`;
+                let collisionIndex = 0;
+
+                while (
+                    reservedStems.has(base.normalizeCollisionKey(stem)) ||
+                    reservedPaths.has(base.normalizeCollisionKey(filename))
+                ) {
+                    collisionIndex++;
+                    stem = base.sanitizeComponent(
+                        `${rawStem}_${sequence}${collisionIndex > 1 ? `_${collisionIndex}` : ''}`,
+                        `document_${sequence}`
+                    );
+                    filename = `${stem}${extension}`;
+                }
+
+                reservedStems.add(base.normalizeCollisionKey(stem));
+                reservedPaths.add(base.normalizeCollisionKey(filename));
+                namesByKey.set(item.key, filename);
+                recordByKey.set(item.key, Object.freeze({
+                    itemKey: item.key,
+                    archiveFilename: filename,
+                    archiveStem: stem,
+                    originalFilename: requested,
+                    namingPreset: settings.preset || base.PRESETS.NUMBERED,
+                    namingTemplate: 'fixed-generated-document',
+                    sourceLabel: context.sourceLabel || context.adapterLabel || item.adapterId,
+                    sourceTimestamp: item.timestamp || null,
+                    namingTimezone: settings.timezone === 'utc' ? 'utc' : 'local',
+                    collisionResolved: collisionIndex > 0,
+                    collisionIndex,
+                    extension
+                }));
+            }
+
+            return Object.freeze({
+                preset: settings.preset || base.PRESETS.NUMBERED,
+                template: normalPlan.template,
+                namesByKey,
+                records: Object.freeze(items.map(item => recordByKey.get(item.key))),
+                get(itemKey) {
+                    return namesByKey.get(itemKey) || null;
+                }
+            });
+        }
+
+        Object.defineProperty(globalThis, 'MediaArchiverNaming', {
+            value: Object.freeze({ ...base, planArchiveNames: fixedDocumentPlan }),
+            configurable: true,
+            writable: false
+        });
+    })();
+

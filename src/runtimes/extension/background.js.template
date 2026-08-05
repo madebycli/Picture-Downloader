@@ -1,0 +1,201 @@
+'use strict';
+
+const extensionApi = globalThis.browser || globalThis.chrome;
+const allowedDownloadHostPatterns = __ALLOWED_DOWNLOAD_HOSTS__;
+const allowedExternalHostPatterns = __ALLOWED_EXTERNAL_HOSTS__;
+const activeRequests = new Map();
+
+function hostMatchesPattern(hostname, pattern) {
+    const host = String(hostname || '').toLowerCase();
+    const rule = String(pattern || '').toLowerCase();
+    if (!host || !rule) return false;
+    if (!rule.startsWith('*.')) return host === rule;
+    const suffix = rule.slice(1);
+    return host.endsWith(suffix) && host.length > suffix.length;
+}
+
+function hostAllowed(hostname, patterns) {
+    return patterns.some(pattern => hostMatchesPattern(hostname, pattern));
+}
+
+function responseCode(status) {
+    if (status === 403) return 'NETWORK_HTTP_403';
+    if (status === 404) return 'NETWORK_HTTP_404';
+    if (status === 429) return 'NETWORK_HTTP_429';
+    if (status >= 500) return 'NETWORK_HTTP_5XX';
+    return 'NETWORK_RETRY_EXHAUSTED';
+}
+
+function isAllowedUrl(rawUrl, patterns) {
+    try {
+        const url = new URL(rawUrl);
+        return url.protocol === 'https:' && hostAllowed(url.hostname, patterns);
+    } catch {
+        return false;
+    }
+}
+
+async function fetchBinary(message) {
+    if (!isAllowedUrl(message.url, allowedDownloadHostPatterns)) {
+        return {
+            ok: false,
+            code: 'NETWORK_HOST_REJECTED',
+            message: 'The requested host is not declared by an installed adapter.',
+            retryable: false
+        };
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(
+        () => controller.abort('timeout'),
+        Math.max(1_000, Number(message.timeoutMs) || 120_000)
+    );
+    activeRequests.set(message.requestId, controller);
+
+    try {
+        const response = await fetch(message.url, {
+            method: 'GET',
+            credentials: 'omit',
+            referrerPolicy: 'no-referrer',
+            cache: 'no-store',
+            headers: {
+                Accept: message.accept || 'video/*,image/*,*/*;q=0.8'
+            },
+            signal: controller.signal
+        });
+
+        if (!response.ok) {
+            return {
+                ok: false,
+                code: responseCode(response.status),
+                message: `HTTP ${response.status}`,
+                status: response.status,
+                retryable: response.status === 429 || response.status >= 500
+            };
+        }
+
+        return {
+            ok: true,
+            buffer: await response.arrayBuffer(),
+            status: response.status
+        };
+    } catch {
+        const timeoutAbort = controller.signal.reason === 'timeout';
+        return {
+            ok: false,
+            code: timeoutAbort ? 'NETWORK_TIMEOUT' : 'NETWORK_ABORTED',
+            message: timeoutAbort ? 'Request timed out.' : 'Request aborted.',
+            retryable: timeoutAbort
+        };
+    } finally {
+        clearTimeout(timeout);
+        activeRequests.delete(message.requestId);
+    }
+}
+
+async function externalRequest(message) {
+    if (!isAllowedUrl(message.url, allowedExternalHostPatterns)) {
+        return {
+            ok: false,
+            status: 0,
+            code: 'RUNTIME_EXTERNAL_HOST_REJECTED',
+            message: 'The external service host is not allowed.'
+        };
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(
+        () => controller.abort('timeout'),
+        Math.max(1_000, Number(message.timeoutMs) || 120_000)
+    );
+    activeRequests.set(message.requestId, controller);
+
+    try {
+        let body = message.body;
+        if (message.multipartFile) {
+            const file = message.multipartFile;
+            const bytes = file.bytes instanceof Uint8Array
+                ? file.bytes
+                : new Uint8Array(file.bytes);
+            const form = new FormData();
+            form.append(
+                file.fieldName || 'file',
+                new Blob([bytes], { type: file.mimeType || 'application/octet-stream' }),
+                file.filename || 'media-file'
+            );
+            body = form;
+        }
+
+        const response = await fetch(message.url, {
+            method: message.method || 'GET',
+            credentials: 'omit',
+            referrerPolicy: 'no-referrer',
+            cache: 'no-store',
+            headers: message.headers || {},
+            body: ['GET', 'HEAD'].includes(String(message.method || 'GET').toUpperCase())
+                ? undefined
+                : body,
+            signal: controller.signal
+        });
+        const text = await response.text();
+        let parsed = null;
+        if (text) {
+            try {
+                parsed = JSON.parse(text);
+            } catch {
+                parsed = { text };
+            }
+        }
+        return {
+            ok: response.ok,
+            status: response.status,
+            body: parsed
+        };
+    } catch (error) {
+        const timeoutAbort = controller.signal.reason === 'timeout';
+        return {
+            ok: false,
+            status: 0,
+            code: timeoutAbort ? 'RUNTIME_EXTERNAL_TIMEOUT' : 'NETWORK_ABORTED',
+            message: timeoutAbort ? 'External request timed out.' : 'External request aborted.'
+        };
+    } finally {
+        clearTimeout(timeout);
+        activeRequests.delete(message.requestId);
+    }
+}
+
+extensionApi.runtime.onMessage.addListener(message => {
+    if (message?.type === 'media-archiver:fetch-binary') {
+        return fetchBinary(message);
+    }
+    if (message?.type === 'media-archiver:external-request') {
+        return externalRequest(message);
+    }
+    if (message?.type === 'media-archiver:abort-request') {
+        const controller = activeRequests.get(message.requestId);
+        controller?.abort('user');
+        activeRequests.delete(message.requestId);
+        return Promise.resolve({ aborted: Boolean(controller) });
+    }
+    if (message?.type === 'media-archiver:abort-all') {
+        for (const controller of activeRequests.values()) controller.abort('user');
+        activeRequests.clear();
+        return Promise.resolve({ aborted: true });
+    }
+    return undefined;
+});
+
+async function openUiInActiveTab() {
+    const tabs = await extensionApi.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0];
+    if (!tab?.id) return;
+    try {
+        await extensionApi.tabs.sendMessage(tab.id, { type: 'media-archiver:open-ui' });
+    } catch {
+        // Unsupported pages intentionally have no content runtime to open.
+    }
+}
+
+const action = extensionApi.action || extensionApi.browserAction;
+action?.onClicked?.addListener(openUiInActiveTab);

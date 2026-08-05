@@ -1,0 +1,188 @@
+    (() => {
+        function csvCell(value) {
+            let text = String(value ?? '');
+            if (/^[=+\-@]/.test(text)) text = `'${text}`;
+            return `"${text.replace(/"/g, '""')}"`;
+        }
+
+        function markdownText(value) {
+            return String(value ?? '')
+                .replace(/\\/g, '\\\\')
+                .replace(/([*_`[\]<>])/g, '\\$1')
+                .replace(/\r?\n/g, ' ')
+                .trim();
+        }
+
+        function commentRecord(item) {
+            const payload = item.payload || {};
+            return {
+                id: item.sourceId || payload.commentId || item.key,
+                parentId: item.parentSourceId || payload.parentId || null,
+                depth: Number(payload.depth) || 0,
+                author: payload.author || '[unavailable]',
+                bodyText: payload.bodyText || '',
+                bodyHtmlSanitized: payload.bodyHtmlSanitized || null,
+                timestamp: item.timestamp || payload.timestamp || null,
+                scoreText: payload.scoreText || null,
+                permalink: payload.permalink || null,
+                deleted: Boolean(payload.deleted),
+                collapsed: Boolean(payload.collapsed),
+                edited: Boolean(payload.edited),
+                discoveryIndex: Number(item.discoveryIndex) || 0
+            };
+        }
+
+        function orderedComments(items) {
+            const records = items.map(commentRecord);
+            const byId = new Map(records.map(record => [record.id, record]));
+            const children = new Map();
+            const roots = [];
+            for (const record of records) {
+                if (record.parentId && byId.has(record.parentId)) {
+                    const list = children.get(record.parentId) || [];
+                    list.push(record);
+                    children.set(record.parentId, list);
+                } else {
+                    roots.push(record);
+                }
+            }
+            const sort = list => list.sort((a, b) => a.discoveryIndex - b.discoveryIndex);
+            sort(roots);
+            for (const list of children.values()) sort(list);
+            const output = [];
+            const visit = (record, depth) => {
+                output.push({ ...record, depth });
+                for (const child of children.get(record.id) || []) visit(child, depth + 1);
+            };
+            for (const root of roots) visit(root, Math.max(0, root.depth));
+            return output;
+        }
+
+        function buildJson(records, context) {
+            return `${JSON.stringify({
+                schemaVersion: 1,
+                source: {
+                    adapter: 'reddit-comments',
+                    pageType: 'post-comments',
+                    postId: context.postId || null,
+                    exportedAt: new Date(0).toISOString()
+                },
+                comments: records
+            }, null, 2)}\n`;
+        }
+
+        function buildMarkdown(records, context) {
+            const lines = [
+                '# Reddit comments',
+                '',
+                context.postLabel ? `Source: ${markdownText(context.postLabel)}` : '',
+                context.postPermalink ? `Permalink: ${context.postPermalink}` : '',
+                ''
+            ].filter((value, index, values) => value !== '' || values[index - 1] !== '');
+            for (const record of records) {
+                const indent = '  '.repeat(Math.max(0, record.depth));
+                const author = markdownText(record.author || '[unavailable]');
+                const body = markdownText(record.bodyText || (record.deleted ? '[deleted]' : '[no rendered body]'));
+                const metadata = [record.timestamp, record.scoreText, record.edited ? 'edited' : '']
+                    .filter(Boolean)
+                    .map(markdownText)
+                    .join(' · ');
+                lines.push(`${indent}- **${author}**${metadata ? ` — ${metadata}` : ''}`);
+                lines.push(`${indent}  ${body}`);
+                if (record.permalink) lines.push(`${indent}  ${record.permalink}`);
+            }
+            return `${lines.join('\n').trim()}\n`;
+        }
+
+        function buildCsv(records) {
+            const columns = [
+                'comment_id', 'parent_id', 'depth', 'author', 'body_text',
+                'timestamp', 'score_text', 'permalink', 'deleted', 'collapsed', 'edited'
+            ];
+            const rows = [columns.map(csvCell).join(',')];
+            for (const record of records) {
+                rows.push([
+                    record.id,
+                    record.parentId || '',
+                    record.depth,
+                    record.author,
+                    record.bodyText,
+                    record.timestamp || '',
+                    record.scoreText || '',
+                    record.permalink || '',
+                    record.deleted,
+                    record.collapsed,
+                    record.edited
+                ].map(csvCell).join(','));
+            }
+            return `\uFEFF${rows.join('\r\n')}`;
+        }
+
+        function generatedDocument(key, filename, content, mediaType, discoveryIndex) {
+            return {
+                key,
+                kind: 'generated-document',
+                adapterId: 'reddit-comments',
+                sourceId: key,
+                parentSourceId: null,
+                timestamp: null,
+                discoveryIndex,
+                canonical: true,
+                eligibility: { adapter: true, type: true, date: true },
+                manuallySelected: true,
+                status: 'collected',
+                error: '',
+                filename,
+                mediaType: 'document',
+                sourceKind: 'reddit-comment-export',
+                url: null,
+                previewUrl: null,
+                size: new TextEncoder().encode(content).byteLength,
+                payload: {
+                    filename,
+                    originalFilename: filename,
+                    fixedArchiveName: filename,
+                    mediaType,
+                    generatedText: content,
+                    generatedBytes: new TextEncoder().encode(content),
+                    sourceKind: 'reddit-comment-export'
+                }
+            };
+        }
+
+        function buildCommentDocuments(selectedCommentItems, context = {}) {
+            const records = orderedComments(selectedCommentItems);
+            if (!records.length) return [];
+            const baseIndex = Math.max(0, ...selectedCommentItems.map(item => Number(item.discoveryIndex) || 0)) + 1;
+            return [
+                generatedDocument('reddit-comments:json', 'comments.json', buildJson(records, context), 'application/json', baseIndex),
+                generatedDocument('reddit-comments:markdown', 'comments.md', buildMarkdown(records, context), 'text/markdown', baseIndex + 1),
+                generatedDocument('reddit-comments:csv', 'comments.csv', buildCsv(records), 'text/csv', baseIndex + 2)
+            ];
+        }
+
+        function prepareArchiveItems(selectedItems, context = {}) {
+            const comments = selectedItems.filter(item => item.kind === 'comment');
+            const otherItems = selectedItems.filter(item => item.kind !== 'comment');
+            return Object.freeze({
+                selectedCommentCount: comments.length,
+                selectedBinaryCount: otherItems.filter(item => item.kind === 'media').length,
+                finalItems: Object.freeze([
+                    ...otherItems,
+                    ...buildCommentDocuments(comments, context)
+                ])
+            });
+        }
+
+        Object.defineProperty(globalThis, 'MediaArchiverCommentExport', {
+            value: Object.freeze({
+                commentRecord,
+                orderedComments,
+                buildCommentDocuments,
+                prepareArchiveItems
+            }),
+            configurable: true,
+            writable: false
+        });
+    })();
+

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "adapters": [
     {
       "id": "discord",
@@ -21,6 +21,61 @@
         "src/adapters/discord/20-items.user.js.part",
         "src/adapters/discord/30-timeline.user.js.part",
         "src/adapters/discord/90-register.user.js.part"
+      ]
+    },
+    {
+      "id": "pinterest",
+      "label": "Pinterest",
+      "matches": [
+        "https://www.pinterest.com/*",
+        "https://pinterest.com/*"
+      ],
+      "connect": [
+        "i.pinimg.com",
+        "v1.pinimg.com",
+        "v.pinimg.com"
+      ],
+      "modules": [
+        "src/adapters/pinterest/00-config.user.js.part",
+        "src/adapters/pinterest/10-items.user.js.part",
+        "src/adapters/pinterest/20-timeline.user.js.part",
+        "src/adapters/pinterest/90-register.user.js.part"
+      ]
+    },
+    {
+      "id": "reddit-comments",
+      "label": "Reddit comment media",
+      "matches": [
+        "https://www.reddit.com/r/*/comments/*",
+        "https://reddit.com/r/*/comments/*",
+        "https://old.reddit.com/r/*/comments/*"
+      ],
+      "connect": [
+        "i.redd.it",
+        "preview.redd.it",
+        "external-preview.redd.it",
+        "v.redd.it",
+        "packaged-media.redd.it",
+        "i.redditmedia.com",
+        "reddit-uploaded-media.s3-accelerate.amazonaws.com",
+        "i.imgur.com",
+        "*.giphy.com",
+        "media.tenor.com",
+        "*.streamable.com",
+        "*.redgifs.com",
+        "*.gfycat.com",
+        "cdn.discordapp.com",
+        "media.discordapp.net",
+        "pbs.twimg.com",
+        "video.twimg.com",
+        "*.tumblr.com"
+      ],
+      "modules": [
+        "src/adapters/reddit-comments/00-config.user.js.part",
+        "src/adapters/reddit-comments/10-comments.user.js.part",
+        "src/adapters/reddit-comments/20-media.user.js.part",
+        "src/adapters/reddit-comments/30-thread.user.js.part",
+        "src/adapters/reddit-comments/90-register.user.js.part"
       ]
     }
   ]

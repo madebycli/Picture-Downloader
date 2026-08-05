@@ -1,0 +1,140 @@
+    (() => {
+        const phases = globalThis.MediaArchiverDomain?.WORKFLOW_PHASES || Object.freeze({
+            IDLE: 'idle',
+            SCANNING: 'scanning',
+            SCAN_STOPPED: 'scan-stopped',
+            REVIEW_READY: 'review-ready',
+            REVIEWING: 'reviewing',
+            FETCHING_SELECTED: 'fetching-selected',
+            PACKING: 'packing',
+            COMPLETED: 'completed',
+            ERROR: 'error'
+        });
+
+        const transitions = Object.freeze({
+            [phases.IDLE]: new Set([phases.SCANNING]),
+            [phases.SCANNING]: new Set([
+                phases.SCAN_STOPPED,
+                phases.REVIEW_READY,
+                phases.FETCHING_SELECTED,
+                phases.ERROR
+            ]),
+            [phases.SCAN_STOPPED]: new Set([
+                phases.REVIEW_READY,
+                phases.REVIEWING,
+                phases.FETCHING_SELECTED,
+                phases.IDLE,
+                phases.ERROR
+            ]),
+            [phases.REVIEW_READY]: new Set([
+                phases.REVIEWING,
+                phases.IDLE,
+                phases.ERROR
+            ]),
+            [phases.REVIEWING]: new Set([
+                phases.FETCHING_SELECTED,
+                phases.REVIEW_READY,
+                phases.IDLE,
+                phases.ERROR
+            ]),
+            [phases.FETCHING_SELECTED]: new Set([
+                phases.PACKING,
+                phases.SCAN_STOPPED,
+                phases.ERROR
+            ]),
+            [phases.PACKING]: new Set([
+                phases.COMPLETED,
+                phases.SCAN_STOPPED,
+                phases.ERROR
+            ]),
+            [phases.COMPLETED]: new Set([
+                phases.IDLE,
+                phases.SCANNING
+            ]),
+            [phases.ERROR]: new Set([
+                phases.IDLE,
+                phases.SCANNING,
+                phases.REVIEW_READY
+            ])
+        });
+
+        function createWorkflowStateMachine(options = {}) {
+            let phase = phases.IDLE;
+            let mode = options.mode === 'review' ? 'review' : 'quick';
+            let version = 0;
+            const listeners = new Set();
+
+            function emit(previous, metadata) {
+                const snapshot = Object.freeze({ phase, mode, version, metadata });
+                for (const listener of listeners) listener(snapshot, previous);
+                return snapshot;
+            }
+
+            function transition(nextPhase, metadata = {}) {
+                if (nextPhase === phase) return emit(phase, metadata);
+                const allowed = transitions[phase] || new Set();
+                if (!allowed.has(nextPhase)) {
+                    throw new Error(`Invalid workflow transition: ${phase} -> ${nextPhase}`);
+                }
+                const previous = phase;
+                phase = nextPhase;
+                version++;
+                return emit(previous, metadata);
+            }
+
+            return Object.freeze({
+                transition,
+                canTransition(nextPhase) {
+                    return nextPhase === phase || Boolean(transitions[phase]?.has(nextPhase));
+                },
+                setMode(nextMode) {
+                    if (phase !== phases.IDLE && phase !== phases.COMPLETED) {
+                        throw new Error('After-scan mode can only change while idle or completed.');
+                    }
+                    mode = nextMode === 'review' ? 'review' : 'quick';
+                    version++;
+                    return emit(phase, { reason: 'mode-change' });
+                },
+                afterScan({ stopped = false } = {}) {
+                    if (phase !== phases.SCANNING) {
+                        throw new Error('afterScan() requires the scanning phase.');
+                    }
+                    if (stopped) {
+                        transition(phases.SCAN_STOPPED, { stopped: true });
+                        return mode === 'review'
+                            ? transition(phases.REVIEW_READY, { partial: true })
+                            : phase;
+                    }
+                    return transition(
+                        mode === 'review'
+                            ? phases.REVIEW_READY
+                            : phases.FETCHING_SELECTED,
+                        { partial: false }
+                    );
+                },
+                subscribe(listener) {
+                    listeners.add(listener);
+                    return () => listeners.delete(listener);
+                },
+                get phase() {
+                    return phase;
+                },
+                get mode() {
+                    return mode;
+                },
+                get version() {
+                    return version;
+                },
+                snapshot() {
+                    return Object.freeze({ phase, mode, version });
+                }
+            });
+        }
+
+        Object.defineProperty(globalThis, 'MediaArchiverWorkflowState', {
+            value: Object.freeze({ phases, transitions, createWorkflowStateMachine }),
+            configurable: true,
+            writable: false
+        });
+    })();
+

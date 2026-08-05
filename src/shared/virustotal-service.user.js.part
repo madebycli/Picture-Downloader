@@ -1,0 +1,345 @@
+    (() => {
+        const API_ROOT = 'https://www.virustotal.com/api/v3';
+        const DIRECT_UPLOAD_MAX_BYTES = 32 * 1024 * 1024;
+        const MAX_UPLOAD_BYTES = 650 * 1024 * 1024;
+        const PUBLIC_API_INTERVAL_MS = 15_500;
+
+        function serviceError(code, message, details = {}) {
+            const error = new Error(message);
+            error.code = code;
+            Object.assign(error, details);
+            return error;
+        }
+
+        function byteView(input) {
+            if (input instanceof Uint8Array) return input;
+            if (input instanceof ArrayBuffer) return new Uint8Array(input);
+            if (ArrayBuffer.isView(input)) {
+                return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+            }
+            throw serviceError('VIRUSTOTAL_INVALID_BYTES', 'VirusTotal requires binary file data.');
+        }
+
+        async function sha256Hex(input, cryptoImplementation = globalThis.crypto) {
+            const bytes = byteView(input);
+            if (!cryptoImplementation?.subtle?.digest) {
+                throw serviceError('VIRUSTOTAL_HASH_UNAVAILABLE', 'SHA-256 is unavailable in this browser context.');
+            }
+            const digest = await cryptoImplementation.subtle.digest(
+                'SHA-256',
+                bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+            );
+            return [...new Uint8Array(digest)]
+                .map(value => value.toString(16).padStart(2, '0'))
+                .join('');
+        }
+
+        function analysisStats(payload) {
+            const attributes = payload?.data?.attributes || {};
+            const source = attributes.last_analysis_stats || attributes.stats || {};
+            return Object.freeze({
+                malicious: Number(source.malicious) || 0,
+                suspicious: Number(source.suspicious) || 0,
+                harmless: Number(source.harmless) || 0,
+                undetected: Number(source.undetected) || 0,
+                timeout: Number(source.timeout) || 0,
+                failure: Number(source.failure) || 0,
+                typeUnsupported: Number(source['type-unsupported']) || 0
+            });
+        }
+
+        function resultFromPayload(payload, sha256, extras = {}) {
+            const stats = analysisStats(payload);
+            const verdict = stats.malicious > 0
+                ? 'malicious'
+                : stats.suspicious > 0
+                    ? 'suspicious'
+                    : (stats.harmless + stats.undetected) > 0
+                        ? 'clean'
+                        : 'unknown';
+            return Object.freeze({
+                provider: 'virustotal',
+                sha256,
+                verdict,
+                stats,
+                known: verdict !== 'unknown',
+                uploaded: Boolean(extras.uploaded),
+                reportUrl: `https://www.virustotal.com/gui/file/${sha256}`,
+                checkedAt: new Date().toISOString()
+            });
+        }
+
+        function unknownResult(sha256, extras = {}) {
+            return Object.freeze({
+                provider: 'virustotal',
+                sha256,
+                verdict: 'unknown',
+                stats: Object.freeze({
+                    malicious: 0,
+                    suspicious: 0,
+                    harmless: 0,
+                    undetected: 0,
+                    timeout: 0,
+                    failure: 0,
+                    typeUnsupported: 0
+                }),
+                known: false,
+                uploaded: Boolean(extras.uploaded),
+                reportUrl: `https://www.virustotal.com/gui/file/${sha256}`,
+                checkedAt: new Date().toISOString()
+            });
+        }
+
+        function shouldBlock(result, settings = {}) {
+            if (!result || result.verdict === 'error') {
+                return settings.unknownPolicy === 'block';
+            }
+            if (result.verdict === 'malicious') return true;
+            if (result.verdict === 'suspicious') {
+                return settings.blockThreshold === 'suspicious';
+            }
+            if (result.verdict === 'unknown') {
+                return settings.unknownPolicy === 'block';
+            }
+            return false;
+        }
+
+        function createService(runtime, options = {}) {
+            if (typeof runtime?.requestExternal !== 'function') {
+                throw serviceError(
+                    'VIRUSTOTAL_RUNTIME_UNAVAILABLE',
+                    'The active runtime cannot contact VirusTotal.'
+                );
+            }
+
+            const minimumIntervalMs = Number.isFinite(options.minimumIntervalMs)
+                ? Math.max(0, options.minimumIntervalMs)
+                : PUBLIC_API_INTERVAL_MS;
+            const sleepImplementation = options.sleep || (milliseconds =>
+                new Promise(resolve => setTimeout(resolve, milliseconds))
+            );
+            const now = options.now || (() => Date.now());
+            const cryptoImplementation = options.crypto || globalThis.crypto;
+            const cache = new Map();
+            let requestQueue = Promise.resolve();
+            let lastRequestAt = 0;
+
+            function queuedRequest(url, requestOptions) {
+                const execute = async () => {
+                    const remaining = minimumIntervalMs - (now() - lastRequestAt);
+                    if (remaining > 0) await sleepImplementation(remaining);
+                    try {
+                        return await runtime.requestExternal(url, requestOptions);
+                    } finally {
+                        lastRequestAt = now();
+                    }
+                };
+                const result = requestQueue.then(execute, execute);
+                requestQueue = result.catch(() => undefined);
+                return result;
+            }
+
+            async function requestJson(url, requestOptions = {}, acceptedStatuses = []) {
+                const response = await queuedRequest(url, requestOptions);
+                if (!response || typeof response.status !== 'number') {
+                    throw serviceError('VIRUSTOTAL_RESPONSE_INVALID', 'VirusTotal returned an invalid response.');
+                }
+                if (!response.ok && !acceptedStatuses.includes(response.status)) {
+                    const code = response.status === 401 || response.status === 403
+                        ? 'VIRUSTOTAL_API_KEY_REJECTED'
+                        : response.status === 429
+                            ? 'VIRUSTOTAL_RATE_LIMITED'
+                            : response.status >= 500
+                                ? 'VIRUSTOTAL_SERVICE_UNAVAILABLE'
+                                : 'VIRUSTOTAL_REQUEST_FAILED';
+                    throw serviceError(code, `VirusTotal request failed with HTTP ${response.status}.`, {
+                        status: response.status,
+                        retryable: response.status === 429 || response.status >= 500
+                    });
+                }
+                return response;
+            }
+
+            function apiHeaders(apiKey) {
+                return {
+                    Accept: 'application/json',
+                    'x-apikey': apiKey
+                };
+            }
+
+            async function lookupFile(sha256, apiKey) {
+                const response = await requestJson(
+                    `${API_ROOT}/files/${encodeURIComponent(sha256)}`,
+                    {
+                        method: 'GET',
+                        headers: apiHeaders(apiKey),
+                        timeoutMs: 120_000
+                    },
+                    [404]
+                );
+                if (response.status === 404) return null;
+                return resultFromPayload(response.body, sha256);
+            }
+
+            async function uploadFile(bytes, filename, apiKey) {
+                if (bytes.byteLength > MAX_UPLOAD_BYTES) {
+                    throw serviceError(
+                        'VIRUSTOTAL_FILE_TOO_LARGE',
+                        'VirusTotal uploads are limited to 650 MB.',
+                        { sizeBytes: bytes.byteLength, maximumBytes: MAX_UPLOAD_BYTES }
+                    );
+                }
+
+                let uploadUrl = `${API_ROOT}/files`;
+                if (bytes.byteLength > DIRECT_UPLOAD_MAX_BYTES) {
+                    const uploadUrlResponse = await requestJson(
+                        `${API_ROOT}/files/upload_url`,
+                        {
+                            method: 'GET',
+                            headers: apiHeaders(apiKey),
+                            timeoutMs: 120_000
+                        }
+                    );
+                    uploadUrl = uploadUrlResponse.body?.data;
+                    try {
+                        const parsed = new URL(uploadUrl);
+                        if (parsed.protocol !== 'https:' || !parsed.hostname.endsWith('.virustotal.com')) {
+                            throw new Error('Unexpected upload host');
+                        }
+                    } catch {
+                        throw serviceError(
+                            'VIRUSTOTAL_UPLOAD_URL_INVALID',
+                            'VirusTotal returned an invalid large-file upload URL.'
+                        );
+                    }
+                }
+
+                const response = await requestJson(uploadUrl, {
+                    method: 'POST',
+                    headers: apiHeaders(apiKey),
+                    multipartFile: {
+                        fieldName: 'file',
+                        filename: String(filename || 'media-file'),
+                        mimeType: 'application/octet-stream',
+                        bytes
+                    },
+                    timeoutMs: 10 * 60_000
+                });
+                const analysisId = response.body?.data?.id;
+                if (!analysisId) {
+                    throw serviceError(
+                        'VIRUSTOTAL_ANALYSIS_ID_MISSING',
+                        'VirusTotal accepted the upload but returned no analysis identifier.'
+                    );
+                }
+                return analysisId;
+            }
+
+            async function waitForAnalysis(analysisId, apiKey) {
+                const maximumPolls = Number.isFinite(options.maximumPolls)
+                    ? Math.max(1, options.maximumPolls)
+                    : 40;
+                for (let poll = 0; poll < maximumPolls; poll++) {
+                    const response = await requestJson(
+                        `${API_ROOT}/analyses/${encodeURIComponent(analysisId)}`,
+                        {
+                            method: 'GET',
+                            headers: apiHeaders(apiKey),
+                            timeoutMs: 120_000
+                        }
+                    );
+                    if (response.body?.data?.attributes?.status === 'completed') {
+                        return response.body;
+                    }
+                    if (minimumIntervalMs === 0) {
+                        await sleepImplementation(Number(options.pollIntervalMs) || 0);
+                    }
+                }
+                throw serviceError(
+                    'VIRUSTOTAL_ANALYSIS_TIMEOUT',
+                    'VirusTotal analysis did not finish within the allowed polling window.',
+                    { retryable: true }
+                );
+            }
+
+            async function scanBytes(input, filename, settings = {}) {
+                const mode = settings.mode || 'off';
+                if (mode === 'off') {
+                    return Object.freeze({
+                        provider: 'virustotal',
+                        verdict: 'skipped',
+                        known: false,
+                        uploaded: false,
+                        stats: null,
+                        reportUrl: null,
+                        checkedAt: new Date().toISOString()
+                    });
+                }
+
+                const apiKey = String(settings.apiKey || '').trim();
+                if (!apiKey) {
+                    throw serviceError(
+                        'VIRUSTOTAL_API_KEY_MISSING',
+                        'Add a VirusTotal API key before enabling scans.'
+                    );
+                }
+                const bytes = byteView(input);
+                const sha256 = await sha256Hex(bytes, cryptoImplementation);
+                const cached = cache.get(sha256);
+                if (cached && (cached.known || mode === 'hash-only')) return cached;
+
+                const known = await lookupFile(sha256, apiKey);
+                if (known) {
+                    cache.set(sha256, known);
+                    return known;
+                }
+                if (mode === 'hash-only') {
+                    const result = unknownResult(sha256);
+                    cache.set(sha256, result);
+                    return result;
+                }
+                if (mode !== 'upload-unknown') {
+                    throw serviceError('VIRUSTOTAL_MODE_INVALID', 'Unknown VirusTotal scan mode.');
+                }
+                if (settings.uploadConsent !== true) {
+                    throw serviceError(
+                        'VIRUSTOTAL_UPLOAD_CONSENT_REQUIRED',
+                        'Confirm VirusTotal file sharing before uploading unknown files.'
+                    );
+                }
+
+                const analysisId = await uploadFile(bytes, filename, apiKey);
+                const analysisPayload = await waitForAnalysis(analysisId, apiKey);
+                const refreshed = await lookupFile(sha256, apiKey);
+                const result = refreshed || resultFromPayload(analysisPayload, sha256, { uploaded: true });
+                const uploadedResult = Object.freeze({ ...result, uploaded: true });
+                cache.set(sha256, uploadedResult);
+                return uploadedResult;
+            }
+
+            return Object.freeze({
+                scanBytes,
+                lookupFile,
+                shouldBlock,
+                clearCache() {
+                    cache.clear();
+                }
+            });
+        }
+
+        Object.defineProperty(globalThis, 'MediaArchiverVirusTotal', {
+            value: Object.freeze({
+                API_ROOT,
+                DIRECT_UPLOAD_MAX_BYTES,
+                MAX_UPLOAD_BYTES,
+                PUBLIC_API_INTERVAL_MS,
+                sha256Hex,
+                analysisStats,
+                shouldBlock,
+                createService
+            }),
+            configurable: true,
+            writable: false
+        });
+    })();
+

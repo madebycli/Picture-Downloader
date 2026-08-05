@@ -1,0 +1,265 @@
+    const userscriptSettingsFallback = new Map();
+    const userscriptPendingRequests = new Map();
+    let userscriptRequestSequence = 0;
+
+    function runtimeNetworkError(message, details = {}) {
+        const error = new Error(message);
+        Object.assign(error, details);
+        return error;
+    }
+
+    function isAllowedVirusTotalUrl(rawUrl) {
+        try {
+            const url = new URL(rawUrl);
+            return url.protocol === 'https:' &&
+                (url.hostname === 'www.virustotal.com' || url.hostname.endsWith('.virustotal.com'));
+        } catch {
+            return false;
+        }
+    }
+
+    function parseExternalResponseBody(responseText) {
+        const text = String(responseText || '');
+        if (!text) return null;
+        try {
+            return JSON.parse(text);
+        } catch {
+            return { text };
+        }
+    }
+
+    const userscriptRuntimeImplementation = {
+        fetchBinary(url, options = {}) {
+            if (!activeSiteAdapter?.isDownloadUrlAllowed(url)) {
+                return Promise.reject(runtimeNetworkError(
+                    'The active site adapter blocked this download URL.',
+                    { code: 'NETWORK_HOST_REJECTED', retryable: false }
+                ));
+            }
+
+            if (stopRequested) {
+                return Promise.reject(runtimeNetworkError(
+                    'Stopped by user',
+                    { code: 'NETWORK_ABORTED', retryable: false }
+                ));
+            }
+
+            const requestId = options.requestId || `userscript-${++userscriptRequestSequence}`;
+            return new Promise((resolve, reject) => {
+                let requestHandle;
+                const finish = callback => value => {
+                    userscriptPendingRequests.delete(requestId);
+                    callback(value);
+                };
+
+                requestHandle = GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    responseType: 'arraybuffer',
+                    timeout: options.timeoutMs || 120_000,
+                    anonymous: true,
+                    headers: {
+                        Accept: options.accept || 'video/*,image/*,*/*;q=0.8'
+                    },
+                    onload: finish(response => {
+                        if (
+                            response.status >= 200 &&
+                            response.status < 300 &&
+                            response.response
+                        ) {
+                            resolve(response.response);
+                            return;
+                        }
+
+                        const status = response.status || 0;
+                        const code = status === 403
+                            ? 'NETWORK_HTTP_403'
+                            : status === 404
+                                ? 'NETWORK_HTTP_404'
+                                : status === 429
+                                    ? 'NETWORK_HTTP_429'
+                                    : status >= 500
+                                        ? 'NETWORK_HTTP_5XX'
+                                        : 'NETWORK_RETRY_EXHAUSTED';
+                        reject(runtimeNetworkError(`HTTP ${status || 'unknown'}`, {
+                            code,
+                            status,
+                            retryable: status === 0 || status === 429 || status >= 500,
+                            requestId
+                        }));
+                    }),
+                    onerror: finish(() => reject(runtimeNetworkError('Network error', {
+                        code: 'NETWORK_RETRY_EXHAUSTED',
+                        retryable: true,
+                        requestId
+                    }))),
+                    ontimeout: finish(() => reject(runtimeNetworkError('Request timed out', {
+                        code: 'NETWORK_TIMEOUT',
+                        retryable: true,
+                        requestId
+                    }))),
+                    onabort: finish(() => reject(runtimeNetworkError('Request aborted', {
+                        code: 'NETWORK_ABORTED',
+                        retryable: false,
+                        requestId
+                    })))
+                });
+
+                userscriptPendingRequests.set(requestId, requestHandle);
+            });
+        },
+        requestExternal(url, options = {}) {
+            if (!isAllowedVirusTotalUrl(url)) {
+                return Promise.reject(runtimeNetworkError(
+                    'The runtime blocked this external service URL.',
+                    { code: 'RUNTIME_EXTERNAL_HOST_REJECTED', retryable: false }
+                ));
+            }
+
+            const requestId = options.requestId || `external-${++userscriptRequestSequence}`;
+            let data = options.body;
+            if (options.multipartFile) {
+                const file = options.multipartFile;
+                const bytes = file.bytes instanceof Uint8Array
+                    ? file.bytes
+                    : new Uint8Array(file.bytes);
+                const form = new FormData();
+                form.append(
+                    file.fieldName || 'file',
+                    new Blob([bytes], { type: file.mimeType || 'application/octet-stream' }),
+                    file.filename || 'media-file'
+                );
+                data = form;
+            }
+
+            return new Promise((resolve, reject) => {
+                let requestHandle;
+                const finish = callback => value => {
+                    userscriptPendingRequests.delete(requestId);
+                    callback(value);
+                };
+                requestHandle = GM_xmlhttpRequest({
+                    method: options.method || 'GET',
+                    url,
+                    headers: options.headers || {},
+                    data,
+                    responseType: 'text',
+                    timeout: options.timeoutMs || 120_000,
+                    anonymous: true,
+                    onload: finish(response => resolve({
+                        ok: response.status >= 200 && response.status < 300,
+                        status: response.status || 0,
+                        body: parseExternalResponseBody(response.responseText || response.response),
+                        responseHeaders: response.responseHeaders || ''
+                    })),
+                    onerror: finish(() => reject(runtimeNetworkError(
+                        'External service request failed.',
+                        { code: 'RUNTIME_EXTERNAL_REQUEST_FAILED', retryable: true }
+                    ))),
+                    ontimeout: finish(() => reject(runtimeNetworkError(
+                        'External service request timed out.',
+                        { code: 'RUNTIME_EXTERNAL_TIMEOUT', retryable: true }
+                    ))),
+                    onabort: finish(() => reject(runtimeNetworkError(
+                        'External service request was aborted.',
+                        { code: 'NETWORK_ABORTED', retryable: false }
+                    )))
+                });
+                userscriptPendingRequests.set(requestId, requestHandle);
+            });
+        },
+        abortRequest(requestId) {
+            const handle = userscriptPendingRequests.get(requestId);
+            if (!handle) return false;
+            try {
+                handle.abort();
+            } finally {
+                userscriptPendingRequests.delete(requestId);
+            }
+            return true;
+        },
+        abortAllRequests() {
+            for (const requestId of [...userscriptPendingRequests.keys()]) {
+                this.abortRequest(requestId);
+            }
+        },
+        async saveBlob(blob, filename) {
+            const blobUrl = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = blobUrl;
+            anchor.download = filename;
+            anchor.style.display = 'none';
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 120_000);
+            return filename;
+        },
+        async copyText(text) {
+            const value = String(text ?? '');
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(value);
+                return true;
+            }
+
+            const textarea = document.createElement('textarea');
+            textarea.value = value;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            const copied = document.execCommand?.('copy') === true;
+            textarea.remove();
+            if (!copied) {
+                const error = new Error('Clipboard access failed.');
+                error.code = 'RUNTIME_CLIPBOARD_FAILED';
+                throw error;
+            }
+            return true;
+        },
+        async getSetting(key, fallback) {
+            try {
+                if (typeof GM_getValue === 'function') {
+                    return await GM_getValue(key, fallback);
+                }
+            } catch {
+                // Use the bounded in-memory compatibility fallback.
+            }
+            return userscriptSettingsFallback.has(key)
+                ? userscriptSettingsFallback.get(key)
+                : fallback;
+        },
+        async setSetting(key, value) {
+            try {
+                if (typeof GM_setValue === 'function') {
+                    await GM_setValue(key, value);
+                    return value;
+                }
+            } catch {
+                // Use the bounded in-memory compatibility fallback.
+            }
+            userscriptSettingsFallback.set(key, value);
+            return value;
+        },
+        getPlatformInfo() {
+            return Object.freeze({
+                runtimeTarget: 'userscript',
+                browserPlatform: navigator.userAgentData?.platform || navigator.platform || 'unknown',
+                language: navigator.language || 'unknown'
+            });
+        },
+        openUi() {
+            const library = document.getElementById('ma-library-dialog');
+            if (library && typeof openLibrary === 'function') openLibrary();
+            else document.getElementById('media-archiver-panel')?.classList.remove('ma-collapsed');
+        },
+        closeUi() {
+            if (typeof closeLibrary === 'function') closeLibrary();
+            else document.getElementById('media-archiver-panel')?.classList.add('ma-collapsed');
+        }
+    };
+
+    const runtime = globalThis.MediaArchiverRuntimeContract
+        .createRuntimeFacade(userscriptRuntimeImplementation);
+

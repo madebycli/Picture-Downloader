@@ -1,0 +1,35 @@
+    function applyAdapterCapabilitiesToUi() {
+        const capabilities = activeSiteAdapter.capabilities || {};
+        const dateGroup = dateFilterCheckbox?.closest('.ma-group');
+        const dateSupported = capabilities.dateFilter !== false;
+        if (dateGroup) dateGroup.hidden = !dateSupported;
+        if (!dateSupported) {
+            dateFilterCheckbox.checked = false;
+            dateFilterCheckbox.disabled = true;
+            dateFields.classList.add('ma-disabled');
+        }
+
+        const supportedModes = new Set(capabilities.scanModes || []);
+        for (const option of [...scanDirectionSelect.options]) {
+            option.hidden = supportedModes.size > 0 && !supportedModes.has(option.value);
+            option.disabled = option.hidden;
+        }
+        if (scanDirectionSelect.selectedOptions[0]?.disabled) {
+            const firstSupported = [...scanDirectionSelect.options]
+                .find(option => !option.disabled);
+            if (firstSupported) scanDirectionSelect.value = firstSupported.value;
+        }
+
+        const textRecordsSupported = Boolean(capabilities.textRecords);
+        const commentOption = libraryTypeFilter?.querySelector('option[value="comment"]');
+        if (commentOption) commentOption.hidden = !textRecordsSupported;
+
+        const mediaSupported = capabilities.media !== false;
+        const mediaGroup = photoCheckbox?.closest('.ma-group');
+        if (mediaGroup) mediaGroup.hidden = !mediaSupported && textRecordsSupported;
+
+        refreshDateControls();
+        updateButtons();
+    }
+
+    applyAdapterCapabilitiesToUi();

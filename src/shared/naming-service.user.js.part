@@ -1,0 +1,272 @@
+    (() => {
+        const PRESETS = Object.freeze({
+            NUMBERED: 'numbered',
+            SOURCE_DATETIME: 'source-datetime',
+            SOURCE_DATE_NUMBER: 'source-date-number',
+            ORIGINAL_NUMBER: 'original-number',
+            CUSTOM: 'custom'
+        });
+
+        const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+        const TOKEN_PATTERN = /\{(sequence|date|time|datetime|site|source|original|mediaType|itemId)\}/g;
+        const MAX_COMPONENT_LENGTH = 180;
+        const MAX_FILENAME_LENGTH = 240;
+
+        function sequenceText(index, total, requestedWidth = 6) {
+            const width = Math.max(6, Number(requestedWidth) || 6, String(total).length);
+            return String(index + 1).padStart(width, '0');
+        }
+
+        function extensionFromValue(value) {
+            if (!value) return '';
+            const clean = String(value).split(/[?#]/, 1)[0];
+            const match = clean.match(/(\.[A-Za-z0-9]{1,12})$/);
+            return match ? match[1] : '';
+        }
+
+        function trueExtension(item) {
+            const payload = item?.payload || item || {};
+            const explicit = extensionFromValue(payload.extension);
+            if (explicit) return explicit;
+
+            const original = extensionFromValue(
+                payload.originalFilename ||
+                payload.filename ||
+                item?.filename
+            );
+            if (original) return original;
+
+            try {
+                const url = new URL(payload.url || item?.url || '', 'https://invalid.local/');
+                const fromUrl = extensionFromValue(url.pathname);
+                if (fromUrl) return fromUrl;
+            } catch {
+                // Fall through to kind-specific safe extensions.
+            }
+
+            if (item?.kind === 'comment') return '.json';
+            if (item?.kind === 'generated-document') {
+                return extensionFromValue(payload.filename) || '.txt';
+            }
+            if (payload.mediaType === 'video' || payload.mediaType === 'external-gif') {
+                return '.mp4';
+            }
+            return '.jpg';
+        }
+
+        function withoutExtension(value) {
+            const text = String(value || '');
+            const extension = extensionFromValue(text);
+            return extension ? text.slice(0, -extension.length) : text;
+        }
+
+        function collapseSeparators(value) {
+            return value
+                .replace(/[\s_-]+/g, '_')
+                .replace(/^_+|_+$/g, '');
+        }
+
+        function sanitizeComponent(value, fallback = 'untitled') {
+            let text = String(value ?? '')
+                .normalize('NFKC')
+                .replace(/[<>:"/\\|?*\u0000-\u001F\u007F]/g, '_')
+                .replace(/[. ]+$/g, '')
+                .replace(/^\.+$/g, '')
+                .trim();
+
+            text = collapseSeparators(text);
+            if (!text || text === '.' || text === '..') text = fallback;
+            if (WINDOWS_RESERVED.test(text)) text = `_${text}`;
+            if (text.length > MAX_COMPONENT_LENGTH) {
+                text = text.slice(0, MAX_COMPONENT_LENGTH).replace(/[. _-]+$/g, '');
+            }
+            return text || fallback;
+        }
+
+        function normalizeCollisionKey(value) {
+            return String(value || '')
+                .normalize('NFC')
+                .replace(/[. ]+$/g, '')
+                .toLocaleLowerCase('en-US');
+        }
+
+        function sourceDateParts(item, settings = {}) {
+            const raw = item?.timestamp || item?.payload?.timestamp || null;
+            const parsed = raw ? new Date(raw) : null;
+            if (!parsed || !Number.isFinite(parsed.getTime())) {
+                return {
+                    date: 'unknown-date',
+                    time: 'unknown-time',
+                    datetime: 'unknown-date_unknown-time'
+                };
+            }
+
+            const useUtc = settings.timezone === 'utc';
+            const get = (local, utc) => useUtc ? utc.call(parsed) : local.call(parsed);
+            const year = get(Date.prototype.getFullYear, Date.prototype.getUTCFullYear);
+            const month = String(get(Date.prototype.getMonth, Date.prototype.getUTCMonth) + 1).padStart(2, '0');
+            const day = String(get(Date.prototype.getDate, Date.prototype.getUTCDate)).padStart(2, '0');
+            const hour = String(get(Date.prototype.getHours, Date.prototype.getUTCHours)).padStart(2, '0');
+            const minute = String(get(Date.prototype.getMinutes, Date.prototype.getUTCMinutes)).padStart(2, '0');
+            const second = String(get(Date.prototype.getSeconds, Date.prototype.getUTCSeconds)).padStart(2, '0');
+            const date = `${year}-${month}-${day}`;
+            const time = `${hour}-${minute}-${second}`;
+            return { date, time, datetime: `${date}_${time}` };
+        }
+
+        function presetTemplate(preset) {
+            switch (preset) {
+                case PRESETS.SOURCE_DATETIME:
+                    return '{datetime}';
+                case PRESETS.SOURCE_DATE_NUMBER:
+                    return '{source}_{date}_{sequence}';
+                case PRESETS.ORIGINAL_NUMBER:
+                    return '{original}_{sequence}';
+                case PRESETS.CUSTOM:
+                    return null;
+                default:
+                    return '{sequence}';
+            }
+        }
+
+        function validateTemplate(template) {
+            const value = String(template || '').trim();
+            if (!value) return { valid: false, error: 'Template cannot be empty.' };
+            if (/[\/\\]/.test(value)) {
+                return { valid: false, error: 'Folders are not supported in naming templates yet.' };
+            }
+
+            const withoutKnownTokens = value.replace(TOKEN_PATTERN, '');
+            const unknownToken = withoutKnownTokens.match(/\{[^}]+\}/)?.[0];
+            if (unknownToken) {
+                return { valid: false, error: `Unsupported token: ${unknownToken}` };
+            }
+            return { valid: true, error: '' };
+        }
+
+        function renderTemplate(template, item, values) {
+            return String(template).replace(TOKEN_PATTERN, (_, token) => values[token] ?? '');
+        }
+
+        function buildTokenValues(item, index, total, settings, context) {
+            const sequence = sequenceText(index, total, settings.sequenceWidth);
+            const dates = sourceDateParts(item, settings);
+            const payload = item?.payload || item || {};
+            const original = sanitizeComponent(withoutExtension(
+                payload.originalFilename || payload.filename || item?.filename || 'untitled'
+            ), `untitled_${sequence}`);
+            const site = sanitizeComponent(
+                context.site || context.adapterLabel || item?.adapterId || 'site',
+                'site'
+            );
+            const source = sanitizeComponent(
+                payload.sourceLabel || context.sourceLabel || context.adapterLabel || item?.adapterId || 'source',
+                `source_${sequence}`
+            );
+
+            return {
+                sequence,
+                date: dates.date,
+                time: dates.time,
+                datetime: dates.datetime,
+                site,
+                source,
+                original,
+                mediaType: sanitizeComponent(payload.mediaType || item?.kind || 'item', 'item'),
+                itemId: sanitizeComponent(item?.sourceId || payload.itemId || item?.key || sequence, sequence)
+            };
+        }
+
+        function trimStemForFilename(stem, extension, suffix = '') {
+            const maximum = Math.max(1, MAX_FILENAME_LENGTH - extension.length - suffix.length);
+            const trimmed = stem.slice(0, maximum).replace(/[. _-]+$/g, '');
+            return trimmed || 'untitled';
+        }
+
+        function planArchiveNames(items, settings = {}, adapterContext = {}) {
+            const finalItems = [...(items || [])];
+            const preset = settings.preset || PRESETS.NUMBERED;
+            const template = presetTemplate(preset) ?? settings.template;
+            const validation = validateTemplate(template);
+            if (!validation.valid) {
+                const error = new Error(validation.error);
+                error.code = 'NAMING_TEMPLATE_INVALID';
+                throw error;
+            }
+
+            const reservedStems = new Set();
+            const reservedPaths = new Set();
+            const namesByKey = new Map();
+            const records = [];
+
+            finalItems.forEach((item, index) => {
+                if (!item?.key) throw new TypeError('Every final item requires a stable key.');
+                const extension = trueExtension(item);
+                const values = buildTokenValues(item, index, finalItems.length, settings, adapterContext);
+                let stem = sanitizeComponent(
+                    renderTemplate(template, item, values),
+                    `untitled_${values.sequence}`
+                );
+                let collisionResolved = false;
+                let collisionIndex = 0;
+                let candidateStem = stem;
+
+                while (
+                    reservedStems.has(normalizeCollisionKey(candidateStem)) ||
+                    reservedPaths.has(normalizeCollisionKey(`${candidateStem}${extension}`))
+                ) {
+                    collisionResolved = true;
+                    collisionIndex++;
+                    const suffix = `_${values.sequence}${collisionIndex > 1 ? `_${collisionIndex}` : ''}`;
+                    candidateStem = `${trimStemForFilename(stem, extension, suffix)}${suffix}`;
+                }
+
+                stem = trimStemForFilename(candidateStem, extension);
+                const filename = `${stem}${extension}`;
+                reservedStems.add(normalizeCollisionKey(stem));
+                reservedPaths.add(normalizeCollisionKey(filename));
+                namesByKey.set(item.key, filename);
+                records.push(Object.freeze({
+                    itemKey: item.key,
+                    archiveFilename: filename,
+                    archiveStem: stem,
+                    originalFilename: item?.payload?.originalFilename || item?.payload?.filename || item?.filename || '',
+                    namingPreset: preset,
+                    namingTemplate: template,
+                    sourceLabel: values.source,
+                    sourceTimestamp: item.timestamp || null,
+                    namingTimezone: settings.timezone === 'utc' ? 'utc' : 'local',
+                    collisionResolved,
+                    collisionIndex,
+                    extension
+                }));
+            });
+
+            return Object.freeze({
+                preset,
+                template,
+                namesByKey,
+                records: Object.freeze(records),
+                get(itemKey) {
+                    return namesByKey.get(itemKey) || null;
+                }
+            });
+        }
+
+        const api = Object.freeze({
+            PRESETS,
+            TOKEN_PATTERN,
+            sanitizeComponent,
+            normalizeCollisionKey,
+            validateTemplate,
+            trueExtension,
+            planArchiveNames
+        });
+
+        Object.defineProperty(globalThis, 'MediaArchiverNaming', {
+            value: api,
+            configurable: true,
+            writable: false
+        });
+    })();
+

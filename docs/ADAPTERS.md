@@ -1,82 +1,86 @@
 # Site adapters
 
-## Purpose
+## Contract
 
-A site adapter contains every rule that depends on a specific web application. New sites should be added by creating an adapter module and manifest entry, not by adding hostname checks or selectors to core modules.
+A site adapter translates rendered page state into shared `ArchiveItem` records. Site-specific hosts, selectors, IDs/timestamps, URL normalization, terminology, labels, and timeline behavior stay in the adapter.
 
-## Manifest entry
+Each adapter manifest entry declares page matches, reviewed media hosts, and source modules. The build generates userscript and extension permissions from those values. Runtime validation independently rejects undeclared media hosts. Optional external services such as VirusTotal are declared separately in `src/build-manifest.json` and are not adapter media sources.
 
-Add an object to `src/adapters/manifest.json`:
+Direct selection inside the host website remains optional and adapter-controlled. The shared post-scan Library is the supported selection surface.
 
-```json
-{
-  "id": "example",
-  "label": "Example",
-  "modules": ["src/adapters/example/adapter.user.js.part"],
-  "matches": ["https://example.com/library/*"],
-  "connect": ["media.example.com"]
-}
+## Discord
+
+Supported pages: text channels and threads on stable, PTB, and Canary hosts.
+
+Rendered sources:
+
+- attachment images and native GIF files;
+- Discord-hosted video attachments, including uncommon containers rendered by a video element;
+- external GIF previews rendered through Discord proxy hosts.
+
+The existing virtual-timeline scanner, dates, four directions, manual stop, final-position behavior, ZIP parts, `fflate`, and ZIP fallback remain enabled. No Discord token access and no `discord.com/api` calls are permitted.
+
+## Pinterest
+
+Supported deterministic surfaces:
+
+- pin detail;
+- boards;
+- visible profile-created/profile-saved grids;
+- pin search results.
+
+The personalized home feed is rejected. Discovery inspects only rendered `img`, `picture`, `video`, and `source` attributes. Stable Pin IDs plus media host/path form canonical keys so Masonry re-renders merge instead of duplicating records.
+
+## Reddit comment media
+
+Supported pages are only post-detail comment-thread paths under `/r/<subreddit>/comments/<post>/...`, including old Reddit. Home, Popular, subreddit feeds, search feeds, recommendations, and For You surfaces do not match.
+
+Comments are DOM containers and timeline anchors only. The adapter does **not** create comment-text ArchiveItems and does not generate JSON, Markdown, or CSV comment exports.
+
+Rendered media discovery covers:
+
+- `img` current/source/lazy attributes;
+- `srcset` candidates;
+- `picture` and rendered source candidates;
+- `video` and nested source candidates;
+- direct links whose rendered target is a reviewed media file;
+- native Reddit photos, GIFs, and videos;
+- external rendered media from reviewed CDN hosts.
+
+Reviewed Reddit media hosts include:
+
+```text
+i.redd.it
+preview.redd.it
+external-preview.redd.it
+v.redd.it
+packaged-media.redd.it
+i.redditmedia.com
+reddit-uploaded-media.s3-accelerate.amazonaws.com
+i.imgur.com
+*.giphy.com
+media.tenor.com
+*.streamable.com
+*.redgifs.com
+*.gfycat.com
+cdn.discordapp.com
+media.discordapp.net
+pbs.twimg.com
+video.twimg.com
+*.tumblr.com
 ```
 
-The build converts `matches` and `connect` into Tampermonkey metadata. Keep both lists minimal.
+Canonical media keys use normalized media hostname and path. The same meme rendered in multiple comments is therefore merged globally while retaining the contributing comment IDs/permalinks in internal payload metadata.
 
-## Runtime contract
+The adapter never votes, posts, joins, follows, reacts, expands replies automatically, requests feeds, or calls authenticated Reddit APIs.
 
-Register an object with `registerSiteAdapter(adapter)`. Required members are:
+## Adding an adapter
 
-- `id`, `label`, and `archivePrefix`
-- `matches(location)`
-- `scanVisibleMedia()`
-- `findScroller()`
-- `visibleItemIds()`
-- `visibleItemTimeRange()`
-- `findItemElementById(id)`
-- `captureStartingAnchor(scroller)`
-- `findItemId(element)`
-- `findItemTimestamp(element)`
-- `compareItemIds(left, right)`
-- `getArchiveContext()`
-- `isDownloadUrlAllowed(url)`
-
-Optional members include `timestampFromItemId(id)`, `terms`, and `openTargetHelp`.
-
-## Media discovery
-
-Adapter discovery functions create or update entries in the shared `mediaEntries` Map. An entry should provide:
-
-```js
-{
-    key,
-    url,
-    previewUrl,
-    filename,
-    mediaType: 'photo' | 'video' | 'external-gif',
-    sourceKind,
-    sourcePageUrl,
-    itemId,
-    timestamp,
-    firstSeen,
-    status,
-    error,
-    size
-}
-```
-
-Use stable semantic attributes, URL patterns, and DOM relationships. Avoid generated CSS class names when possible.
-
-## Download safety
-
-The manifest `connect` list grants Tampermonkey permission. `isDownloadUrlAllowed` is a second runtime boundary and must independently reject every undeclared host. Do not follow a source-page link to scrape additional files.
-
-## Virtual timelines
-
-Adapters must treat timeline boundaries as asynchronous. `findScroller`, visible IDs, timestamps, and anchor functions should remain defensive when the site unloads off-screen content or changes scroll height after rendering.
-
-## Adding an adapter checklist
-
-1. Add the adapter module and manifest entry.
-2. Keep all site constants, selectors, epochs, hosts, and normalization rules inside the adapter.
-3. Document supported page types and media sources.
-4. Add validation markers or adapter-specific tests.
-5. Test unsupported pages, all scan directions, date boundaries, stop behavior, and both ZIP engines.
-6. Run `npm test` and inspect the generated metadata.
+1. Add minimal sanitized fixtures and expected canonical results.
+2. Implement explicit page matching that rejects unsupported/feed surfaces.
+3. Add capabilities and rendered-item discovery with stable keys.
+4. Declare minimal matches and connection hosts in `src/adapters/manifest.json`.
+5. Add runtime allowlisting using the same reviewed hosts, including wildcard tests when needed.
+6. Document timestamp semantics, source-label semantics, boundaries, and safety exclusions.
+7. Add fixture, unsupported-page, deduplication, selection, naming, and diagnostics tests.
+8. Run `npm test` and the Chromium/Firefox Playwright matrix.

@@ -33,9 +33,10 @@ const afterAdapters = await Promise.all(
 const matchLines = [...new Set(
     adapters.flatMap(adapter => adapter.matches || [])
 )].map(value => `// @match        ${value}`).join('\n');
-const connectLines = [...new Set(
-    adapters.flatMap(adapter => adapter.connect || [])
-)].map(value => `// @connect      ${value}`).join('\n');
+const connectLines = [...new Set([
+    ...(buildManifest.runtimeConnect || []),
+    ...adapters.flatMap(adapter => adapter.connect || [])
+])].map(value => `// @connect      ${value}`).join('\n');
 
 beforeAdapters[0] = beforeAdapters[0]
     .replace('// __ADAPTER_MATCHES__', matchLines)

@@ -1,0 +1,91 @@
+    document.head.appendChild(libraryStyle);
+    document.body.append(libraryOverlay, developerLogsOverlay);
+
+    reviewBeforeRadio.addEventListener('change', () => {
+        syncWorkflowMode();
+        updateButtons();
+    });
+    autoZipCheckbox.addEventListener('change', () => {
+        syncWorkflowMode();
+        updateButtons();
+    });
+
+    openLibraryButton.addEventListener('click', openLibrary);
+    libraryCloseButton.addEventListener('click', closeLibrary);
+    libraryCancelButton.addEventListener('click', closeLibrary);
+    libraryArchiveButton.addEventListener('click', archiveSelectedFromLibrary);
+    libraryOverlay.addEventListener('click', event => {
+        if (event.target === libraryOverlay) closeLibrary();
+    });
+    libraryDialogElement.addEventListener('keydown', handleLibraryDialogKeydown);
+
+    librarySearchInput.addEventListener('input', scheduleLibraryRender);
+    librarySortSelect.addEventListener('change', scheduleLibraryRender);
+    libraryTypeFilter.addEventListener('change', scheduleLibraryRender);
+    libraryStatusFilter.addEventListener('change', scheduleLibraryRender);
+    libraryViewToggle.addEventListener('click', toggleLibraryView);
+    selectVisibleButton.addEventListener('click', selectAllVisibleLibrary);
+    selectEligibleButton.addEventListener('click', selectAllEligibleLibrary);
+    selectNoneButton.addEventListener('click', selectNoneLibrary);
+    selectInvertButton.addEventListener('click', invertVisibleLibrary);
+
+    const namingPresetTemplates = Object.freeze({
+        numbered: '{sequence}',
+        'source-datetime': '{datetime}',
+        'source-date-number': '{source}_{date}_{sequence}',
+        'original-number': '{original}_{sequence}'
+    });
+
+    namingPresetSelect.addEventListener('change', () => {
+        const template = namingPresetTemplates[namingPresetSelect.value];
+        if (template) namingTemplateInput.value = template;
+        if (namingPresetSelect.value === 'custom') namingCustomizeToggle.open = true;
+        refreshNamingAdvancedVisibility();
+        renderNamingPreview();
+        persistNamingSettings();
+    });
+    namingCustomizeToggle.addEventListener('toggle', refreshNamingAdvancedVisibility);
+    for (const control of [
+        namingTemplateInput,
+        namingTimezoneSelect,
+        namingSequenceWidthInput
+    ]) {
+        control.addEventListener('input', () => {
+            renderNamingPreview();
+            persistNamingSettings();
+        });
+        control.addEventListener('change', () => {
+            renderNamingPreview();
+            persistNamingSettings();
+        });
+    }
+
+    copyActivityButton.addEventListener('click', copyActivity);
+    downloadReportButton.addEventListener('click', downloadDeveloperReport);
+    developerLogsButton.addEventListener('click', openDeveloperLogs);
+    clearLogButton.addEventListener('click', () => diagnostics.clear());
+
+    developerCloseButton.addEventListener('click', closeDeveloperLogs);
+    developerLogsOverlay.addEventListener('click', event => {
+        if (event.target === developerLogsOverlay) closeDeveloperLogs();
+    });
+    developerLogsOverlay.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeDeveloperLogs();
+        }
+    });
+    developerSearchInput.addEventListener('input', renderDeveloperLogs);
+    for (const input of [...developerLevelFilters, ...developerCategoryFilters]) {
+        input.addEventListener('change', renderDeveloperLogs);
+    }
+    copyDeveloperButton.addEventListener('click', copyDeveloperReport);
+    downloadDeveloperButton.addEventListener('click', downloadDeveloperReport);
+
+    document.addEventListener('visibilitychange', () => {
+        liveMetrics.handleVisibilityChange(document.visibilityState === 'visible');
+    });
+
+    loadNamingSettings();
+    renderLibrary();
+    updateButtons();

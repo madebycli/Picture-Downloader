@@ -1,0 +1,18 @@
+    function redditCommentElements() {
+        const selector = redditCommentSelector();
+        const unique = new Map();
+        for (const element of document.querySelectorAll(selector)) {
+            const commentId = redditCommentId(element);
+            if (commentId && !unique.has(commentId)) {
+                unique.set(commentId, element);
+            }
+        }
+        return [...unique.values()];
+    }
+
+    // Comment text is intentionally not represented as an ArchiveItem.
+    // The Reddit adapter uses comments only as DOM containers and timeline anchors.
+    function scanRedditRenderedComments() {
+        return 0;
+    }
+

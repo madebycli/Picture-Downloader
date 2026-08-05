@@ -1,0 +1,627 @@
+    let libraryRenderTimer = null;
+    let libraryViewItems = [];
+    let libraryFocusedKey = null;
+    let libraryPreviouslyFocused = null;
+    let libraryIsOpen = false;
+
+    function currentNamingSettings() {
+        const preset = typeof namingPresetSelect !== 'undefined' && namingPresetSelect
+            ? namingPresetSelect.value
+            : globalThis.MediaArchiverNaming.PRESETS.NUMBERED;
+        return {
+            preset,
+            template: typeof namingTemplateInput !== 'undefined'
+                ? namingTemplateInput?.value || '{sequence}'
+                : '{sequence}',
+            timezone: typeof namingTimezoneSelect !== 'undefined'
+                ? namingTimezoneSelect?.value || 'local'
+                : 'local',
+            sequenceWidth: typeof namingSequenceWidthInput !== 'undefined'
+                ? Number(namingSequenceWidthInput?.value) || 6
+                : 6
+        };
+    }
+
+    async function persistNamingSettings() {
+        try {
+            await runtime.setSetting('naming.settings', currentNamingSettings());
+        } catch (error) {
+            diagnostics.error(
+                'RUNTIME_STORAGE_FAILED',
+                'File naming settings could not be saved.',
+                error,
+                {},
+                { category: 'runtime', userMessage: 'File naming settings could not be saved for the next session.' }
+            );
+        }
+    }
+
+    async function loadNamingSettings() {
+        const fallback = {
+            preset: globalThis.MediaArchiverNaming.PRESETS.NUMBERED,
+            template: '{sequence}',
+            timezone: 'local',
+            sequenceWidth: 6
+        };
+        let settings = fallback;
+        try {
+            settings = await runtime.getSetting('naming.settings', fallback) || fallback;
+        } catch {
+            settings = fallback;
+        }
+
+        if (typeof namingPresetSelect !== 'undefined' && namingPresetSelect) {
+            namingPresetSelect.value = settings.preset || fallback.preset;
+        }
+        if (typeof namingTemplateInput !== 'undefined' && namingTemplateInput) {
+            namingTemplateInput.value = settings.template || fallback.template;
+        }
+        if (typeof namingTimezoneSelect !== 'undefined' && namingTimezoneSelect) {
+            namingTimezoneSelect.value = settings.timezone || fallback.timezone;
+        }
+        if (typeof namingSequenceWidthInput !== 'undefined' && namingSequenceWidthInput) {
+            namingSequenceWidthInput.value = String(settings.sequenceWidth || 6);
+        }
+        refreshNamingAdvancedVisibility();
+        renderNamingPreview();
+    }
+
+    function refreshNamingAdvancedVisibility() {
+        if (typeof namingAdvancedElement === 'undefined' || !namingAdvancedElement) return;
+        namingAdvancedElement.hidden = !namingCustomizeToggle?.open;
+        const custom = namingPresetSelect?.value === globalThis.MediaArchiverNaming.PRESETS.CUSTOM;
+        namingTemplateWrap?.classList.toggle('ma-field-disabled', !custom);
+        if (namingTemplateInput) namingTemplateInput.disabled = !custom;
+    }
+
+    function renderNamingPreview() {
+        if (typeof namingPreviewElement === 'undefined' || !namingPreviewElement) return;
+        const entries = eligibleMediaEntries().slice(0, 3);
+        const previewItems = entries.length
+            ? entries
+            : [
+                {
+                    key: 'preview-photo',
+                    kind: 'media',
+                    adapterId: activeSiteAdapter?.id || 'site',
+                    timestamp: '2026-08-05T12:13:45.000Z',
+                    payload: {
+                        filename: 'artwork.jpg',
+                        originalFilename: 'artwork.jpg',
+                        url: 'https://preview.invalid/artwork.jpg',
+                        mediaType: 'photo',
+                        sourceLabel: 'current source'
+                    }
+                },
+                {
+                    key: 'preview-video',
+                    kind: 'media',
+                    adapterId: activeSiteAdapter?.id || 'site',
+                    timestamp: '2026-08-05T12:12:45.000Z',
+                    payload: {
+                        filename: 'clip.mp4',
+                        originalFilename: 'clip.mp4',
+                        url: 'https://preview.invalid/clip.mp4',
+                        mediaType: 'video',
+                        sourceLabel: 'current source'
+                    }
+                },
+                {
+                    key: 'preview-image',
+                    kind: 'media',
+                    adapterId: activeSiteAdapter?.id || 'site',
+                    timestamp: '2026-08-05T12:11:45.000Z',
+                    payload: {
+                        filename: 'image.png',
+                        originalFilename: 'image.png',
+                        url: 'https://preview.invalid/image.png',
+                        mediaType: 'photo',
+                        sourceLabel: 'current source'
+                    }
+                }
+            ];
+
+        try {
+            const context = activeSiteAdapter?.getArchiveContext?.() || {};
+            const plan = globalThis.MediaArchiverNaming.planArchiveNames(
+                previewItems,
+                currentNamingSettings(),
+                {
+                    site: activeSiteAdapter?.id || 'site',
+                    adapterLabel: activeSiteAdapter?.label || 'Site',
+                    sourceLabel: context.label || activeSiteAdapter?.label || 'source'
+                }
+            );
+            namingPreviewElement.textContent = plan.records
+                .map(record => record.archiveFilename)
+                .join(' · ');
+            namingErrorElement.textContent = '';
+            namingErrorElement.hidden = true;
+            namingPreviewElement.classList.remove('ma-invalid');
+        } catch (error) {
+            namingPreviewElement.textContent = 'Preview unavailable';
+            namingErrorElement.textContent = error.message;
+            namingErrorElement.hidden = false;
+            namingPreviewElement.classList.add('ma-invalid');
+        }
+    }
+
+    function librarySearchText(entry) {
+        return [
+            entry.filename,
+            entry.mediaType,
+            entry.sourceKind,
+            entry.itemId,
+            entry.kind,
+            entry.payload?.author,
+            entry.payload?.sourceLabel
+        ].filter(Boolean).join(' ').toLocaleLowerCase();
+    }
+
+    function libraryFilteredEntries() {
+        const query = String(librarySearchInput?.value || '').trim().toLocaleLowerCase();
+        const type = libraryTypeFilter?.value || 'all';
+        const status = libraryStatusFilter?.value || 'all';
+        const sort = librarySortSelect?.value || 'newest';
+
+        const entries = sortedMediaEntries().filter(entry => {
+            if (query && !librarySearchText(entry).includes(query)) return false;
+            if (type !== 'all' && entry.mediaType !== type && entry.kind !== type) return false;
+            if (status === 'eligible' && !isEntryIncluded(entry)) return false;
+            if (status === 'selected' && !selectionStore.isSelected(entry.key)) return false;
+            if (status === 'deselected' && selectionStore.isSelected(entry.key)) return false;
+            if (status === 'error' && entry.status !== STATUS.ERROR) return false;
+            if (status === 'saved' && entry.status !== STATUS.PACKED) return false;
+            return true;
+        });
+
+        if (sort === 'oldest') entries.reverse();
+        else if (sort === 'discovery') {
+            entries.sort((a, b) => (a.firstSeen || 0) - (b.firstSeen || 0));
+        } else if (sort === 'filename') {
+            entries.sort((a, b) => String(a.filename).localeCompare(String(b.filename)));
+        } else if (sort === 'type') {
+            entries.sort((a, b) =>
+                String(a.mediaType || a.kind).localeCompare(String(b.mediaType || b.kind)) ||
+                compareEntriesNewestFirst(a, b)
+            );
+        }
+        return entries;
+    }
+
+    function scheduleLibraryRender() {
+        clearTimeout(libraryRenderTimer);
+        libraryRenderTimer = setTimeout(renderLibrary, 80);
+    }
+
+    function selectionStateForEntry(entry) {
+        return Boolean(isEntryIncluded(entry) && selectionStore.isSelected(entry.key));
+    }
+
+    function createLibraryPreview(entry) {
+        if (entry.kind === 'comment') {
+            const text = document.createElement('div');
+            text.className = 'ma-library-comment-preview';
+            text.textContent = entry.payload?.bodyText || 'Comment';
+            return text;
+        }
+
+        if (entry.mediaType === 'video' || entry.mediaType === 'external-gif') {
+            const tile = document.createElement('div');
+            tile.className = 'ma-library-video-preview';
+            tile.textContent = entry.mediaType === 'external-gif' ? 'GIF' : '▶';
+            if (entry.previewUrl) {
+                tile.style.backgroundImage = `url("${String(entry.previewUrl).replace(/"/g, '%22')}")`;
+            }
+            return tile;
+        }
+
+        const image = document.createElement('img');
+        image.className = 'ma-library-image';
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        image.referrerPolicy = 'no-referrer';
+        image.alt = '';
+        image.src = entry.previewUrl || entry.url;
+        return image;
+    }
+
+    function createLibraryCard(entry, index) {
+        const card = document.createElement('article');
+        card.className = 'ma-library-card';
+        card.dataset.maItemKey = entry.key;
+        card.dataset.maIndex = String(index);
+        card.setAttribute('role', 'option');
+        card.tabIndex = entry.key === libraryFocusedKey || (!libraryFocusedKey && index === 0) ? 0 : -1;
+
+        const preview = createLibraryPreview(entry);
+        const overlay = document.createElement('div');
+        overlay.className = 'ma-library-selected-overlay';
+        overlay.setAttribute('aria-hidden', 'true');
+
+        const check = document.createElement('button');
+        check.type = 'button';
+        check.className = 'ma-library-check';
+        check.setAttribute('aria-label', `Toggle ${entry.filename || entry.kind}`);
+        check.textContent = '✓';
+
+        const body = document.createElement('div');
+        body.className = 'ma-library-card-body';
+        const title = document.createElement('strong');
+        title.textContent = entry.filename || entry.payload?.author || entry.kind;
+        title.title = title.textContent;
+        const meta = document.createElement('span');
+        meta.textContent = [
+            entry.mediaType || entry.kind,
+            entry.timestamp ? new Date(entry.timestamp).toLocaleString('en-GB') : 'Time unknown',
+            entry.duplicateCount ? `${entry.duplicateCount} duplicates merged` : '',
+            entry.status
+        ].filter(Boolean).join(' · ');
+        body.append(title, meta);
+
+        card.append(preview, overlay, check, body);
+        updateLibraryCardElement(card, entry);
+
+        card.addEventListener('focus', () => {
+            libraryFocusedKey = entry.key;
+            updateLibraryRovingTabIndex();
+        });
+        card.addEventListener('click', event => {
+            const checkmark = Boolean(event.target.closest('.ma-library-check'));
+            applyLibraryClick(entry.key, {
+                checkmark,
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey,
+                shiftKey: event.shiftKey
+            });
+            if (!checkmark) card.focus();
+        });
+        card.addEventListener('keydown', event => handleLibraryCardKeydown(event, entry.key));
+        return card;
+    }
+
+    function updateLibraryCardElement(card, entry) {
+        const selected = selectionStateForEntry(entry);
+        const eligible = isEntryIncluded(entry);
+        card.classList.toggle('ma-selected', selected);
+        card.classList.toggle('ma-ineligible', !eligible);
+        card.classList.toggle('ma-saved', entry.status === STATUS.PACKED);
+        card.classList.toggle('ma-error', entry.status === STATUS.ERROR);
+        card.setAttribute('aria-selected', String(selected));
+        card.setAttribute('aria-disabled', String(!eligible));
+        const check = card.querySelector('.ma-library-check');
+        if (check) {
+            check.setAttribute('aria-pressed', String(selected));
+            check.disabled = !eligible;
+        }
+    }
+
+    function updateLibraryCardState(key) {
+        if (typeof libraryItemsElement === 'undefined' || !libraryItemsElement) return;
+        const entry = mediaEntries.get(key);
+        if (!entry) return;
+        for (const card of libraryItemsElement.querySelectorAll('[data-ma-item-key]')) {
+            if (card.dataset.maItemKey === key) {
+                updateLibraryCardElement(card, entry);
+                break;
+            }
+        }
+        updateLibrarySelectionSummary();
+    }
+
+    function updateAllLibraryCardStates() {
+        if (!libraryItemsElement) return;
+        for (const card of libraryItemsElement.querySelectorAll('[data-ma-item-key]')) {
+            const entry = mediaEntries.get(card.dataset.maItemKey);
+            if (entry) updateLibraryCardElement(card, entry);
+        }
+        updateLibrarySelectionSummary();
+        renderNamingPreview();
+        updateCounters();
+    }
+
+    function renderLibrary() {
+        if (typeof libraryItemsElement === 'undefined' || !libraryItemsElement) return;
+        libraryViewItems = libraryFilteredEntries();
+        if (!libraryViewItems.some(entry => entry.key === libraryFocusedKey)) {
+            libraryFocusedKey = libraryViewItems[0]?.key || null;
+        }
+
+        const fragment = document.createDocumentFragment();
+        libraryViewItems.forEach((entry, index) => {
+            fragment.appendChild(createLibraryCard(entry, index));
+        });
+        libraryItemsElement.replaceChildren(fragment);
+        libraryItemsElement.classList.toggle(
+            'ma-list-view',
+            libraryViewToggle?.dataset.view === 'list'
+        );
+        libraryEmptyElement.hidden = libraryViewItems.length > 0;
+        updateLibrarySelectionSummary();
+    }
+
+    function updateLibraryRovingTabIndex() {
+        for (const card of libraryItemsElement?.querySelectorAll('[data-ma-item-key]') || []) {
+            card.tabIndex = card.dataset.maItemKey === libraryFocusedKey ? 0 : -1;
+        }
+    }
+
+    function currentLibraryViewForSelection() {
+        return libraryViewItems.filter(isEntryIncluded);
+    }
+
+    function applyLibraryClick(key, modifiers) {
+        selectionStore.applyClick({
+            key,
+            viewItems: currentLibraryViewForSelection(),
+            ...modifiers
+        });
+        selectionStore.syncItems([...mediaEntries.values()]);
+        updateAllLibraryCardStates();
+    }
+
+    function handleLibraryCardKeydown(event, key) {
+        if (event.key === ' ') {
+            event.preventDefault();
+            selectionStore.toggle(key);
+            selectionStore.syncItems([...mediaEntries.values()]);
+            updateAllLibraryCardStates();
+            return;
+        }
+
+        const index = libraryViewItems.findIndex(entry => entry.key === key);
+        if (index < 0) return;
+        let target = index;
+        const grid = libraryViewToggle?.dataset.view !== 'list';
+        const firstCard = libraryItemsElement.querySelector('[data-ma-item-key]');
+        const columns = grid && firstCard
+            ? Math.max(1, Math.floor(libraryItemsElement.clientWidth / Math.max(180, firstCard.getBoundingClientRect().width)))
+            : 1;
+
+        if (event.key === 'ArrowLeft') target = index - 1;
+        else if (event.key === 'ArrowRight') target = index + 1;
+        else if (event.key === 'ArrowUp') target = index - columns;
+        else if (event.key === 'ArrowDown') target = index + columns;
+        else if (event.key === 'Home') target = 0;
+        else if (event.key === 'End') target = libraryViewItems.length - 1;
+        else return;
+
+        event.preventDefault();
+        target = Math.max(0, Math.min(libraryViewItems.length - 1, target));
+        libraryFocusedKey = libraryViewItems[target]?.key || key;
+        updateLibraryRovingTabIndex();
+        const targetCard = [...libraryItemsElement.querySelectorAll('[data-ma-item-key]')]
+            .find(card => card.dataset.maItemKey === libraryFocusedKey);
+        targetCard?.focus();
+        targetCard?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
+    function updateLibrarySelectionSummary() {
+        if (typeof librarySelectedCountElement === 'undefined' || !librarySelectedCountElement) return;
+        const stats = selectionStatistics();
+        librarySelectedCountElement.textContent = String(stats.selected);
+        libraryEligibleCountElement.textContent = String(stats.eligible);
+        libraryVisibleCountElement.textContent = String(libraryViewItems.length);
+        libraryArchiveButton.disabled = stats.selected === 0 || running || packing || scanning;
+    }
+
+    function setLibraryMessage(message, error = false) {
+        if (!libraryMessageElement) return;
+        libraryMessageElement.textContent = message || '';
+        libraryMessageElement.classList.toggle('ma-error-text', Boolean(error));
+        libraryMessageElement.hidden = !message;
+    }
+
+    function focusableIn(element) {
+        return [...element.querySelectorAll(
+            'button:not(:disabled), input:not(:disabled), select:not(:disabled), details summary, [tabindex]:not([tabindex="-1"])'
+        )].filter(node => !node.hidden && node.offsetParent !== null);
+    }
+
+    function handleLibraryDialogKeydown(event) {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeLibrary();
+            return;
+        }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+            event.preventDefault();
+            selectionStore.selectAllVisible(currentLibraryViewForSelection());
+            selectionStore.syncItems([...mediaEntries.values()]);
+            updateAllLibraryCardStates();
+            return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusable = focusableIn(libraryDialogElement);
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
+
+    function openLibrary() {
+        if (!libraryOverlay) return;
+        libraryPreviouslyFocused = document.activeElement;
+        libraryIsOpen = true;
+        setLibraryMessage('');
+        libraryOverlay.hidden = false;
+        document.documentElement.classList.add('ma-library-open');
+        panel.setAttribute('inert', '');
+        try {
+            if (workflowState.phase === globalThis.MediaArchiverWorkflowState.phases.REVIEW_READY) {
+                workflowState.transition(globalThis.MediaArchiverWorkflowState.phases.REVIEWING);
+            }
+        } catch {
+            // State reporting must not block the dialog.
+        }
+        renderLibrary();
+        requestAnimationFrame(() => librarySearchInput?.focus());
+    }
+
+    function closeLibrary() {
+        if (!libraryOverlay || libraryOverlay.hidden) return;
+        libraryOverlay.hidden = true;
+        libraryIsOpen = false;
+        document.documentElement.classList.remove('ma-library-open');
+        panel.removeAttribute('inert');
+        try {
+            if (workflowState.phase === globalThis.MediaArchiverWorkflowState.phases.REVIEWING) {
+                workflowState.transition(globalThis.MediaArchiverWorkflowState.phases.REVIEW_READY);
+            }
+        } catch {
+            // State reporting must not block dialog closing.
+        }
+        libraryPreviouslyFocused?.focus?.();
+    }
+
+    function selectAllVisibleLibrary() {
+        selectionStore.selectAllVisible(currentLibraryViewForSelection());
+        selectionStore.syncItems([...mediaEntries.values()]);
+        updateAllLibraryCardStates();
+    }
+
+    function selectAllEligibleLibrary() {
+        selectionStore.selectAllEligible(eligibleMediaEntries());
+        selectionStore.syncItems([...mediaEntries.values()]);
+        updateAllLibraryCardStates();
+    }
+
+    function selectNoneLibrary() {
+        selectionStore.selectNone();
+        selectionStore.syncItems([...mediaEntries.values()]);
+        updateAllLibraryCardStates();
+    }
+
+    function invertVisibleLibrary() {
+        selectionStore.invertVisible(currentLibraryViewForSelection());
+        selectionStore.syncItems([...mediaEntries.values()]);
+        updateAllLibraryCardStates();
+    }
+
+    function toggleLibraryView() {
+        const next = libraryViewToggle.dataset.view === 'list' ? 'grid' : 'list';
+        libraryViewToggle.dataset.view = next;
+        libraryViewToggle.textContent = next === 'grid' ? 'List view' : 'Grid view';
+        libraryViewToggle.setAttribute('aria-pressed', String(next === 'list'));
+        renderLibrary();
+    }
+
+    function visibleActivityText() {
+        return [...logArea.querySelectorAll('.ma-log-line')]
+            .map(line => line.textContent)
+            .join('\n');
+    }
+
+    async function copyActivity() {
+        try {
+            await runtime.copyText(visibleActivityText());
+            setLibraryMessage('Activity copied.');
+        } catch (error) {
+            diagnostics.error(
+                'RUNTIME_CLIPBOARD_FAILED',
+                'Copying Activity failed.',
+                error,
+                {},
+                { category: 'runtime', userMessage: 'Copy failed. The Activity text remains selectable.' }
+            );
+            addLog('Copy failed. The Activity text remains selectable. Code: RUNTIME_CLIPBOARD_FAILED', 'error');
+        }
+    }
+
+    function developerReportMarkdown() {
+        return diagnostics.exportMarkdown({
+            environment: runtime.getPlatformInfo(),
+            configuration: {
+                scanMode: scanDirectionSelect.value,
+                dateRange: getDateRangeConfig().label,
+                enabledContentTypes: [
+                    photoCheckbox.checked ? 'photos' : '',
+                    videoCheckbox.checked ? 'videos' : '',
+                    externalGifCheckbox.checked ? 'rendered GIF previews' : ''
+                ].filter(Boolean),
+                finalPosition: finalPositionSelect.value,
+                afterScanMode: getAfterScanMode(),
+                namingPreset: currentNamingSettings().preset,
+                zipEngine: resolveFflateLibrary() ? 'fflate' : 'built-in'
+            },
+            metrics: liveMetrics.snapshot()
+        });
+    }
+
+    async function copyDeveloperReport() {
+        const report = developerReportMarkdown();
+        try {
+            await runtime.copyText(report);
+            developerReportText.value = report;
+            developerReportText.select();
+        } catch (error) {
+            developerReportText.value = report;
+            developerReportText.select();
+            diagnostics.error(
+                'RUNTIME_CLIPBOARD_FAILED',
+                'Copying the developer report failed.',
+                error,
+                {},
+                { category: 'runtime', userMessage: 'Copy failed. The sanitized report is selected for manual copying.' }
+            );
+        }
+    }
+
+    async function downloadDeveloperReport() {
+        const report = developerReportMarkdown();
+        const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+        try {
+            await runtime.saveBlob(
+                new Blob([report], { type: 'text/markdown;charset=utf-8' }),
+                `media-archiver-diagnostics_${stamp}.md`
+            );
+        } catch (error) {
+            addLog('Diagnostic report could not be saved. Keep the report open and copy it manually. Code: RUNTIME_SAVE_FAILED', 'error');
+        }
+    }
+
+    function renderDeveloperLogs() {
+        const levels = [...developerLevelFilters]
+            .filter(input => input.checked)
+            .map(input => input.value);
+        const categories = [...developerCategoryFilters]
+            .filter(input => input.checked)
+            .map(input => input.value);
+        const events = diagnostics.events({
+            levels,
+            categories,
+            query: developerSearchInput.value
+        });
+        const fragment = document.createDocumentFragment();
+        for (const event of events) {
+            const details = document.createElement('details');
+            details.className = `ma-developer-event ma-developer-${event.level}`;
+            const summary = document.createElement('summary');
+            summary.textContent = `${event.timestamp.slice(11, 23)}  ${event.level.toUpperCase()}  ${event.category.toUpperCase()}  ${event.code}`;
+            const message = document.createElement('div');
+            message.textContent = event.userMessage || event.message;
+            const context = document.createElement('pre');
+            context.textContent = JSON.stringify({ context: event.context, error: event.error }, null, 2);
+            details.append(summary, message, context);
+            fragment.appendChild(details);
+        }
+        developerEventList.replaceChildren(fragment);
+        developerReportText.value = developerReportMarkdown();
+    }
+
+    function openDeveloperLogs() {
+        developerLogsOverlay.hidden = false;
+        renderDeveloperLogs();
+        developerSearchInput.focus();
+    }
+
+    function closeDeveloperLogs() {
+        developerLogsOverlay.hidden = true;
+        developerLogsButton.focus();
+    }

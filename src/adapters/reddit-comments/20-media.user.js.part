@@ -1,0 +1,264 @@
+    function redditMediaPathExtension(pathname) {
+        const extension = extensionFromPath(pathname);
+        return extension === '.gifv' ? '.mp4' : extension;
+    }
+
+    function normalizeRedditCommentMediaUrl(rawUrl) {
+        if (!rawUrl) return null;
+        try {
+            const url = new URL(rawUrl, location.href);
+            if (url.protocol !== 'https:' || !redditCommentMediaHostAllowed(url.hostname)) {
+                return null;
+            }
+            if (url.hostname === 'i.imgur.com' && url.pathname.toLowerCase().endsWith('.gifv')) {
+                url.pathname = `${url.pathname.slice(0, -5)}.mp4`;
+            }
+            url.hash = '';
+            return url;
+        } catch {
+            return null;
+        }
+    }
+
+    function redditDirectMediaLinkAllowed(url) {
+        if (!url) return false;
+        const extension = redditMediaPathExtension(url.pathname);
+        if (MEDIA_EXTENSIONS.has(extension) || extension === '.gif') return true;
+        return [
+            'v.redd.it',
+            'packaged-media.redd.it',
+            'reddit-uploaded-media.s3-accelerate.amazonaws.com'
+        ].includes(url.hostname);
+    }
+
+    function redditRenderedMediaCandidates(element) {
+        const candidates = new Map();
+        const add = (rawUrl, score, requireDirect = false) => {
+            const url = normalizeRedditCommentMediaUrl(rawUrl);
+            if (!url || (requireDirect && !redditDirectMediaLinkAllowed(url))) return;
+            const key = `${url.hostname}${url.pathname}`.toLowerCase();
+            const previous = candidates.get(key);
+            if (!previous || score > previous.score) {
+                candidates.set(key, { url: url.href, score });
+            }
+        };
+        const addSrcset = (value, baseScore) => {
+            for (const part of String(value || '').split(',')) {
+                const match = part.trim().match(/^(\S+)(?:\s+(\d+(?:\.\d+)?)(w|x))?$/i);
+                if (!match) continue;
+                const dimension = Number(match[2]) || 0;
+                add(match[1], baseScore + dimension);
+            }
+        };
+
+        add(element.currentSrc, 1_000_000);
+        add(element.src, 900_000);
+        add(element.getAttribute?.('src'), 850_000);
+        add(element.getAttribute?.('data-src'), 820_000);
+        add(element.getAttribute?.('data-original'), 810_000);
+        add(element.getAttribute?.('data-mp4'), 800_000);
+        add(element.getAttribute?.('data-gif'), 790_000);
+        addSrcset(element.getAttribute?.('srcset'), 700_000);
+
+        if (element.tagName?.toUpperCase?.() === 'VIDEO') {
+            for (const source of element.querySelectorAll?.('source[src], source[srcset]') || []) {
+                add(source.src || source.getAttribute('src'), 980_000);
+                addSrcset(source.getAttribute('srcset'), 960_000);
+            }
+        }
+
+        if (element.tagName?.toUpperCase?.() === 'PICTURE') {
+            for (const source of element.querySelectorAll?.('source[src], source[srcset], img[src], img[srcset]') || []) {
+                add(source.currentSrc || source.src || source.getAttribute?.('src'), 950_000);
+                addSrcset(source.getAttribute?.('srcset'), 930_000);
+            }
+        }
+
+        if (element.tagName?.toUpperCase?.() === 'A') {
+            add(element.href || element.getAttribute?.('href'), 880_000, true);
+        } else {
+            const anchor = element.closest?.('a[href]');
+            add(anchor?.href || anchor?.getAttribute?.('href'), 500_000, true);
+        }
+
+        return [...candidates.values()].sort((a, b) => b.score - a.score);
+    }
+
+    function redditMediaType(rawUrl, element) {
+        const url = new URL(rawUrl, location.href);
+        const extension = redditMediaPathExtension(url.pathname);
+        const externalGifProvider = [
+            '.giphy.com',
+            '.tenor.com',
+            '.redgifs.com',
+            '.gfycat.com'
+        ].some(suffix => url.hostname.endsWith(suffix));
+        if (
+            extension === '.gif' ||
+            (externalGifProvider && ['.mp4', '.webm', '.gif', '.webp', ''].includes(extension))
+        ) {
+            return 'external-gif';
+        }
+        if (
+            element.tagName?.toUpperCase?.() === 'VIDEO' ||
+            Boolean(element.closest?.('video')) ||
+            VIDEO_EXTENSIONS.has(extension) ||
+            ['v.redd.it', 'video.twimg.com'].includes(url.hostname)
+        ) {
+            return 'video';
+        }
+        return 'photo';
+    }
+
+    function redditMediaFilename(rawUrl, mediaType, element) {
+        try {
+            const url = new URL(rawUrl, location.href);
+            const raw = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || 'reddit-media');
+            const originalExtension = extensionFromPath(`/${raw}`);
+            const extension = redditMediaPathExtension(`/${raw}`);
+            if (extension) {
+                const stem = originalExtension ? raw.slice(0, -originalExtension.length) : raw;
+                return sanitizeFilename(`${stem}${extension}`);
+            }
+            const fallbackExtension = mediaType === 'video'
+                ? '.mp4'
+                : mediaType === 'external-gif'
+                    ? (element.tagName?.toUpperCase?.() === 'VIDEO' ? '.mp4' : '.gif')
+                    : '.jpg';
+            return sanitizeFilename(`${raw || 'reddit-media'}${fallbackExtension}`);
+        } catch {
+            if (mediaType === 'video') return 'reddit-video.mp4';
+            if (mediaType === 'external-gif') return 'reddit-gif.gif';
+            return 'reddit-image.jpg';
+        }
+    }
+
+    function addOrUpdateRedditCommentMedia(element) {
+        const comment = redditCommentNode(element);
+        const commentId = redditCommentId(comment);
+        if (!commentId) return false;
+        const candidate = redditRenderedMediaCandidates(element)[0];
+        if (!candidate) return false;
+
+        const url = new URL(candidate.url, location.href);
+        const canonicalPath = `${url.hostname}${url.pathname}`.toLowerCase();
+        const key = `reddit-media:${canonicalPath}`;
+        const existing = mediaEntries.get(key);
+        const mediaType = redditMediaType(candidate.url, element);
+        const previewUrl = element.currentSrc || element.src || candidate.url;
+        const permalink = redditCommentPermalink(comment);
+
+        if (existing) {
+            recordCanonicalDuplicate(existing, 'reddit-comment-media-duplicate');
+            existing.url = candidate.url;
+            existing.previewUrl = previewUrl || existing.previewUrl;
+            existing.payload.url = existing.url;
+            existing.payload.previewUrl = existing.previewUrl;
+            existing.payload.commentIds = [...new Set([
+                ...(existing.payload.commentIds || []),
+                commentId
+            ])];
+            existing.payload.commentPermalinks = [...new Set([
+                ...(existing.payload.commentPermalinks || []),
+                ...(permalink ? [permalink] : [])
+            ])];
+            return false;
+        }
+
+        const filename = redditMediaFilename(candidate.url, mediaType, element);
+        const timestamp = redditCommentTimestamp(comment);
+        const sourceKind = mediaType === 'video'
+            ? 'reddit-comment-video'
+            : mediaType === 'external-gif'
+                ? 'reddit-comment-external-gif'
+                : 'reddit-comment-photo';
+        const item = {
+            key,
+            kind: 'media',
+            adapterId: 'reddit-comments',
+            canonical: true,
+            canonicalKey: key,
+            duplicateCount: 0,
+            eligibility: { adapter: true, type: true, date: true },
+            manuallySelected: true,
+            sourceId: `${commentId}:${canonicalPath}`,
+            parentSourceId: commentId,
+            itemId: commentId,
+            timestamp,
+            firstSeen: firstSeenCounter++,
+            discoveryIndex: firstSeenCounter - 1,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0,
+            filename,
+            mediaType,
+            sourceKind,
+            sourcePageUrl: permalink,
+            url: candidate.url,
+            previewUrl,
+            payload: {
+                url: candidate.url,
+                previewUrl,
+                filename,
+                originalFilename: filename,
+                mediaType,
+                sourceKind,
+                sourcePageUrl: permalink,
+                itemId: commentId,
+                commentIds: [commentId],
+                commentPermalinks: permalink ? [permalink] : [],
+                externalHost: url.hostname,
+                sourceLabel: activeSiteAdapter?.getArchiveContext?.().label || 'reddit-comment-media'
+            }
+        };
+        mediaEntries.set(key, item);
+        ensureSelectionForEntries([item]);
+        liveMetrics.record('found', 1);
+        scheduleRender();
+        return true;
+    }
+
+    function redditCommentMediaElements(comment) {
+        const body = redditCommentBodyNode(comment) || comment;
+        const elements = new Set();
+        for (const element of body.querySelectorAll?.([
+            'img[src]',
+            'img[srcset]',
+            'picture',
+            'video[src]',
+            'video source[src]',
+            'video source[srcset]',
+            'a[href]'
+        ].join(',')) || []) {
+            if (element.tagName?.toUpperCase?.() === 'SOURCE') {
+                const parent = element.closest('video, picture');
+                if (parent) elements.add(parent);
+            } else {
+                elements.add(element);
+            }
+        }
+        return [...elements];
+    }
+
+    function scanRedditRenderedCommentMedia() {
+        let added = 0;
+        for (const comment of redditCommentElements()) {
+            for (const element of redditCommentMediaElements(comment)) {
+                if (addOrUpdateRedditCommentMedia(element)) added++;
+            }
+        }
+        return added;
+    }
+
+    function scanRedditRenderedThread() {
+        const added = scanRedditRenderedCommentMedia();
+        liveMetrics.update({
+            found: mediaEntries.size,
+            duplicatesMerged: [...mediaEntries.values()]
+                .filter(entry => entry.adapterId === 'reddit-comments')
+                .reduce((sum, entry) => sum + (entry.duplicateCount || 0), 0)
+        });
+        updateCounters();
+        return added;
+    }
+

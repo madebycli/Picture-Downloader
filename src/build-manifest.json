@@ -1,20 +1,45 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "output": "media-archiver.user.js",
+  "runtimeConnect": [
+    "www.virustotal.com",
+    "*.virustotal.com"
+  ],
   "beforeAdapters": [
-    "src/core/00-bootstrap.user.js.part"
+    "src/core/00-bootstrap.user.js.part",
+    "src/shared/runtime-contract.user.js.part",
+    "src/shared/domain.user.js.part",
+    "src/shared/workflow-state.user.js.part",
+    "src/shared/selection-store.user.js.part",
+    "src/shared/naming-service.user.js.part",
+    "src/shared/generated-document-naming.user.js.part",
+    "src/shared/comment-export.user.js.part",
+    "src/shared/diagnostics-metrics.user.js.part",
+    "src/shared/virustotal-service.user.js.part",
+    "src/core/08-shared-services.user.js.part",
+    "src/core/09-userscript-runtime.user.js.part"
   ],
   "afterAdapters": [
     "src/core/10-activate-adapter.user.js.part",
     "src/core/20-selection.user.js.part",
+    "src/core/21-general-item-eligibility.user.js.part",
     "src/core/30-scanner-position.user.js.part",
     "src/core/31-scanner-boundaries.user.js.part",
     "src/core/40-download-manifest.user.js.part",
     "src/core/41-zip-engine.user.js.part",
     "src/core/42-archive-workflow.user.js.part",
     "src/core/50-workflow.user.js.part",
+    "src/core/55-library-controller.user.js.part",
     "src/core/60-ui-markup.user.js.part",
+    "src/core/60-library-markup.user.js.part",
+    "src/core/60-library-elements.user.js.part",
     "src/core/61-ui-style.user.js.part",
-    "src/core/62-ui-bindings.user.js.part"
+    "src/core/61-library-style.user.js.part",
+    "src/core/62-ui-bindings.user.js.part",
+    "src/core/63-library-bindings.user.js.part",
+    "src/core/64-capability-bindings.user.js.part",
+    "src/core/65-virustotal-ui.user.js.part",
+    "src/core/66-virustotal-archive-gate.user.js.part",
+    "src/core/99-close.user.js.part"
   ]
 }

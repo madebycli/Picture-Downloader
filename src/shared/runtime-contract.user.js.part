@@ -1,0 +1,70 @@
+    (() => {
+        const REQUIRED_METHODS = Object.freeze([
+            'fetchBinary',
+            'requestExternal',
+            'abortRequest',
+            'abortAllRequests',
+            'saveBlob',
+            'copyText',
+            'getSetting',
+            'setSetting',
+            'getPlatformInfo',
+            'openUi',
+            'closeUi'
+        ]);
+
+        function assertRuntime(runtime) {
+            if (!runtime || typeof runtime !== 'object') {
+                throw new TypeError('A runtime implementation object is required.');
+            }
+
+            for (const method of REQUIRED_METHODS) {
+                if (typeof runtime[method] !== 'function') {
+                    throw new TypeError(`Runtime is missing ${method}().`);
+                }
+            }
+
+            return runtime;
+        }
+
+        function createRuntimeFacade(implementation) {
+            const runtime = assertRuntime(implementation);
+            const facade = {};
+
+            for (const method of REQUIRED_METHODS) {
+                facade[method] = (...args) => runtime[method](...args);
+            }
+
+            return Object.freeze(facade);
+        }
+
+        function createMemorySettings(initialValues = {}) {
+            const values = new Map(Object.entries(initialValues));
+            return Object.freeze({
+                async getSetting(key, fallback) {
+                    return values.has(key) ? values.get(key) : fallback;
+                },
+                async setSetting(key, value) {
+                    values.set(key, value);
+                    return value;
+                },
+                snapshot() {
+                    return Object.fromEntries(values);
+                }
+            });
+        }
+
+        const api = Object.freeze({
+            REQUIRED_METHODS,
+            assertRuntime,
+            createRuntimeFacade,
+            createMemorySettings
+        });
+
+        Object.defineProperty(globalThis, 'MediaArchiverRuntimeContract', {
+            value: api,
+            configurable: true,
+            writable: false
+        });
+    })();
+

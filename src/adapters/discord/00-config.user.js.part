@@ -12,6 +12,20 @@
             id: 'discord',
             label: 'Discord',
             archivePrefix: 'discord',
+            capabilities: {
+                media: true,
+                textRecords: false,
+                virtualTimeline: true,
+                dateFilter: true,
+                hostPageSelection: false,
+                scanModes: [
+                    'newest-to-oldest',
+                    'current-to-oldest',
+                    'current-to-newest',
+                    'full-finish-down'
+                ],
+                views: ['grid', 'list']
+            },
             terms: Object.freeze({
                 timeline: 'channel or thread',
                 item: 'message',

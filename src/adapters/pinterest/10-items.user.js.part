@@ -1,0 +1,96 @@
+    function addOrUpdatePinterestMedia(element) {
+        const mediaUrl = pinterestBestRenderedUrl(element);
+        if (!mediaUrl) return false;
+
+        const pinId = pinterestPinId(element);
+        const key = pinterestCanonicalMediaKey(mediaUrl, pinId);
+        const existing = mediaEntries.get(key);
+        const isVideo = element.tagName?.toUpperCase?.() === 'VIDEO' ||
+            Boolean(element.closest?.('video')) ||
+            VIDEO_EXTENSIONS.has(extensionFromPath(new URL(mediaUrl).pathname));
+
+        if (existing) {
+            recordCanonicalDuplicate(existing, 'pinterest-masonry-rerender');
+            existing.previewUrl = element.currentSrc || element.src || existing.previewUrl;
+            existing.payload.previewUrl = existing.previewUrl;
+            return false;
+        }
+
+        const filename = pinterestFilename(mediaUrl);
+        const item = {
+            key,
+            kind: 'media',
+            adapterId: 'pinterest',
+            canonical: true,
+            canonicalKey: key,
+            duplicateCount: 0,
+            eligibility: { adapter: true, type: true, date: true },
+            manuallySelected: true,
+            url: mediaUrl,
+            previewUrl: element.currentSrc || element.src || mediaUrl,
+            filename,
+            mediaType: isVideo ? 'video' : 'photo',
+            sourceKind: 'pinterest-rendered-media',
+            sourcePageUrl: pinId ? `${location.origin}/pin/${pinId}/` : null,
+            itemId: pinId,
+            sourceId: pinId,
+            timestamp: null,
+            firstSeen: firstSeenCounter++,
+            discoveryIndex: firstSeenCounter - 1,
+            status: STATUS.COLLECTED,
+            error: '',
+            size: 0,
+            payload: {
+                url: mediaUrl,
+                previewUrl: element.currentSrc || element.src || mediaUrl,
+                filename,
+                originalFilename: filename,
+                mediaType: isVideo ? 'video' : 'photo',
+                sourceKind: 'pinterest-rendered-media',
+                sourcePageUrl: pinId ? `${location.origin}/pin/${pinId}/` : null,
+                itemId: pinId,
+                sourceLabel: pinterestPageType() || 'pins'
+            }
+        };
+
+        mediaEntries.set(key, item);
+        ensureSelectionForEntries([item]);
+        liveMetrics.record('found', 1);
+        scheduleRender();
+        return true;
+    }
+
+    function scanPinterestVisibleMedia() {
+        let added = 0;
+        const elements = document.querySelectorAll([
+            'img[src*="pinimg.com"]',
+            'img[srcset*="pinimg.com"]',
+            'picture source[srcset*="pinimg.com"]',
+            'video[src*="pinimg.com"]',
+            'video source[src*="pinimg.com"]'
+        ].join(','));
+
+        const mediaElements = new Set();
+        for (const element of elements) {
+            if (element.tagName?.toUpperCase?.() === 'SOURCE') {
+                const owner = element.closest('picture')?.querySelector('img') || element.closest('video');
+                if (owner) mediaElements.add(owner);
+            } else {
+                mediaElements.add(element);
+            }
+        }
+
+        for (const element of mediaElements) {
+            const rect = element.getBoundingClientRect?.();
+            if (rect && (rect.width <= 1 || rect.height <= 1)) continue;
+            if (addOrUpdatePinterestMedia(element)) added++;
+        }
+
+        const duplicatesMerged = [...mediaEntries.values()]
+            .filter(entry => entry.adapterId === 'pinterest')
+            .reduce((sum, entry) => sum + (entry.duplicateCount || 0), 0);
+        liveMetrics.update({ found: mediaEntries.size, duplicatesMerged });
+        updateCounters();
+        return added;
+    }
+

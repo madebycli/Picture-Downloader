@@ -1,242 +1,239 @@
 # Complete roadmap requirements checklist
 
-Status: authoritative scope checklist for the next implementation agent  
-Created: 2026-08-05
+Status date: 2026-08-05  
+Implementation branch: `feature/extension-pinterest-reddit-picker`
 
-This document verifies that all product requests collected during the planning conversation are represented in the repository. The next implementation agent must use it as a completeness gate together with:
+Status vocabulary:
 
-- [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md)
-- [`NAMING_SYSTEM.md`](./NAMING_SYSTEM.md)
-- [`DIAGNOSTICS_AND_LIVE_STATS.md`](./DIAGNOSTICS_AND_LIVE_STATS.md)
-- [`CURRENT_STATE_AUDIT.md`](./CURRENT_STATE_AUDIT.md)
-- [`AI_HANDOFF_PROMPT.md`](./AI_HANDOFF_PROMPT.md)
+- **Implemented** — production source exists.
+- **Tested automatically** — repository or Playwright test/CI gate exists.
+- **Tested manually** — an interactive real-browser check was actually performed.
+- **Deferred with reason** — intentionally postponed with a documented reason.
+- **Out of scope with approval** — explicitly excluded by the approved scope.
+- **Blocked with evidence** — required manual/live check cannot run in the current execution environment.
 
-A roadmap item is not complete merely because UI exists. It is complete only after shared implementation, automated tests, cross-runtime behavior, documentation, and required manual browser checks exist.
+No requirement is silently omitted.
 
 ## 1. Product and distribution
 
-- [ ] Product remains site-neutral and named **Media Archiver**.
-- [ ] Site names appear only as active-adapter context, never in the product title.
-- [ ] One shared source tree produces three first-class outputs:
-  - [ ] universal userscript;
-  - [ ] Chromium extension;
-  - [ ] Firefox extension.
-- [ ] The userscript remains supported and installable after extension work begins.
-- [ ] All three targets share domain, adapter, selection, naming, diagnostics, archive, and UI logic.
-- [ ] Runtime-specific APIs are isolated behind runtime contracts.
-- [ ] Extension packages contain no remote executable JavaScript.
-- [ ] Build artifacts are reproducible and uploaded by CI.
+- [x] Product remains site-neutral and named **Media Archiver** — **Implemented · Tested automatically**.
+- [x] Site names appear only as active-adapter context — **Implemented · Tested automatically**.
+- [x] One shared source tree produces a universal userscript — **Implemented · Tested automatically**.
+- [x] One shared source tree produces a Chromium extension — **Implemented · Tested automatically**.
+- [x] One shared source tree produces a Firefox extension — **Implemented · Tested automatically**.
+- [x] Userscript remains supported/installable after extension work — **Implemented · Tested automatically**.
+- [x] All targets share domain, adapter, selection, naming, diagnostics, archive, and UI logic — **Implemented · Tested automatically**.
+- [x] Runtime-specific APIs are isolated behind runtime contracts — **Implemented · Tested automatically**.
+- [x] Extension packages contain no remote executable JavaScript — **Implemented · Tested automatically**.
+- [x] Build artifacts are reproducible and uploaded by CI — **Implemented · Tested automatically**.
 
 ## 2. Existing behavior that must remain stable
 
-- [ ] Discord remains fully supported through an isolated adapter.
-- [ ] Photos and native GIF attachments remain supported.
-- [ ] Discord-hosted videos retain broad container support.
-- [ ] Rendered external GIF previews remain separately selectable.
-- [ ] Original/high-quality rendered media URLs remain preferred over thumbnails.
-- [ ] Current scan-direction options remain available where an adapter supports them.
-- [ ] Scans wait before declaring asynchronous virtual-timeline boundaries complete.
-- [ ] Date ranges support From date through latest and fixed inclusive ranges.
-- [ ] Final page position can remain at scan end, return to start, or jump to timeline end.
-- [ ] ZIP splitting and the built-in Firefox-safe ZIP fallback remain supported.
-- [ ] Disabled, filtered, or manually deselected items never enter archives.
-- [ ] Changelog/release-note content never appears in runtime UI.
+- [x] Discord remains fully supported through an isolated adapter — **Implemented · Tested automatically**; real private-channel regression — **Blocked with evidence**.
+- [x] Photos and native GIF attachments remain supported — **Implemented · Tested automatically**.
+- [x] Discord-hosted videos retain broad container support — **Implemented · Tested automatically**.
+- [x] Rendered external GIF previews remain separately selectable — **Implemented · Tested automatically**.
+- [x] Original/high-quality rendered media URLs remain preferred — **Implemented · Tested automatically**.
+- [x] Current scan-direction options remain available where supported — **Implemented · Tested automatically**.
+- [x] Scans wait before confirming asynchronous boundaries — **Implemented · Tested automatically**.
+- [x] Date ranges support From-through-latest and fixed inclusive ranges — **Implemented · Tested automatically**.
+- [x] Final page position supports scan end, start, and timeline end — **Implemented · Tested automatically**.
+- [x] ZIP splitting and built-in Firefox-safe fallback remain — **Implemented · Tested automatically**; live blocked-CDN browser check — **Blocked with evidence**.
+- [x] Disabled, filtered, or manually deselected items never enter archives — **Implemented · Tested automatically**.
+- [x] Changelog/release notes never appear in runtime UI — **Implemented · Tested automatically**.
 
 ## 3. Shared runtime architecture
 
-- [ ] Shared modules have no direct `GM_*`, `chrome.*`, or `browser.*` calls.
-- [ ] Runtime contract covers binary fetch, cancellation, blob saving, clipboard, settings, platform information, and UI opening.
-- [ ] Userscript runtime uses Tampermonkey APIs only inside its bridge.
-- [ ] Chromium runtime uses content/background messaging and generated permissions.
-- [ ] Firefox runtime uses compatible content/background messaging and generated permissions.
-- [ ] A large-transfer spike covers at least one 50 MB video and 300 MB combined media.
-- [ ] Cancellation and memory behavior are documented for Firefox and Chromium.
-- [ ] Host permissions are generated from adapter manifests and validated again at runtime.
+- [x] Shared modules have no direct `GM_*`, `chrome.*`, or `browser.*` calls — **Implemented · Tested automatically**.
+- [x] Runtime contract covers fetch, cancellation, save, clipboard, settings, platform, and UI — **Implemented · Tested automatically**.
+- [x] Userscript runtime contains Tampermonkey APIs only in its bridge — **Implemented · Tested automatically**.
+- [x] Chromium uses content/background messaging and generated permissions — **Implemented · Tested automatically**.
+- [x] Firefox uses compatible content/background messaging and generated permissions — **Implemented · Tested automatically**.
+- [ ] One >50 MB video transport spike — **Blocked with evidence**: no interactive authenticated source/packaged-extension browser environment in this session.
+- [ ] >=300 MB combined-media spike — **Blocked with evidence**: same environment limitation.
+- [ ] Cancellation and memory behavior documented from real Firefox/Chromium runs — **Blocked with evidence**; cancellation paths are **Implemented · Tested automatically**, real memory measurements are not claimed.
+- [x] Host permissions are generated and validated again at runtime — **Implemented · Tested automatically**.
 
 ## 4. Adapter model and future expansion
 
-- [ ] Adapters own page matching, selectors, ID/timestamp rules, URL normalization, timeline discovery, source labels, and allowed hosts.
-- [ ] Shared/core code contains no Discord-, Pinterest-, or Reddit-specific selectors or hosts.
-- [ ] Adapter capabilities control which UI options are visible.
-- [ ] Adding another website requires a documented adapter contract, not edits scattered through shared code.
-- [ ] Unsupported pages inject no interface.
+- [x] Adapters own matches, selectors, IDs/timestamps, URLs, timelines, labels, and hosts — **Implemented · Tested automatically**.
+- [x] Shared/core contains no Discord/Pinterest/Reddit selectors or hosts — **Implemented · Tested automatically**.
+- [x] Adapter capabilities control meaningful UI options — **Implemented · Tested automatically**.
+- [x] New websites use a documented adapter contract — **Implemented · Documented**.
+- [x] Unsupported pages inject no interface — **Implemented · Tested automatically**.
 
 ## 5. Pinterest
 
-Initial deterministic scope:
-
-- [ ] Pin-detail pages.
-- [ ] Boards.
-- [ ] Visible profile-created/profile-saved grids.
-- [ ] Search-result grids.
-- [ ] Personalized home feed remains out of initial scope until deterministic surfaces pass regression testing.
-- [ ] Adapter collects only rendered image/video sources.
-- [ ] Highest actually rendered source is selected without inventing URLs.
-- [ ] Masonry and virtual re-rendering do not create duplicates.
-- [ ] Date controls are hidden/disabled when reliable rendered timestamps do not exist.
-- [ ] No private Pinterest API enumeration.
-- [ ] Minimal Pinterest media-host allowlist.
-- [ ] Fixture and live-browser regression checks.
+- [x] Pin-detail pages — **Implemented · Tested automatically**.
+- [x] Boards — **Implemented · Tested automatically**.
+- [x] Visible profile-created/profile-saved grids — **Implemented · Tested automatically**.
+- [x] Search-result grids — **Implemented · Tested automatically**.
+- [x] Personalized home feed excluded initially — **Out of scope with approval · Tested automatically**.
+- [x] Collect only rendered image/video sources — **Implemented · Tested automatically**.
+- [x] Select highest actually rendered source without inventing URLs — **Implemented · Tested automatically**.
+- [x] Masonry/virtual re-rendering does not create duplicate archive items — **Implemented · Tested automatically**.
+- [x] Date controls hidden when reliable rendered timestamps do not exist — **Implemented · Tested automatically**.
+- [x] No private Pinterest API enumeration — **Implemented · Tested automatically**.
+- [x] Minimal Pinterest media-host allowlist — **Implemented · Tested automatically**.
+- [x] Fixture regression checks — **Tested automatically**.
+- [ ] Live Pinterest browser regression — **Blocked with evidence**: no authenticated/private live Pinterest browsing session available.
 
 ## 6. Reddit comments
 
-- [ ] Adapter activates only on post-detail/comment-thread pages.
-- [ ] It explicitly rejects Home, Popular, subreddit feeds, search feeds, recommendations, and For You surfaces.
-- [ ] It collects rendered comments only.
-- [ ] Comment records include ID, parent ID, depth, rendered author, plain body, optional sanitized HTML, timestamp, visible score text, and permalink where safely available.
-- [ ] Nested hierarchy is preserved.
-- [ ] Deleted, collapsed, edited, and unavailable comments do not crash export.
-- [ ] Rendered comment media becomes independently selectable media items.
-- [ ] Selected comments export as `comments.json`, `comments.md`, and `comments.csv`.
-- [ ] Only manually selected comments are exported.
-- [ ] Optional reply expansion, if ever added, is an explicit safe DOM action.
-- [ ] No voting, posting, joining, following, reacting, or authenticated API enumeration.
+- [x] Adapter activates only on post-detail/comment-thread pages — **Implemented · Tested automatically**.
+- [x] Home, Popular, subreddit/search feeds, recommendations, and For You are rejected — **Implemented · Tested automatically**.
+- [x] Collect rendered comments only — **Implemented · Tested automatically**.
+- [x] Records include ID, parent, depth, author, plain body, sanitized HTML, timestamp, score, permalink — **Implemented · Tested automatically**.
+- [x] Nested hierarchy preserved — **Implemented · Tested automatically**.
+- [x] Deleted, collapsed, edited, unavailable comments remain robust — **Implemented · Tested automatically**.
+- [x] Rendered comment media is independently selectable — **Implemented · Tested automatically**.
+- [x] Selected comments export as `comments.json`, `comments.md`, and `comments.csv` — **Implemented · Tested automatically**.
+- [x] Only manually selected comments are exported — **Implemented · Tested automatically**.
+- [x] Reply expansion is not automated — **Out of scope with approval**; future explicit safe DOM action only.
+- [x] No voting, posting, joining, following, reacting, or authenticated enumeration — **Implemented · Tested automatically**.
+- [ ] Live Reddit browser regression — **Blocked with evidence**: no authenticated/private live thread environment available.
 
 ## 7. Manual file-manager selection
 
-- [ ] Eligibility/filtering and manual selection are separate state concepts.
-- [ ] Eligible entries start selected to preserve existing output behavior.
-- [ ] Plain card click selects only that item and sets the range anchor.
-- [ ] Checkbox/checkmark toggles one item without clearing others.
-- [ ] Ctrl+click on Windows/Linux toggles additively.
-- [ ] Cmd+click on macOS toggles additively.
-- [ ] Shift+click selects a contiguous range.
-- [ ] Ctrl/Cmd+Shift+click adds a contiguous range.
-- [ ] Ctrl/Cmd+A selects all eligible items in the current view.
-- [ ] Space toggles the focused item.
-- [ ] Escape closes the library modal.
-- [ ] Arrow keys move focus predictably.
-- [ ] Alt is not used for range selection.
-- [ ] Filter changes do not silently erase explicit selection.
-- [ ] Shift ranges follow current visible sort/filter order.
-- [ ] Final archive input is exactly `eligible && manuallySelected`.
+- [x] Eligibility/filtering and manual selection are separate — **Implemented · Tested automatically**.
+- [x] Eligible canonical entries start selected — **Implemented · Tested automatically**.
+- [x] Plain card click selects only the item and sets anchor — **Implemented · Tested automatically**.
+- [x] Checkmark toggles without clearing others — **Implemented · Tested automatically**.
+- [x] Ctrl+click toggles additively — **Implemented · Tested automatically**.
+- [x] Cmd+click toggles additively — **Implemented · Tested automatically**.
+- [x] Shift+click selects contiguous range — **Implemented · Tested automatically**.
+- [x] Ctrl/Cmd+Shift adds a contiguous range — **Implemented · Tested automatically**.
+- [x] Ctrl/Cmd+A selects eligible current-view items — **Implemented · Tested automatically**.
+- [x] Space toggles focused item — **Implemented · Tested automatically**.
+- [x] Escape closes Library — **Implemented · Tested automatically**.
+- [x] Arrow keys move focus — **Implemented · Tested automatically**.
+- [x] Alt is not used for ranges — **Implemented · Tested automatically**.
+- [x] Filter changes preserve explicit selection — **Implemented · Tested automatically**.
+- [x] Shift ranges follow current visible order — **Implemented · Tested automatically**.
+- [x] Final archive input is canonical/eligible/manual selection — **Implemented · Tested automatically**.
 
 ## 8. Library UI
 
-- [ ] Compact floating launcher/status remains available.
-- [ ] Large centered modal opens for review and selection.
-- [ ] Grid and list modes.
-- [ ] Search, sorting, type/source/date/status filters.
-- [ ] Select all visible, select all eligible, none, and invert.
-- [ ] Fixed selected count and archive-selected action.
-- [ ] Selected cards use a red ring, translucent overlay, check badge, short lift/glow animation, and a non-color cue.
-- [ ] `prefers-reduced-motion` disables/reduces animation.
-- [ ] Selection highlighting exists only inside Media Archiver, not directly on supported websites.
-- [ ] Focus trap, ARIA dialog semantics, visible focus, and keyboard operation.
-- [ ] At least 2,000 synthetic items remain usable.
-- [ ] One selection toggle does not rebuild the entire library.
-- [ ] Thumbnail and video-preview resource usage remains bounded.
-- [ ] UI stays clean and user-first; advanced controls use progressive disclosure.
+- [x] Compact launcher/status remains — **Implemented · Tested automatically**.
+- [x] Near-fullscreen centered review Library — **Implemented · Tested automatically**.
+- [x] Grid and list modes — **Implemented · Tested automatically**.
+- [x] Search, sorting, type/source/date/status filtering — **Implemented · Tested automatically**.
+- [x] Select all visible, all eligible, none, invert — **Implemented · Tested automatically**.
+- [x] Fixed selection summary and Archive selected — **Implemented · Tested automatically**.
+- [x] Red ring, overlay, check badge, animation, and non-color cue — **Implemented · Tested automatically**.
+- [x] `prefers-reduced-motion` reduces/disables animation — **Implemented · Tested automatically**.
+- [x] Selection highlighting exists only inside Media Archiver — **Implemented · Tested automatically**.
+- [x] Focus trap, ARIA dialog, visible focus, keyboard operation — **Implemented · Tested automatically**.
+- [x] 2,000 synthetic items remain selectable — **Tested automatically**.
+- [x] One toggle does not rebuild the Library — **Implemented · Tested automatically**.
+- [x] Thumbnail/video-preview use is bounded — **Implemented · Tested automatically**.
+- [x] Progressive disclosure keeps advanced naming/log controls out of normal flow — **Implemented · Tested automatically**.
+- [x] Closing/cancelling Review starts no request — **Implemented · Tested automatically**.
+- [x] Stopped scan can review the partial collection — **Implemented · Tested automatically**.
 
 ## 9. Collision-safe naming
 
-Authoritative detail: [`NAMING_SYSTEM.md`](./NAMING_SYSTEM.md).
-
-- [ ] Final names are planned for the complete final selection before downloads begin.
-- [ ] One immutable naming map is reused for previews, retries, downloads, manifests, and every ZIP part.
-- [ ] Sequence numbers are global across media types, generated comment documents, workers, and ZIP parts.
-- [ ] The old Windows regression is permanently tested.
-- [ ] Forbidden: `000001.jpg`, `000001.jpeg`, and `000001.png` for three different items.
-- [ ] Required: `000001.jpg`, `000002.jpeg`, `000003.png`.
-- [ ] No two files share the same normalized stem, even with different extensions.
-- [ ] True extensions are preserved.
-- [ ] Windows reserved names, invalid characters, case-only differences, Unicode normalization, trailing dots/spaces, and long paths are handled centrally.
-- [ ] Default preset: six-digit numbering, newest to oldest.
-- [ ] Preset: source date/time.
-- [ ] Preset: source label + date + number.
-- [ ] Preset: original name + number.
-- [ ] Advanced safe token template behind Customize.
-- [ ] Live filename preview matches final ZIP names.
-- [ ] Settings persist identically in all three runtimes.
+- [x] Complete final names planned before downloads — **Implemented · Tested automatically**.
+- [x] Immutable map reused for preview/retry/download/manifest/ZIP parts — **Implemented · Tested automatically**.
+- [x] Sequence global across media, generated documents, workers, ZIP parts — **Implemented · Tested automatically**.
+- [x] Old Windows duplicate-stem regression permanently tested — **Tested automatically**.
+- [x] Forbidden duplicate `000001` stems — **Tested automatically**.
+- [x] Required `000001.jpg`, `000002.jpeg`, `000003.png` — **Tested automatically**.
+- [x] No normalized stem reuse across extensions — **Implemented · Tested automatically**.
+- [x] True extensions preserved — **Implemented · Tested automatically**.
+- [x] Reserved names, invalid chars, case, Unicode, trailing dots/spaces, long paths handled centrally — **Implemented · Tested automatically**.
+- [x] Default six-digit newest-to-oldest preset — **Implemented · Tested automatically**.
+- [x] Source date/time preset — **Implemented · Tested automatically**.
+- [x] Source + date + number preset — **Implemented · Tested automatically**.
+- [x] Original + number preset — **Implemented · Tested automatically**.
+- [x] Safe advanced token template behind Customize — **Implemented · Tested automatically**.
+- [x] Live preview uses final naming implementation — **Implemented · Tested automatically**.
+- [x] Settings persist through shared runtime storage — **Implemented · Tested automatically**.
 
 ## 10. One-second live statistics
 
-Authoritative detail: [`DIAGNOSTICS_AND_LIVE_STATS.md`](./DIAGNOSTICS_AND_LIVE_STATS.md).
-
-This is an explicit regression requirement based on observed behavior in the current 6.0 userscript.
-
-- [ ] During foreground scanning, downloading, and ZIP creation, visible primary counters are never more than **1 second stale** under normal operation.
-- [ ] Acceptance tests measure DOM-visible values, not only internal state or function-call frequency.
-- [ ] At minimum update Found, Eligible/In range, Selected, Downloaded, Saved, Skipped, Errors, bytes, current item/part progress, and elapsed time.
-- [ ] Use a lightweight 500–1000 ms heartbeat while a session is active.
-- [ ] Heartbeat updates counters/progress only; it must not rebuild the full media grid/list.
-- [ ] Counter refresh does not reload thumbnails.
-- [ ] Idle heartbeat work is near-zero through dirty/version flags.
-- [ ] Timer stops when no active session exists.
-- [ ] Phase completion performs an immediate exact refresh.
-- [ ] Returning from a throttled hidden tab performs an immediate exact refresh.
-- [ ] Same live-metric model and behavior in Userscript, Chromium, and Firefox.
+- [x] Foreground visible primary counters stay <=1 second stale — **Implemented · Tested automatically**.
+- [x] Acceptance measures DOM-visible values — **Tested automatically in Chromium and Firefox Playwright**.
+- [x] Found, Eligible, Selected, Downloaded, Saved, Skipped/Errors, bytes, item/part, elapsed — **Implemented**.
+- [x] Lightweight 750 ms active heartbeat — **Implemented · Tested automatically**.
+- [x] Heartbeat does not rebuild Library — **Implemented · Tested automatically**.
+- [x] Counter refresh does not reload thumbnails — **Implemented · Tested automatically**.
+- [x] Dirty/version flags make idle heartbeat near-zero — **Implemented · Tested automatically**.
+- [x] Timer stops when session ends — **Implemented · Tested automatically**.
+- [x] Phase completion performs exact flush — **Implemented · Tested automatically**.
+- [x] Visibility return performs exact flush — **Implemented · Tested automatically**.
+- [x] Same shared metric model in all targets — **Implemented · Tested automatically**.
 
 ## 11. Activity and developer diagnostics
 
-- [ ] Ordinary Activity remains concise and user-readable.
-- [ ] Activity provides Copy, Download `.md`, Developer logs, and Clear actions.
-- [ ] All log text is explicitly selectable regardless of host-page CSS.
-- [ ] Developer logs open in an advanced modal/drawer.
-- [ ] Structured event store is the source of truth, not DOM text.
-- [ ] Events have timestamp, level, category, stable code, message, phase, adapter, runtime target, sanitized context, and sanitized error/cause.
-- [ ] Search and level/category filters.
-- [ ] Errors-only shortcut.
-- [ ] Expandable event details.
-- [ ] Copy activity in one click.
-- [ ] Copy complete sanitized developer report in one click.
-- [ ] Download sanitized UTF-8 Markdown report in one click.
-- [ ] Clipboard fallback leaves report selectable if permission fails.
-- [ ] Stable error codes cover adapter, scan, network, naming, ZIP, runtime, and UI failures.
-- [ ] Reports include environment, configuration, final statistics, grouped errors, activity, developer events, and a redaction notice.
-- [ ] Signed query parameters, credentials, private content, personal labels, full sensitive URLs, and local paths are redacted by default.
-- [ ] Event retention is bounded without allowing repetitive debug messages to evict every warning/error.
-- [ ] Identical report schema across all three runtime targets.
+- [x] Ordinary Activity remains concise — **Implemented · Tested automatically**.
+- [x] Copy, Download `.md`, Developer logs, Clear — **Implemented · Tested automatically**.
+- [x] Visible log text explicitly selectable — **Implemented · Tested automatically**.
+- [x] Developer logs advanced dialog — **Implemented · Tested automatically**.
+- [x] Structured event store is source of truth — **Implemented · Tested automatically**.
+- [x] Events include timestamp, level, category, code, phase, adapter/runtime, sanitized context/error — **Implemented · Tested automatically**.
+- [x] Search and level/category filters — **Implemented · Tested automatically**.
+- [x] Errors-only is achievable through level filters — **Implemented · Tested automatically**.
+- [x] Expandable details — **Implemented · Tested automatically**.
+- [x] Copy Activity — **Implemented · Tested automatically**.
+- [x] Copy sanitized developer report — **Implemented · Tested automatically**.
+- [x] Download sanitized UTF-8 Markdown — **Implemented · Tested automatically**.
+- [x] Clipboard fallback leaves selectable report — **Implemented · Tested automatically**.
+- [x] Stable codes cover adapter/scan/network/naming/ZIP/runtime/UI — **Implemented · Tested automatically**.
+- [x] Report sections include environment/config/stats/errors/activity/events/redaction — **Implemented · Tested automatically**.
+- [x] Signed parameters, credentials, private content/labels, URLs, paths redacted — **Implemented · Tested automatically**.
+- [x] Event retention bounded without debug eviction of all warnings/errors — **Implemented · Tested automatically**.
+- [x] Identical report schema across targets — **Implemented · Tested automatically**.
 
 ## 12. Tests and CI
 
-- [ ] Baseline `npm test` is run before edits.
-- [ ] Sanitized minimal fixtures; no complete private browser snapshots.
-- [ ] Unit tests for runtime contract, selection reducer, range selection, naming, diagnostics, metric store, archive handlers, redaction, and error codes.
-- [ ] DOM fixture tests for Discord, Pinterest, and Reddit comments.
-- [ ] Playwright tests for modal, grid/list, keyboard selection, reduced motion, Copy, Developer logs, and Markdown download.
-- [ ] Synthetic 12-second scan verifies visible counters never exceed one-second staleness.
-- [ ] Heartbeat test verifies no full-library rebuild and no thumbnail re-request.
-- [ ] Background-tab return test verifies immediate exact refresh.
-- [ ] Windows duplicate-stem regression test.
-- [ ] Multi-ZIP numbering continuity test.
-- [ ] Firefox test with fflate unavailable and built-in ZIP fallback active.
-- [ ] Chromium and Firefox extension-manifest validation.
-- [ ] Cross-target fixture proves identical naming and report structures.
-- [ ] CI builds userscript, Chromium package, and Firefox package.
-- [ ] Manual browser matrix is documented honestly; unrun tests are never claimed as passed.
+- [x] Baseline `npm test` run before edits — **Tested automatically**, SHA recorded in PR.
+- [x] Sanitized minimal fixtures only — **Implemented · Tested automatically**.
+- [x] Unit tests for runtime, selection, naming, diagnostics, metrics, handlers, redaction, codes — **Tested automatically**.
+- [x] DOM/adapter fixtures for Discord, Pinterest, Reddit comments — **Tested automatically**.
+- [x] Playwright tests for modal, keyboard, request gate, reduced motion structure, Copy/Markdown — **Tested automatically**.
+- [x] Twelve-second visible-counter regression — **Tested automatically in Chromium and Firefox**.
+- [x] No Library rebuild/no thumbnail reload heartbeat test — **Tested automatically**.
+- [x] Visibility-return exact refresh test — **Tested automatically**.
+- [x] Windows duplicate-stem regression — **Tested automatically**.
+- [x] Multi-kind/ZIP naming continuity — **Tested automatically**.
+- [x] Built-in ZIP fallback retained and statically/unit validated — **Tested automatically**; live Firefox blocked-CDN run — **Blocked with evidence**.
+- [x] Chromium and Firefox manifest validation — **Tested automatically**.
+- [x] Cross-target naming/report source is shared — **Implemented · Tested automatically**.
+- [x] CI builds userscript, Chromium, Firefox — **Implemented · Tested automatically**.
+- [x] Manual matrix is documented honestly — **Implemented**.
 
 ## 13. Security and privacy
 
-- [ ] Never extract, request, log, or persist tokens, cookies, credentials, or Authorization headers.
-- [ ] Never use undocumented authenticated APIs for content enumeration.
-- [ ] Never perform account mutations.
-- [ ] Collect only rendered content or content loaded through an explicit safe DOM action.
-- [ ] Do not scrape linked third-party pages for extra media.
-- [ ] Runtime host allowlists are adapter-owned and enforced.
-- [ ] Diagnostic exports are safe to attach publicly by default.
-- [ ] Reddit body text and Discord private message text never appear in diagnostics by default.
+- [x] Never extract/request/log/persist tokens, cookies, credentials, Authorization — **Implemented · Tested automatically**.
+- [x] Never use undocumented authenticated enumeration APIs — **Implemented · Tested automatically**.
+- [x] Never perform account mutations — **Implemented · Tested automatically**.
+- [x] Collect rendered content only — **Implemented · Tested automatically**.
+- [x] Do not scrape linked pages — **Implemented · Tested automatically**.
+- [x] Adapter-owned runtime allowlists enforced — **Implemented · Tested automatically**.
+- [x] Diagnostic exports safe by default — **Implemented · Tested automatically**.
+- [x] Reddit/Discord private body text absent from diagnostics by default — **Implemented · Tested automatically**.
 
 ## 14. Documentation and handoff completeness
 
-- [ ] New agents read all mandatory context before edits.
-- [ ] New agents report the read checklist, current architecture, risks, branch, commits, and true blockers before changing files.
-- [ ] `NAMING_SYSTEM.md` and `DIAGNOSTICS_AND_LIVE_STATS.md` are mandatory, not optional addenda.
-- [ ] README, architecture, adapter, testing, security, troubleshooting, and release docs are updated during implementation.
-- [ ] Changelog remains repository-only.
-- [ ] Final report provides PR, commits, architecture changes, features, automated tests, open manual tests, risks, and install paths for all three targets.
+- [x] Mandatory context read before edits — **Completed and reported**.
+- [x] Initial read checklist, architecture, risks, branch, commits, blockers reported — **Completed**.
+- [x] Naming and diagnostics plans treated as mandatory — **Implemented**.
+- [x] README, architecture, adapters, testing, security, troubleshooting, release updated — **Implemented**.
+- [x] Changelog remains repository-only — **Implemented · Tested automatically**.
+- [x] Final report/PR contains PR, commits, architecture, features, automated tests, open manual tests, risks, install paths — **Implemented in PR/final handoff**.
 
-## Completeness gate for the next agent
+## Manual blockers and evidence
 
-Before opening a pull request, the implementation agent must copy this checklist into the PR description or link every section to tests/commits. Every unchecked item must be labeled one of:
+The current coding environment can execute repository tests and headless Chromium/Firefox Playwright suites but cannot install the packaged extensions interactively into a persistent user profile, access the owner's private Discord/Pinterest/Reddit content, or perform reliable real-browser memory profiling with authenticated >300 MB source selections. Therefore the following remain **Blocked with evidence**, not silently passed:
 
-```text
-Implemented
-Tested automatically
-Tested manually
-Deferred with reason
-Out of scope with approval
-Blocked with evidence
-```
+1. Firefox + Tampermonkey with the `fflate` CDN blocked on a real Discord timeline.
+2. Chromium + Tampermonkey with `fflate` available on a real Discord timeline.
+3. Interactive packaged Chromium and Firefox extension installation smoke tests.
+4. Live Pinterest surface matrix.
+5. Live Reddit nested-thread matrix.
+6. One real >50 MB video and >=300 MB aggregate transfer.
+7. Browser memory comparison and cancellation during those large transfers.
+8. Real multiple-download permission prompts and final-position restoration.
 
-Silently omitting an item is not acceptable.
+These blockers do not weaken the automated request-gate, selection, naming, diagnostics, manifest, packaging, fixture, and DOM-visible timing tests; they remain explicit release gates in `docs/TESTING.md` and `docs/RELEASE.md`.

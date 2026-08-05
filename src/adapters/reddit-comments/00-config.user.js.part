@@ -1,0 +1,184 @@
+    const REDDIT_COMMENT_MEDIA_HOST_PATTERNS = Object.freeze([
+        'i.redd.it',
+        'preview.redd.it',
+        'external-preview.redd.it',
+        'v.redd.it',
+        'packaged-media.redd.it',
+        'i.redditmedia.com',
+        'reddit-uploaded-media.s3-accelerate.amazonaws.com',
+        'i.imgur.com',
+        '*.giphy.com',
+        'media.tenor.com',
+        '*.streamable.com',
+        '*.redgifs.com',
+        '*.gfycat.com',
+        'cdn.discordapp.com',
+        'media.discordapp.net',
+        'pbs.twimg.com',
+        'video.twimg.com',
+        '*.tumblr.com'
+    ]);
+
+    function redditHostMatchesPattern(hostname, pattern) {
+        const normalizedHost = String(hostname || '').toLowerCase();
+        const normalizedPattern = String(pattern || '').toLowerCase();
+        if (!normalizedHost || !normalizedPattern) return false;
+        if (!normalizedPattern.startsWith('*.')) {
+            return normalizedHost === normalizedPattern;
+        }
+        const suffix = normalizedPattern.slice(1);
+        return normalizedHost.endsWith(suffix) &&
+            normalizedHost.length > suffix.length;
+    }
+
+    function redditCommentMediaHostAllowed(hostname) {
+        return REDDIT_COMMENT_MEDIA_HOST_PATTERNS.some(pattern =>
+            redditHostMatchesPattern(hostname, pattern)
+        );
+    }
+
+    function redditCommentThreadPageType(currentLocation = location) {
+        const allowedHost = /^(?:www\.|old\.)?reddit\.com$/i.test(currentLocation.hostname);
+        if (!allowedHost) return null;
+        const path = currentLocation.pathname.replace(/\/+$/, '');
+        return /^\/r\/[^/]+\/comments\/[a-z0-9]+(?:\/[^/]+)?(?:\/[a-z0-9]+)?$/i.test(path)
+            ? 'post-comments'
+            : null;
+    }
+
+    function redditCommentSelector() {
+        return [
+            'shreddit-comment',
+            '[data-testid="comment"]',
+            '[data-comment-id]',
+            '[id^="t1_"]',
+            '.thing.comment[data-fullname^="t1_"]'
+        ].join(',');
+    }
+
+    function redditCommentNode(element) {
+        return element?.closest?.(redditCommentSelector()) || null;
+    }
+
+    function redditCommentId(element) {
+        const node = redditCommentNode(element) || element;
+        const candidates = [
+            node?.getAttribute?.('thingid'),
+            node?.getAttribute?.('data-comment-id'),
+            node?.getAttribute?.('data-fullname'),
+            node?.id
+        ].filter(Boolean);
+        for (const value of candidates) {
+            const match = String(value).match(/(?:^|\b)(t1_[a-z0-9]+)|(?:^|\b)([a-z0-9]{5,})$/i);
+            if (match) return match[1] || `t1_${match[2]}`;
+        }
+        const permalink = node?.querySelector?.('a[href*="/comments/"]')?.getAttribute('href') || '';
+        const match = permalink.match(/\/comments\/[a-z0-9]+\/[^/]+\/([a-z0-9]+)\/?$/i);
+        return match ? `t1_${match[1]}` : null;
+    }
+
+    function redditCommentBodyNode(element) {
+        const node = redditCommentNode(element) || element;
+        return node?.querySelector?.([
+            '[slot="comment"]',
+            '[data-testid="comment-body"]',
+            '[data-click-id="text"]',
+            '.usertext-body .md',
+            ':scope > .entry .md'
+        ].join(',')) || null;
+    }
+
+    function redditCommentTimestamp(element) {
+        const node = redditCommentNode(element) || element;
+        const time = node?.querySelector?.('time[datetime]');
+        if (time?.getAttribute('datetime')) return time.getAttribute('datetime');
+        const timeago = node?.querySelector?.('faceplate-timeago[ts], faceplate-timeago[datetime]');
+        const value = timeago?.getAttribute('ts') || timeago?.getAttribute('datetime');
+        if (!value) return null;
+        const milliseconds = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
+        return Number.isFinite(milliseconds)
+            ? new Date(milliseconds < 10_000_000_000 ? milliseconds * 1000 : milliseconds).toISOString()
+            : null;
+    }
+
+    function redditCommentPermalink(element) {
+        const node = redditCommentNode(element) || element;
+        const href = node?.getAttribute?.('permalink') ||
+            node?.querySelector?.('[data-testid="comment-permalink"], a[data-click-id="timestamp"], a.bylink')?.getAttribute('href');
+        if (!href) return null;
+        try {
+            const url = new URL(href, location.origin);
+            url.search = '';
+            url.hash = '';
+            return url.href;
+        } catch {
+            return null;
+        }
+    }
+
+    function createRedditCommentsAdapter() {
+        return {
+            id: 'reddit-comments',
+            label: 'Reddit comment media',
+            archivePrefix: 'reddit',
+            capabilities: {
+                media: true,
+                textRecords: false,
+                virtualTimeline: true,
+                dateFilter: true,
+                hostPageSelection: false,
+                scanModes: [
+                    'newest-to-oldest',
+                    'current-to-oldest',
+                    'current-to-newest',
+                    'full-finish-down'
+                ],
+                views: ['grid', 'list']
+            },
+            terms: Object.freeze({
+                timeline: 'comment thread',
+                item: 'comment media item',
+                items: 'comment media items',
+                oldest: 'thread start',
+                newest: 'thread end'
+            }),
+            matches(currentLocation) {
+                return Boolean(redditCommentThreadPageType(currentLocation));
+            },
+            scanVisibleMedia: scanRedditRenderedThread,
+            findScroller: findRedditThreadScroller,
+            visibleItemIds: redditVisibleCommentIds,
+            visibleItemTimeRange: redditVisibleCommentTimeRange,
+            findItemElementById: findRedditCommentElementById,
+            captureStartingAnchor: captureRedditStartingAnchor,
+            findItemId: redditCommentId,
+            findItemTimestamp: redditCommentTimestamp,
+            compareItemIds(left, right) {
+                return String(left || '').localeCompare(String(right || ''));
+            },
+            getArchiveContext() {
+                const match = location.pathname.match(/^\/r\/([^/]+)\/comments\/([a-z0-9]+)\/([^/]+)?/i);
+                const subreddit = match?.[1] || 'reddit';
+                const postId = match?.[2] || 'thread';
+                const slug = match?.[3] || 'comments';
+                return {
+                    id: sanitizeFilename(`${subreddit}-${postId}`),
+                    label: sanitizeFilename(`${subreddit}-${slug}-comment-media`),
+                    postId: `t3_${postId}`,
+                    postLabel: `${subreddit} · ${slug.replace(/_/g, ' ')}`,
+                    postPermalink: `${location.origin}/r/${subreddit}/comments/${postId}/${slug}/`
+                };
+            },
+            isDownloadUrlAllowed(rawUrl) {
+                try {
+                    const url = new URL(rawUrl, location.href);
+                    return url.protocol === 'https:' &&
+                        redditCommentMediaHostAllowed(url.hostname);
+                } catch {
+                    return false;
+                }
+            },
+            openTargetHelp: 'Open a Reddit post detail page and scan media rendered inside its comments.'
+        };
+    }
+

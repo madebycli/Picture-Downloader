@@ -1,9 +1,10 @@
-name: Validate userscript
+name: Validate Media Archiver
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,9 +12,93 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
-      - run: npm test
+          node-version: 24
+      - name: Install test tooling
+        run: npm install --ignore-scripts
+      - name: Run complete validation
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee npm-test.log
+      - name: Add failure details to job summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## npm test failure'
+            echo
+            echo '```text'
+            tail -n 300 npm-test.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload validation log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-test-log
+          path: npm-test.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: media-archiver-builds
+          path: |
+            media-archiver.user.js
+            dist/media-archiver-chromium-*.zip
+            dist/media-archiver-firefox-*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  ui:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install test tooling
+        run: npm install --ignore-scripts
+      - name: Build userscript
+        run: npm run build:userscript
+      - name: Install browser
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Run UI tests
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:ui -- --project=${{ matrix.browser }} 2>&1 | tee playwright-${{ matrix.browser }}.log
+      - name: Add UI failure details to job summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## Playwright ${{ matrix.browser }} failure'
+            echo
+            echo '```text'
+            tail -n 300 playwright-${{ matrix.browser }}.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload UI evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-${{ matrix.browser }}
+          path: |
+            playwright-${{ matrix.browser }}.log
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 14
