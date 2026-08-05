@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Media Archiver
 // @namespace    https://github.com/madebycli/Picture-Downloader
-// @version      7.1.0
+// @version      7.2.0
 // @description  Collect rendered media from supported web apps and save filtered files as numbered ZIP parts.
 // @homepageURL  https://github.com/madebycli/Picture-Downloader
 // @supportURL   https://github.com/madebycli/Picture-Downloader/issues
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '7.1.0';
+    const VERSION = '7.2.0';
     const APP_NAME = 'Media Archiver';
     const SCAN_DELAY_MS = 650;
     const REAL_TOP_CONFIRM_MS = 20_000;
